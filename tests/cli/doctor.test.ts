@@ -9,6 +9,7 @@ import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { execFileSync, execSync, spawnSync } from 'child_process';
 import {
+  checkRetiredPiExtension,
   checkSkillProjection,
   clearRegisteredChecks,
   compareVersions,
@@ -973,6 +974,38 @@ test('each skill-projection repair command keeps the recorded selection and pass
     expect(JSON.parse(dryRun.stdout).selection, label).toEqual(row.selection);
   });
 }, 60_000);
+
+test('pi-retired-extension warns with a runnable mv -n only for a loaded extension that uses the old hook argv protocol', () => withTempHome('repo-harness-doctor', home => {
+  const agentDir = path.join(home, 'pi agent');
+  const extensions = path.join(agentDir, 'extensions');
+  fs.mkdirSync(extensions, { recursive: true });
+  const bin = 'const HOOK_BIN = process.env.REPO_HARNESS_PI_BIN ?? "repo-harness-hook";';
+  const call = 'const { stdout, stderr } = await execFileAsync(HOOK_BIN, [event, "--route", route], {});';
+  const env = { HOME: home, PI_CODING_AGENT_DIR: agentDir };
+  const now = new Date('2026-11-14T12:00:00Z');
+  for (const comment of [`// ${bin}\n// ${call}\n`, `/**\n * ${bin}\n * ${call}\n */\n`, `/* ${bin} */\n/* ${call} */\n`]) {
+    fs.writeFileSync(path.join(extensions, 'other.ts'), `${comment}export default () => {};\n`);
+    expect(checkRetiredPiExtension(env, now).status, comment).toBe('ok');
+  }
+  const content = `${bin}\n${call}\n`;
+  const source = path.join(home, 'legacy.ts');
+  fs.writeFileSync(source, content);
+  const legacy = path.join(extensions, 'repo-harness.ts');
+  fs.symlinkSync(source, legacy);
+  const check = checkRetiredPiExtension(env, now);
+  expect(check.status).toBe('warn');
+  const command = check.detail.match(/Run: (mv -n .*)$/)?.[1];
+  const archive = path.join(agentDir, 'repo-harness.ts.legacy-20261114');
+  expect(command).toBe(`mv -n '${legacy}' '${archive}'`);
+  fs.writeFileSync(archive, 'earlier archive\n');
+  execSync(command!, { shell: '/bin/sh' });
+  expect(fs.readFileSync(archive, 'utf8')).toBe('earlier archive\n');
+  expect(checkRetiredPiExtension(env, now).status).toBe('warn');
+  fs.rmSync(archive);
+  execSync(command!, { shell: '/bin/sh' });
+  expect(fs.readFileSync(archive, 'utf8')).toBe(content);
+  expect(checkRetiredPiExtension(env, now).status).toBe('ok');
+}));
 
 describe('legacy workflow-state diagnostic', () => {
   test('reports a legacy copy from a nested cwd without changing its bytes', () => {
