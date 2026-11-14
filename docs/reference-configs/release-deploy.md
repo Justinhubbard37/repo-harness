@@ -12,10 +12,14 @@ This repo keeps deployment contract surfaces under `deploy/` and private runtime
 state under ignored `_ops/`. Detailed release patterns, Cloudflare examples, and
 rollback playbooks belong in the external runbook.
 
-The release prep writes the changelog section with one command. Each PR writes
-its entry in `docs/changelog.d/<issue>.<category>.md`, and
-`bun scripts/changelog-fragments.ts assemble --version <x.y.z> --date <YYYY-MM-DD>`
-moves those entries into `## [x.y.z]` and deletes the fragment files.
+Release prep is one PR. Put the CHANGELOG section, the version bumps and the
+release checklist in that PR. The changelog check treats every `## [x.y.z]`
+heading on the base as released, even without a tag. A section merged earlier
+cannot be edited in the release prep PR.
+
+Each PR writes its entry in `docs/changelog.d/<issue>.<category>.md`. Release
+prep runs `bun scripts/changelog-fragments.ts assemble --version <x.y.z> --date <YYYY-MM-DD>`
+to move those entries into `## [x.y.z]` and delete the fragment files.
 
 Tests whose cost is a real package install or a real external program are gated
 behind `REPO_HARNESS_TEST_EXPENSIVE`. The PR lanes do not run them. The daily
@@ -88,8 +92,13 @@ later; do not publish again. The settle above is the other case.
 
 `bash scripts/release-owner-steps.sh plan <version>` is a read-only preflight:
 it runs the guard checks for a version and prints the release commit, this
-command list and the post-release steps. After step 7 passes, the orchestrator
-and the advisor decide together on those post-release steps:
+command list and the host post-release steps. After step 7 passes, the tag and
+the GitHub Release exist. Run `bun scripts/check-released-managed-values.ts --write`
+and merge the rebuilt `assets/released-managed-values.v1.json` as a Low PR.
+The test rebuilds this list from release tags, so main fails until the file is
+updated. The projection PR (`archctx/projection`) merges by rule 3 on green CI.
+
+The orchestrator and the advisor decide together on the host post-release steps:
 `rh update` on the owner host, the Upgrade steps of the release
 notes, and the relaunch of both seats from
 `rh seats argv <seat> --repository-id <id>`.
