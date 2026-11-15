@@ -158,13 +158,13 @@ describe("Bootstrap Script Contracts", () => {
     expect(cliEntry).toContain("buildDocsCommand");
     expect(cliEntry).not.toMatch(/\\.version\\(['\"][0-9]+\\.[0-9]+\\.[0-9]+['\"]\\)/);
     expect(pkg.scripts["check:ci"]).toBe("bash scripts/check-ci.sh");
-    expect(pkg.scripts["check:brain"]).toBe("rh brain check");
+    expect(pkg.scripts["check:brain"]).toBeUndefined();
     expect(pkg.scripts["check:task-sync"]).toBeUndefined();
     expect(pkg.scripts["check:deploy-sql"]).toBe("rh run check-deploy-sql-order");
     expect(pkg.scripts["check:architecture-sync"]).toBeUndefined();
     expect(pkg.scripts["check:task-workflow"]).toBeUndefined();
     expect(pkg.scripts["check:context-files"]).toBe("rh run check-context-files");
-    expect(pkg.scripts["sync:brain"]).toBe("rh brain sync");
+    expect(pkg.scripts["sync:brain"]).toBeUndefined();
   });
 
   test("ci gate verifies the candidate without creating routine handoff artifacts", () => {

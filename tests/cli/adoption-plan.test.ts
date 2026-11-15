@@ -305,19 +305,15 @@ describe("canonical adoption plan", () => {
       expect(mixed.content).toBe([
         "{", '\t"name": "fixture",', '    "scripts": {', '\t\t"test": "bun test",',
         '\t\t"check:context-files": "rh run check-context-files",',
-        '\t\t"check:brain": "rh brain check",',
-        '\t\t"check:deploy-sql": "rh run check-deploy-sql-order",',
-        '\t\t"sync:brain": "rh brain sync"', "\t},", '    "private": true', "}", "",
+        '\t\t"check:deploy-sql": "rh run check-deploy-sql-order"', "\t},", '    "private": true', "}", "",
       ].join("\n"));
       writeFileSync(join(repo, "package.json"), mixed.content);
       expect(packageOperation().status).toBe("skipped");
 
       writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture" }));
       expect(packageOperation().content).toBe(JSON.stringify({ name: "fixture", private: true, scripts: {
-        "check:brain": "rh brain check",
         "check:context-files": "rh run check-context-files",
         "check:deploy-sql": "rh run check-deploy-sql-order",
-        "sync:brain": "rh brain sync",
       } }));
     } finally {
       cleanup(repo);
@@ -339,20 +335,22 @@ describe("canonical adoption plan", () => {
     }
   });
 
-  test("standard apply renames the generated brain package scripts and keeps customized ones", () => {
+  test("standard apply removes the generated brain package scripts and keeps customized ones", () => {
     const generated = tempRepo();
     const customized = tempRepo();
     try {
       writeFileSync(join(generated, "package.json"), JSON.stringify({ name: "fixture", scripts: {
+        "check:brain": "rh brain check",
         "check:brain-manifest": "repo-harness run check-brain-manifest",
+        "sync:brain": "repo-harness brain sync",
         "sync:brain-docs": "repo-harness run sync-brain-docs --all",
       } }, null, 2));
       expect(applyAdoptionPlan(planAdoption({ repoRoot: generated, mode: "standard", apply: true })).ok).toBe(true);
       const generatedScripts = JSON.parse(readFileSync(join(generated, "package.json"), "utf-8")).scripts;
       expect(generatedScripts["check:brain-manifest"]).toBeUndefined();
       expect(generatedScripts["sync:brain-docs"]).toBeUndefined();
-      expect(generatedScripts["check:brain"]).toBe("rh brain check");
-      expect(generatedScripts["sync:brain"]).toBe("rh brain sync");
+      expect(generatedScripts["check:brain"]).toBeUndefined();
+      expect(generatedScripts["sync:brain"]).toBeUndefined();
 
       writeFileSync(join(customized, "package.json"), JSON.stringify({ name: "fixture", scripts: {
         "check:brain-manifest": "repo-harness run check-brain-manifest",
@@ -368,8 +366,8 @@ describe("canonical adoption plan", () => {
       expect(customizedScripts["check:brain-manifest"]).toBeUndefined();
       expect(customizedScripts["sync:brain-docs"]).toBe("bun run custom-sync-brain.ts");
       expect(customizedScripts["check:deploy-sql"]).toBe("bash my-sql-check.sh");
-      expect(customizedScripts["check:brain"]).toBe("rh brain check");
-      expect(customizedScripts["sync:brain"]).toBe("rh brain sync");
+      expect(customizedScripts["check:brain"]).toBeUndefined();
+      expect(customizedScripts["sync:brain"]).toBeUndefined();
     } finally {
       cleanup(generated);
       cleanup(customized);
