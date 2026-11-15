@@ -1,4 +1,5 @@
 import { configurationPaths, hostConfigurationRoot, withConfigurationMutation } from '../installer/configuration-ownership';
+import { resolveRepoRoot } from '../hook/runtime';
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -823,9 +824,12 @@ function checkCodegraphMcpHost(probe: CodegraphProbe, host: 'codex' | 'claude'):
   };
 }
 
-function checkCodegraphIndex(probe: CodegraphProbe): ArchitectureDoctorCheck {
+function checkCodegraphIndex(probe: CodegraphProbe, cwd: string): ArchitectureDoctorCheck {
   const id = 'codegraph-index';
   const describe = 'CodeGraph project index';
+  if (!resolveRepoRoot(cwd)) {
+    return { id, describe, status: 'na', detail: 'not in a git repository' };
+  }
   if (!probe.result) {
     return {
       id,
@@ -855,12 +859,12 @@ function checkCodegraphIndex(probe: CodegraphProbe): ArchitectureDoctorCheck {
   };
 }
 
-function codegraphChecksFor(probe: CodegraphProbe): ArchitectureDoctorCheck[] {
+function codegraphChecksFor(probe: CodegraphProbe, cwd: string): ArchitectureDoctorCheck[] {
   return [
     checkCodegraphReadiness(probe),
     checkCodegraphMcpHost(probe, 'codex'),
     checkCodegraphMcpHost(probe, 'claude'),
-    checkCodegraphIndex(probe),
+    checkCodegraphIndex(probe, cwd),
   ];
 }
 
@@ -943,7 +947,7 @@ function configureCodegraphMcpStep(cwd: string, target: CodegraphHostTarget, env
  */
 export const CODEGRAPH_PROVIDER: CodegraphPort = {
   contractVersion: ARCHITECTURE_CONTRACT_VERSION,
-  checks: (cwd) => codegraphChecksFor(probeCodegraph(cwd)),
+  checks: (cwd) => codegraphChecksFor(probeCodegraph(cwd), cwd),
   indexSteps: codegraphIndexSteps,
   configureMcp: configureCodegraphMcpStep,
 };

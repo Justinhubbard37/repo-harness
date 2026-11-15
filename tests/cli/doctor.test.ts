@@ -602,7 +602,6 @@ describe('doctor command (Phase 1C)', () => {
       writeFakeBunx(envRoot.fakeBin);
 
       const root = path.join(import.meta.dir, '..', '..');
-      fs.mkdirSync(path.join(envRoot.root, '.codegraph'));
       fs.copyFileSync(path.join(root, 'package.json'), path.join(envRoot.root, 'package.json'));
       const env = {
         ...process.env,
@@ -613,6 +612,12 @@ describe('doctor command (Phase 1C)', () => {
       };
       recordPluginSelection(env);
       const doctor = () => spawnSync('bun', [path.join(root, 'src/cli/index.ts'), 'doctor', '--json'], { cwd: envRoot.root, encoding: 'utf-8', env });
+      const outside = JSON.parse(doctor().stdout).checks;
+      for (const id of ['codegraph-index', 'typed-hook-routes', 'capability-registry']) {
+        expect(outside.find((entry: { id: string }) => entry.id === id)).toMatchObject({ status: 'na', detail: 'not in a git repository' });
+      }
+      execSync('git init', { cwd: envRoot.root, stdio: 'ignore' });
+      fs.mkdirSync(path.join(envRoot.root, '.codegraph'));
       const res = doctor();
 
       expect(res.status, `${res.stdout}\n${res.stderr}`).toBe(0);
