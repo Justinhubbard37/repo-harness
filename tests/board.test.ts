@@ -316,7 +316,7 @@ test('High acceptance: PASS rows of the head from two distinct claims, one recor
   const claim = (model: string, branch: string) => comment(`repo-harness issue claim\nStatus: active\nRole: writer\nBranch: ${branch}\nRuntime: pi${model === '' ? '' : `\nModel: ${model}`}`, '2026-11-02T10:00:00Z');
   // The claim and the record are the `review publish` wire format. Claim n is an `acceptance claim` comment whose id comes from its time.
   const receipt = (harness: 'claude' | 'codex' | 'pi', subject_sha: string, model_relation: ModelRelation = 'different-family', verdict: 'PASS' | 'FAIL' = 'PASS', round = 1): ReviewPublishReceipt => ({
-    protocol: 1, kind: 'repo-harness-review-publish-receipt', round, subject_sha, risk_tier: 'high', reviewer: { harness, actual_model: null }, verdict, model_relation, summary: 'Reviewed.', findings: [],
+    protocol: 2, kind: 'repo-harness-review-publish-receipt', confirmed_fixed: [], round, subject_sha, risk_tier: 'high', reviewer: { harness, actual_model: null }, verdict, model_relation, summary: 'Reviewed.', findings: [],
   });
   const claimAt = (n: number) => `2026-11-02T21:0${n}:00Z`;
   const claimUrl = (n: number, path = 'pull/1491') => `https://github.com/Ancienttwo/repo-harness/${path}#issuecomment-${Date.parse(claimAt(n))}`;
@@ -795,7 +795,7 @@ function mergeReplay(edit: { parent?: (data: Json) => void; pulls?: (data: Json)
     pulls: (data) => {
       // The Medium rule needs a claimed different-family PASS row of the head; the recorded #1491 record has no claim.
       const { pr1491 } = data.repository;
-      const receipt: ReviewPublishReceipt = { protocol: 1, kind: 'repo-harness-review-publish-receipt', round: 1, subject_sha: pr1491.headRefOid, risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict: 'PASS', model_relation: 'different-family', summary: 'Reviewed.', findings: [] };
+      const receipt: ReviewPublishReceipt = { protocol: 2, kind: 'repo-harness-review-publish-receipt', confirmed_fixed: [], round: 1, subject_sha: pr1491.headRefOid, risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict: 'PASS', model_relation: 'different-family', summary: 'Reviewed.', findings: [] };
       const claimAt = '2026-11-02T21:01:00Z';
       pr1491.comments.nodes.push(comment(renderAcceptanceClaim(receipt), claimAt));
       pr1491.comments.nodes.push(comment(renderAcceptanceRecord(receipt, `https://github.com/Ancienttwo/repo-harness/pull/1491#issuecomment-${Date.parse(claimAt)}`), '2026-11-02T21:02:00Z'));
@@ -1353,7 +1353,7 @@ test('one hit for each rule that the recorded state does not trigger', () => {
 test('R5 and the effective tier read the High list: board record-writing code is Medium on one PASS row; a hook change is High and needs two', () => {
   const [hook, boardWriter] = ['src/cli/hook/mutation-guard.ts', 'src/effects/board/review.ts'];
   const receipt = (subject_sha: string): ReviewPublishReceipt => ({
-    protocol: 1, kind: 'repo-harness-review-publish-receipt', round: 1, subject_sha, risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict: 'PASS', model_relation: 'different-family', summary: 'Reviewed.', findings: [],
+    protocol: 2, kind: 'repo-harness-review-publish-receipt', confirmed_fixed: [], round: 1, subject_sha, risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict: 'PASS', model_relation: 'different-family', summary: 'Reviewed.', findings: [],
   });
   const claimAt = '2026-11-02T21:01:00Z';
   // #1499 closes tier:medium #1476, changes `files` and has one claimed different-family PASS row of its head.
@@ -1388,7 +1388,7 @@ test('acceptance disposition: a FAIL row is ignored only when every finding of i
   const boardWriter = 'src/effects/board/review.ts';
   const base = 'https://github.com/Ancienttwo/repo-harness';
   const receipt = (subject_sha: string, verdict: 'PASS' | 'FAIL', round: number): ReviewPublishReceipt => ({
-    protocol: 1, kind: 'repo-harness-review-publish-receipt', round, subject_sha, risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict, model_relation: 'different-family', summary: 'Reviewed.',
+    protocol: 2, kind: 'repo-harness-review-publish-receipt', confirmed_fixed: [], round, subject_sha, risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict, model_relation: 'different-family', summary: 'Reviewed.',
     findings: verdict === 'PASS' ? [] : [
       { id: 'R1-1', severity: 'P2', path: 'a.ts', line: 1, evidence: 'e', fix: 'f' },
       { id: 'R1-2', severity: 'P2', path: 'b.ts', line: 2, evidence: 'e', fix: 'f' },
@@ -1440,7 +1440,7 @@ test('acceptance disposition: a FAIL row is ignored only when every finding of i
 
 test('a rendered record with multiline finding values parses to its finding IDs', () => {
   const receipt: ReviewPublishReceipt = {
-    protocol: 1, kind: 'repo-harness-review-publish-receipt', round: 1, subject_sha: 'a'.repeat(40), risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict: 'FAIL', model_relation: 'different-family', summary: 'Reviewed.',
+    protocol: 2, kind: 'repo-harness-review-publish-receipt', confirmed_fixed: [], round: 1, subject_sha: 'a'.repeat(40), risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict: 'FAIL', model_relation: 'different-family', summary: 'Reviewed.',
     findings: [
       { id: 'R1-1', severity: 'P2', path: 'a.ts', line: 1, evidence: 'first line\n  second line', fix: 'one\n\ntwo' },
       { id: 'R1-2', severity: 'P3', message: 'nit\ntext' },

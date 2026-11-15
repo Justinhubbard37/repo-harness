@@ -154,7 +154,7 @@ const publishHome = () => { const home = tmpWorkspace('review-publish-home'); ro
 
 function publishReceipt(overrides: Record<string, unknown> = {}) {
   return {
-    protocol: 1,
+    protocol: 2,
     kind: 'repo-harness-review-publish-receipt',
     round: 1,
     subject_sha: PUBLISH_HEAD,
@@ -167,6 +167,7 @@ function publishReceipt(overrides: Record<string, unknown> = {}) {
       { id: 'F1', severity: 'P1', path: 'src/example.ts', line: 12, evidence: 'The guard drops the last item.', fix: 'Use the inclusive bound.' },
       { id: 'N1', severity: 'P3', message: 'Rename the helper for clarity.' },
     ],
+    confirmed_fixed: [],
     ...overrides,
   };
 }
@@ -203,7 +204,7 @@ test('publish posts the claim, one review thread per P1/P2, then the record', as
   const result = await runPublish(fixture, publishReceipt());
   expect(result.status, result.stderr).toBe(0);
   const output = JSON.parse(result.stdout);
-  expect(output).toMatchObject({ ok: true, pr: PUBLISH_PR, head_sha: PUBLISH_HEAD, round: 1, threads: 1 });
+  expect(output).toMatchObject({ ok: true, pr: PUBLISH_PR, head_sha: PUBLISH_HEAD, round: 1, threads: 1, resolved_threads: [] });
   expect(output.claim_url).toContain('/pull/' + PUBLISH_PR + '#issuecomment-');
   expect(output.review_url).toContain('#pullrequestreview-');
   expect(output.record_url).toContain('/pull/' + PUBLISH_PR + '#issuecomment-');
@@ -307,6 +308,83 @@ test('a PASS receipt with no P1/P2 opens no review thread', async () => {
   expect(review.comments ?? []).toEqual([]);
   expect(review.body).toContain('Rename the helper for clarity.');
   expect(review.event).toBe('COMMENT');
+});
+
+const earlierReview = (round: number) => 'repo-harness acceptance review\nRound: ' + round + '\nSubject: ' + 'b'.repeat(40) + '\n';
+const confirmReceipt = (ids: readonly string[]) => publishReceipt({ round: 2, verdict: 'PASS', findings: [], confirmed_fixed: ids });
+// The thread mutations in call order: the mutation name and its body variable, if any.
+const threadMutations = (fixture: ReturnType<typeof publishFixture>) => fixture.gh.calls()
+  .filter((args) => args.some((arg) => arg.startsWith('query=mutation')))
+  .map((args) => [/\{ (\w+)\(/.exec(args.find((arg) => arg.startsWith('query='))!)![1], args.find((arg) => arg.startsWith('body='))?.slice(5)]);
+
+test('publish replies on and resolves an earlier-round thread that its receipt confirms, after the record', async () => {
+  const fixture = publishFixture(publishScenario({ threadNodes: { PRRT_one: { reviewBody: earlierReview(1) } } }));
+  const result = await runPublish(fixture, confirmReceipt(['PRRT_one']));
+  expect(result.status, result.stderr).toBe(0);
+  const output = JSON.parse(result.stdout);
+  expect(output.resolved_threads).toEqual(['PRRT_one']);
+  expect(threadMutations(fixture)).toEqual([
+    ['addPullRequestReviewThreadReply', 'repo-harness review reply\nAgent: codex (gpt-5.1-codex), read-only\nDisposition: confirmed fixed in round 2 on '
+      + PUBLISH_HEAD + '\nWhy: ' + output.record_url + '\n'],
+    ['resolveReviewThread', undefined]]);
+  const calls = fixture.gh.calls();
+  // The reply cites the record, so the record POST comes first.
+  expect(calls.findIndex((args) => args.some((arg) => arg.includes('addPullRequestReviewThreadReply'))))
+    .toBeGreaterThan(calls.map((args) => args.some((arg) => arg.endsWith('/issues/' + PUBLISH_PR + '/comments'))).lastIndexOf(true));
+});
+
+test('a confirmed id that is not an earlier publish thread of this PR is refused and nothing is posted', async () => {
+  for (const thread of [{ reviewBody: 'Looks good to me.' }, { pr: PUBLISH_PR + 1, reviewBody: earlierReview(1) }, { reviewBody: earlierReview(2) },
+    { association: 'NONE', reviewBody: earlierReview(1) }]) {
+    const fixture = publishFixture(publishScenario({ threadNodes: { PRRT_one: thread } }));
+    const result = await runPublish(fixture, confirmReceipt(['PRRT_one']));
+    expect(result.status, JSON.stringify(thread)).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, error: 'review_receipt_invalid', posted: [] });
+    expect(fixture.gh.inputs().some((entry) => entry.input !== '')).toBe(false);
+    expect(threadMutations(fixture)).toEqual([]);
+  }
+});
+
+test('an already-resolved confirmed thread is left as is only when it passes the provenance rule', async () => {
+  const fixture = publishFixture(publishScenario({ threadNodes: { PRRT_one: { reviewBody: earlierReview(1) }, PRRT_done: { isResolved: true, reviewBody: earlierReview(1) } } }));
+  const result = await runPublish(fixture, confirmReceipt(['PRRT_done', 'PRRT_one']));
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({ resolved_threads: ['PRRT_one'], already_resolved_threads: ['PRRT_done'] });
+  expect(fixture.gh.calls().filter((args) => args.includes('id=PRRT_done') && args.some((arg) => arg.startsWith('query=mutation')))).toEqual([]);
+  const outside = publishFixture(publishScenario({ threadNodes: { PRRT_done: { isResolved: true, association: 'NONE', reviewBody: earlierReview(1) } } }));
+  const refused = await runPublish(outside, confirmReceipt(['PRRT_done']));
+  expect(JSON.parse(refused.stdout)).toMatchObject({ ok: false, error: 'review_receipt_invalid', posted: [] });
+  expect(outside.gh.inputs().some((entry) => entry.input !== '')).toBe(false);
+  expect(threadMutations(outside)).toEqual([]);
+});
+
+test('a failed or unknown thread write stops publish, names the record and both thread sets, and is not retried', async () => {
+  const threadNodes = { PRRT_one: { reviewBody: earlierReview(1) }, PRRT_two: { reviewBody: earlierReview(1) }, PRRT_three: { reviewBody: earlierReview(1) } };
+  for (const [stage, outcome, error] of [['reply', 'rejected', 'review_publish_partial'], ['resolve', 'unknown', 'review_publish_unknown'],
+    ['reply', 'unconfirmed', 'review_publish_unknown'], ['resolve', 'unconfirmed', 'review_publish_unknown']] as const) {
+    const fixture = publishFixture(publishScenario({ threadNodes, failThread: { stage, id: 'PRRT_two', outcome } }));
+    const result = await runPublish(fixture, confirmReceipt(['PRRT_one', 'PRRT_two', 'PRRT_three']));
+    expect(result.status, stage).toBe(5);
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({ ok: false, error });
+    const recordUrl = output.posted.at(-1);
+    expect(recordUrl).toContain('/pull/' + PUBLISH_PR + '#issuecomment-');
+    expect(output.message).toContain('record ' + recordUrl + '; resolved threads: PRRT_one; unresolved threads: PRRT_two, PRRT_three');
+    expect(threadMutations(fixture).map(([name]) => name)).toEqual(stage === 'reply'
+      ? ['addPullRequestReviewThreadReply', 'resolveReviewThread', 'addPullRequestReviewThreadReply']
+      : ['addPullRequestReviewThreadReply', 'resolveReviewThread', 'addPullRequestReviewThreadReply', 'resolveReviewThread']);
+  }
+});
+
+test('head movement between thread writes stops before the next write with the thread progress', async () => {
+  const fixture = publishFixture(publishScenario({ threadNodes: { PRRT_one: { reviewBody: earlierReview(1) }, PRRT_two: { reviewBody: earlierReview(1) } },
+    headSequence: [PUBLISH_HEAD, PUBLISH_HEAD, PUBLISH_HEAD, PUBLISH_HEAD, PUBLISH_HEAD, 'f'.repeat(40)] }));
+  const result = await runPublish(fixture, confirmReceipt(['PRRT_one', 'PRRT_two']));
+  expect(result.status).toBe(5);
+  const output = JSON.parse(result.stdout);
+  expect(output).toMatchObject({ ok: false, error: 'review_publish_partial' });
+  expect(output.message).toContain('to the reply on thread PRRT_two; record ' + output.posted.at(-1) + '; resolved threads: PRRT_one; unresolved threads: PRRT_two');
+  expect(threadMutations(fixture).map(([name]) => name)).toEqual(['addPullRequestReviewThreadReply', 'resolveReviewThread']);
 });
 
 test('a finding outside the diff goes into the review body, not an inline comment', async () => {
@@ -563,7 +641,7 @@ test('collect fails closed on a missing record, block, bad JSON, invalid receipt
     ['bad JSON', ['RECEIPT-JSON\n{"protocol": '], 'review_receipt_invalid', 'decodes to a repo-harness-review-publish-receipt object'],
     ['not a receipt', ['RECEIPT-JSON\n{"protocol": 1}'], 'review_receipt_invalid', 'decodes to a repo-harness-review-publish-receipt object'],
     ['top-level array', ['RECEIPT-JSON\n' + JSON.stringify([publishReceipt()])], 'review_receipt_invalid', 'decodes to a repo-harness-review-publish-receipt object'],
-    ['invalid receipt', ['RECEIPT-JSON\n' + JSON.stringify(publishReceipt({ protocol: 2 }))], 'review_receipt_invalid', ''],
+    ['invalid receipt', ['RECEIPT-JSON\n' + JSON.stringify(publishReceipt({ protocol: 1 }))], 'review_receipt_invalid', ''],
     ['stale subject', [receiptBlock(publishReceipt({ subject_sha: 'b'.repeat(40) }))], 'review_subject_stale', ''],
   ];
   for (const [label, texts, code, message] of cases) {

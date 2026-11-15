@@ -376,12 +376,16 @@ failing. A later PASS record never clears a FAIL row by itself.
 repo-harness review reply
 Agent: <kind>, session <id>
 Disposition: fixed <sha> | disputed | rejected | deferred #<follow-up issue>
-Why: <reason; for fixed, the test that fails on the base>
+             | confirmed fixed in round <n> on <sha>
+Why: <reason; for fixed, the test that fails on the base; for confirmed, the acceptance record URL>
 ```
 
 The head owner replies `fixed` or `disputed` and leaves the thread open.
 Only the coordinator replies `rejected`, or `deferred` for a rule-4
 deferral (`acceptor.md` §2.2), then resolves the thread (`board.md` rule 5).
+`rh review publish` writes the `confirmed` reply. It posts it on each
+thread in the receipt's `confirmed_fixed` list and then resolves that
+thread (`acceptor.md` §6). Nobody writes this disposition by hand.
 A comment from a reviewer without a claim role, such as an
 outside contributor, is optional input: the head owner or the coordinator
 decides whether to adopt it, and answers with the same reply. A review bot

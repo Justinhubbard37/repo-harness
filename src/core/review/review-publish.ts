@@ -15,6 +15,8 @@ import type { ModelRelation } from './acceptance-receipt';
  *   each one becomes exactly one inline review thread.
  * - P3 findings are NITs. They carry no location, so they can appear only in
  *   the review body.
+ * - `confirmed_fixed` names, by GitHub node id, the earlier-round review
+ *   threads whose fix this round confirms. Publish resolves only those.
  *
  * The only way to build one is to pass the closed validator below. Published
  * text is rendered from this document alone; caller arguments never change it.
@@ -40,7 +42,7 @@ export interface ReviewPublishNit {
 export type ReviewPublishFinding = ReviewPublishBlockingFinding | ReviewPublishNit;
 
 export interface ReviewPublishReceipt {
-  readonly protocol: 1;
+  readonly protocol: 2;
   readonly kind: 'repo-harness-review-publish-receipt';
   readonly round: number;
   readonly subject_sha: string;
@@ -54,6 +56,7 @@ export interface ReviewPublishReceipt {
   readonly model_relation: ModelRelation;
   readonly summary: string;
   readonly findings: readonly ReviewPublishFinding[];
+  readonly confirmed_fixed: readonly string[];
 }
 
 export interface ReviewInlineComment {
@@ -63,9 +66,11 @@ export interface ReviewInlineComment {
   readonly body: string;
 }
 
-const TOP_FIELDS = ['protocol', 'kind', 'round', 'subject_sha', 'risk_tier', 'reviewer', 'verdict', 'model_relation', 'summary', 'findings'] as const;
+const TOP_FIELDS = ['protocol', 'kind', 'round', 'subject_sha', 'risk_tier', 'reviewer', 'verdict', 'model_relation', 'summary', 'findings', 'confirmed_fixed'] as const;
 const MAX_TEXT = 20_000;
 const MAX_PATH = 1_024;
+const THREAD_ID = /^[A-Za-z0-9_=-]{1,256}$/;
+const REVIEW_MARKER = /^repo-harness acceptance review\nRound: ([1-9][0-9]*)\n/;
 
 function invalid(message: string): never {
   throw new Error('review publish receipt is invalid: ' + message);
@@ -128,7 +133,7 @@ function finding(value: unknown, index: number): ReviewPublishFinding {
 export function validateReviewPublishReceipt(value: unknown): ReviewPublishReceipt {
   if (!isRecord(value)) invalid('document must be an object');
   exactFields(value, TOP_FIELDS, 'receipt');
-  if (value.protocol !== 1) invalid('protocol must be 1');
+  if (value.protocol !== 2) invalid('protocol must be 2');
   if (value.kind !== 'repo-harness-review-publish-receipt') invalid('kind is invalid');
   if (typeof value.round !== 'number' || !Number.isSafeInteger(value.round) || value.round < 1) invalid('round must be a positive integer');
   if (!['low', 'medium', 'high'].includes(String(value.risk_tier))) invalid('risk_tier is invalid');
@@ -147,8 +152,14 @@ export function validateReviewPublishReceipt(value: unknown): ReviewPublishRecei
   const blocking = findings.filter((entry) => entry.severity !== 'P3');
   if (value.verdict === 'PASS' && blocking.length > 0) invalid('PASS cannot carry an unresolved P0/P1/P2 finding');
   if (value.verdict === 'FAIL' && blocking.length === 0) invalid('FAIL requires at least one P0/P1/P2 finding');
+  if (!Array.isArray(value.confirmed_fixed)) invalid('confirmed_fixed must be an array');
+  const confirmed = value.confirmed_fixed.map((entry) => {
+    if (typeof entry !== 'string' || !THREAD_ID.test(entry)) invalid('confirmed_fixed entries must be review thread node ids');
+    return entry;
+  });
+  if (new Set(confirmed).size !== confirmed.length) invalid('confirmed_fixed ids must be unique');
   return Object.freeze({
-    protocol: 1,
+    protocol: 2,
     kind: 'repo-harness-review-publish-receipt',
     round: value.round,
     subject_sha: gitSha(value.subject_sha),
@@ -158,6 +169,7 @@ export function validateReviewPublishReceipt(value: unknown): ReviewPublishRecei
     model_relation: value.model_relation as ModelRelation,
     summary: text(value.summary, 'summary'),
     findings: Object.freeze(findings),
+    confirmed_fixed: Object.freeze(confirmed),
   });
 }
 
@@ -214,6 +226,23 @@ export function renderAcceptanceReview(receipt: ReviewPublishReceipt): string {
     '## NITs',
     '',
     ...(nits.length ? nits.map((entry) => '- ' + entry.id + ': ' + entry.message) : ['None.']),
+    '',
+  ].join('\n');
+}
+
+/** The round of a review body that `renderAcceptanceReview` wrote, or null for any other review. */
+export function acceptanceReviewRound(body: string): number | null {
+  const match = REVIEW_MARKER.exec(body);
+  return match === null ? null : Number(match[1]);
+}
+
+/** The `review reply` that publish posts on a thread before it resolves it. */
+export function renderConfirmedReply(receipt: ReviewPublishReceipt, recordUrl: string): string {
+  return [
+    'repo-harness review reply',
+    'Agent: ' + reviewerIdentity(receipt) + ', read-only',
+    'Disposition: confirmed fixed in round ' + receipt.round + ' on ' + receipt.subject_sha,
+    'Why: ' + recordUrl,
     '',
   ].join('\n');
 }

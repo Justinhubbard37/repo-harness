@@ -459,7 +459,7 @@ export function decodeOpenIssuesRead(pages: unknown): BoardOpenIssuesReadV1 {
 }
 
 /** Only an account with write access holds a seat (`board.md`, Claims); other protocol comments are requests. */
-const WRITE_ACCESS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+export const WRITE_ACCESS: ReadonlySet<string> = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 /** The comments of one protocol kind from accounts with write access. */
 export function protocolComments(page: BoardCommentPageV1, header: string): BoardCommentV1[] {

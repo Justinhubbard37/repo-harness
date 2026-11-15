@@ -997,7 +997,7 @@ test('review publish turns a P1 receipt into one unresolved thread that merge re
   const root = mkdtempSync(join(tmpdir(), 'repo-harness-review-publish-')); tempDirs.push(root);
   const receiptPath = join(root, 'receipt.json');
   const receipt = {
-    protocol: 1 as const, kind: 'repo-harness-review-publish-receipt' as const, round: 2,
+    protocol: 2 as const, kind: 'repo-harness-review-publish-receipt' as const, round: 2, confirmed_fixed: [],
     subject_sha: PUBLISH_HEAD, risk_tier: 'high' as const,
     reviewer: { harness: 'claude' as const, actual_model: null },
     verdict: 'FAIL' as const, model_relation: 'unknown' as const, summary: 'One blocking finding and one NIT.',

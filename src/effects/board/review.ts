@@ -79,7 +79,7 @@ function packet(decision: StartDecision, start: ReviewSeatStartV1): string {
   const scope = start.delta_from === null
     ? 'Review the whole diff.'
     : `This is a delta review. Review the hunks that changed since ${start.delta_from} and the sibling cases of each earlier finding.`;
-  return `Task: review PR #${decision.pr} at head ${decision.head_sha} (tier ${decision.tier}), as the ${start.seat} of repo-harness-issue-flow. The worktree is at that head. ${scope} Read the PR body, the issue and the recorded evidence first: gh pr view ${decision.pr} --comments. You are read-only: print your acceptance receipt block (repo-harness-review-publish-receipt, subject_sha ${decision.head_sha}) in this pane and report to the orchestrator.`;
+  return `Task: review PR #${decision.pr} at head ${decision.head_sha} (tier ${decision.tier}), as the ${start.seat} of repo-harness-issue-flow. The worktree is at that head. ${scope} Read the PR body, the issue and the recorded evidence first: gh pr view ${decision.pr} --comments. You are read-only: print your acceptance receipt block (repo-harness-review-publish-receipt protocol 2, subject_sha ${decision.head_sha}; confirmed_fixed lists the node ids of the earlier-round review publish threads whose fix you confirmed at this head, or []) in this pane and report to the orchestrator.`;
 }
 
 /** Failures that stop `tab.new` before it sends a request. Any other failure may follow a created tab. */
