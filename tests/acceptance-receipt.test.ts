@@ -1007,6 +1007,10 @@ test('review publish turns a P1 receipt into one unresolved thread that merge re
     ],
   };
   writeFileSync(receiptPath, JSON.stringify(receipt));
+  const { confirmed_fixed: _confirmed, ...withoutConfirmed } = receipt;
+  expect(() => validateReviewPublishReceipt({ ...withoutConfirmed, protocol: 1 })).toThrow('protocol 1 is retired; protocol 2 requires confirmed_fixed');
+  expect(() => validateReviewPublishReceipt(withoutConfirmed)).toThrow('missing confirmed_fixed');
+  expect(() => validateReviewPublishReceipt({ ...receipt, unexpected: true })).toThrow('extra unexpected');
   expect(() => validateReviewPublishReceipt({ ...receipt, findings: receipt.findings.slice(1) })).toThrow('FAIL requires');
   expect(() => validateReviewPublishReceipt({ ...receipt, subject_sha: 'not-a-sha' })).toThrow('subject_sha');
   expect(() => validateReviewPublishReceipt({ ...receipt, findings: [{ ...receipt.findings[0], path: '../outside.ts' }] })).toThrow('repository-relative');

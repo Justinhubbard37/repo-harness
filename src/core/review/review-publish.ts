@@ -78,8 +78,12 @@ function invalid(message: string): never {
 
 function exactFields(value: Record<string, unknown>, fields: readonly string[], label: string): void {
   const keys = Object.keys(value).sort();
-  const expected = [...fields].sort();
-  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) invalid(label + ' fields are invalid');
+  const missing = fields.filter((field) => !Object.hasOwn(value, field));
+  const extra = keys.filter((key) => !fields.includes(key));
+  if (missing.length || extra.length) invalid(label + ' fields are invalid: ' + [
+    missing.length ? 'missing ' + missing.join(', ') : '',
+    extra.length ? 'extra ' + extra.join(', ') : '',
+  ].filter(Boolean).join('; '));
 }
 
 function text(value: unknown, field: string, max = MAX_TEXT): string {
@@ -132,8 +136,9 @@ function finding(value: unknown, index: number): ReviewPublishFinding {
 
 export function validateReviewPublishReceipt(value: unknown): ReviewPublishReceipt {
   if (!isRecord(value)) invalid('document must be an object');
-  exactFields(value, TOP_FIELDS, 'receipt');
+  if (value.protocol === 1) invalid('protocol 1 is retired; protocol 2 requires confirmed_fixed (an array of earlier-round thread ids)');
   if (value.protocol !== 2) invalid('protocol must be 2');
+  exactFields(value, TOP_FIELDS, 'receipt');
   if (value.kind !== 'repo-harness-review-publish-receipt') invalid('kind is invalid');
   if (typeof value.round !== 'number' || !Number.isSafeInteger(value.round) || value.round < 1) invalid('round must be a positive integer');
   if (!['low', 'medium', 'high'].includes(String(value.risk_tier))) invalid('risk_tier is invalid');
