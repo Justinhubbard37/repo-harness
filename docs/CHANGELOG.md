@@ -2,6 +2,28 @@
 
 All notable changes to this skill are documented here.
 
+## [0.33.1] - 2026-11-15
+
+### Added
+
+- `rh review publish` resolves the earlier-round review threads that the receipt names in its new `confirmed_fixed` field. It posts a `review reply` that cites the acceptance record on each thread, then resolves the thread. It leaves a confirmed thread that is already resolved unchanged and lists it in `already_resolved_threads`. It refuses, with nothing posted, an id that is not a thread opened by an earlier `review publish` round of the same PR, by an account with write access. It checks the PR head again before each reply and resolve. It stops at the first failed reply or resolve, at a reply or resolve whose response does not confirm the write, or at a head change, and names the record URL and the resolved and unresolved thread ids. The publish receipt is now protocol 2; a protocol 1 receipt is refused (#2768).
+
+### Changed
+
+- 0.33.0 ships `archctx` and `archctx-contracts` 0.15.0 (#2772). The 0.33.0 section names 0.14.1, because that section was fixed before #2772 merged. The protocols, renderers and features that repo-harness reads do not change. A machine that projects this repository runs `rh update` to get the new archctx, and the rolling projection writer republishes the projection once on the new pin (#2770).
+
+### Fixed
+
+- `rh doctor` now reports a retired pi extension that calls `repo-harness-hook` with the old `--route` argv protocol, and prints an `mv -n` command that moves it out of the extensions folder without overwriting an earlier archive. (#2776)
+- Fix the shared ArchContext daemon check for Bun global installs that hoist archctx. (#2782)
+- Rebuild the released managed values list for v0.33.0.
+
+### Documentation
+
+- Update the impact-scoped CI owner drift contract to check an exact reviewed surface and five mutation probes (#2767).
+- Use the pinned archctx in architecture guidance and correct the refactor statistics description. (#2774)
+- Document the single release prep PR and the post-release managed values rebuild.
+
 ## [0.33.0] - 2026-11-14
 
 ### Breaking
