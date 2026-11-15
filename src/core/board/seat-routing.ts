@@ -1,5 +1,5 @@
 import { weeklyRemainingPercent, type QuotaAccount, type QuotaAccountReport, type QuotaState } from './quota';
-import { PI_CODEX_MODEL_PREFIX, ROUTING_CLASSES, isPiCodexSeat, isReviewSeat, type CodexCreditMode, type RoutingClass, type SeatConfigV1, type SeatId, type SeatRoutingV1, type SeatsConfigV1 } from './seats-settings';
+import { PI_CODEX_MODEL_PREFIX, ROUTING_CLASSES, isPiCodexSeat, isReviewSeat, unavailablePiSeat, type CodexCreditMode, type RoutingClass, type SeatConfigV1, type SeatId, type SeatRoutingV1, type SeatsConfigV1 } from './seats-settings';
 
 export const CODEX_HYPER_MODEL = Object.freeze({ model: 'gpt-6-astra', effort: 'high' });
 /** The Claude control-seat model outside its config entry: the orchestrator while Claude is reserved, the advisor outside Claude hyper. */
@@ -83,6 +83,11 @@ function accountText(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuotas): 
   return account === null ? null : `${account} ${quota[account].state}${credits}${account === 'claude' && claudeReserved(quota) ? ', reserved for advisor and orchestrator' : ''}`;
 }
 
+/** Why the seat cannot take work now, or its account line: an unavailable Pi provider comes first (#2769). */
+function blockText(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuotas, routing: SeatRoutingV1): string | null {
+  return unavailablePiSeat(seat, routing) ?? accountText(id, seat, quota);
+}
+
 export function formatSeatModes(seats: SeatsConfigV1, quota: SeatAccountQuotas): string {
   const { claude_saving_below_remaining: saving, claude_hyper_at_or_above_remaining: hyper, codex_hyper_at_or_above_remaining: codexHyper } = seats.routing;
   const line = (id: QuotaAccount, label: string, bounds: string): string => {
@@ -115,23 +120,28 @@ export function selectSeatRoute(task: RoutingClass, seats: SeatsConfigV1, quota:
   // The section decoder refuses routes that name an unconfigured seat.
   const candidates = ids.map(id => ({ id, seat: effectiveSeatConfig(id, seats, quota)! })).filter(({ seat }) => allow(seat));
   if (candidates.length === 0) return { id: null, line: `route ${task}: none (no seat in the route may take this task)` };
-  const available = candidates.filter(({ id, seat }) => seatState(id, seat, quota) !== 'exhausted' && !(seatAccount(seat) === 'claude' && reserved));
+  const available = candidates.filter(({ id, seat }) => seatState(id, seat, quota) !== 'exhausted' && !(seatAccount(seat) === 'claude' && reserved)
+    && unavailablePiSeat(seat, seats.routing) === null);
   const selected = available.find(({ id, seat }) => seatState(id, seat, quota) !== 'unknown')
     ?? available.find(({ id, seat }) => seatState(id, seat, quota) === 'unknown');
   if (selected === undefined) {
-    const reasons = [...new Set(candidates.map(({ id, seat }) => accountText(id, seat, quota)))].join('; ');
+    const reasons = [...new Set(candidates.map(({ id, seat }) => blockText(id, seat, quota, seats.routing)))].join('; ');
     return { id: null, line: `route ${task}: none (${reasons}${task === 'frontend' ? '; frontend waits for claude' : ''})` };
   }
   const selectedState = seatState(selected.id, selected.seat, quota);
   const warning = selectedState === 'unknown' || selectedState === 'tight' ? `; ${accountText(selected.id, selected.seat, quota)}` : '';
-  const skipped = candidates.slice(0, candidates.indexOf(selected)).map(({ id, seat }) => `; skipped ${id}: ${accountText(id, seat, quota)}`).join('');
+  const skipped = candidates.slice(0, candidates.indexOf(selected)).map(({ id, seat }) => `; skipped ${id}: ${blockText(id, seat, quota, seats.routing)}`).join('');
   return { id: selected.id, seat: selected.seat, line: `route ${task}: ${selected.id} (${launchText(selected.seat)}${warning})${skipped}` };
 }
 
-/** A review seat waits while its account is exhausted and it is not on credits, or while Claude is reserved for a Claude seat. */
-function reviewSeatBlocked(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuotas): boolean {
+/**
+ * A review seat waits while its account is exhausted and it is not on credits, while Claude is reserved for a Claude
+ * seat, or while the owner lists its Pi provider as unavailable.
+ */
+function reviewSeatBlocked(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuotas, routing: SeatRoutingV1): boolean {
   const account = seatAccount(seat);
-  return account !== null && (seatState(id, seat, quota) === 'exhausted' || account === 'claude' && claudeReserved(quota));
+  return unavailablePiSeat(seat, routing) !== null
+    || account !== null && (seatState(id, seat, quota) === 'exhausted' || account === 'claude' && claudeReserved(quota));
 }
 
 const accountSuffix = (id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuotas): string => seatAccount(seat) === null ? '' : `; ${accountText(id, seat, quota)}`;
@@ -142,14 +152,15 @@ const accountSuffix = (id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuotas)
  */
 export function effectiveGatekeeper(seats: SeatsConfigV1, quota: SeatAccountQuotas): SeatRouteV1 {
   const gatekeeper = effectiveSeatConfig('gatekeeper', seats, quota);
-  if (!reviewSeatBlocked('gatekeeper', gatekeeper, quota)) {
+  if (!reviewSeatBlocked('gatekeeper', gatekeeper, quota, seats.routing)) {
     return { id: 'gatekeeper', seat: gatekeeper, line: `gatekeeper: gatekeeper (${launchText(gatekeeper)}${accountSuffix('gatekeeper', gatekeeper, quota)})` };
   }
-  const cause = accountText('gatekeeper', gatekeeper, quota);
+  const cause = blockText('gatekeeper', gatekeeper, quota, seats.routing);
   const fallback = effectiveSeatConfig('gatekeeper-fallback', seats, quota);
-  if (fallback === null || quota[seatAccount(gatekeeper)!].state !== 'exhausted') return { id: null, line: `gatekeeper: none (${cause})` };
-  if (reviewSeatBlocked('gatekeeper-fallback', fallback, quota)) {
-    return { id: null, line: `gatekeeper: none (${cause}; gatekeeper-fallback: ${accountText('gatekeeper-fallback', fallback, quota)})` };
+  const account = seatAccount(gatekeeper);
+  if (fallback === null || account === null || quota[account].state !== 'exhausted') return { id: null, line: `gatekeeper: none (${cause})` };
+  if (reviewSeatBlocked('gatekeeper-fallback', fallback, quota, seats.routing)) {
+    return { id: null, line: `gatekeeper: none (${cause}; gatekeeper-fallback: ${blockText('gatekeeper-fallback', fallback, quota, seats.routing)})` };
   }
   return { id: 'gatekeeper-fallback', seat: fallback,
     line: `gatekeeper: gatekeeper-fallback (${launchText(fallback)}${accountSuffix('gatekeeper-fallback', fallback, quota)}; gatekeeper: ${cause})` };
@@ -164,9 +175,11 @@ export function formatSeatRoutes(seats: SeatsConfigV1, quota: SeatAccountQuotas)
     : 'explorer: default');
   lines.push(effectiveGatekeeper(seats, quota).line);
   const reviewer = effectiveSeatConfig('reviewer', seats, quota);
-  lines.push(reviewSeatBlocked('reviewer', reviewer, quota)
-    ? `reviewer: none (${accountText('reviewer', reviewer, quota)})`
+  lines.push(reviewSeatBlocked('reviewer', reviewer, quota, seats.routing)
+    ? `reviewer: none (${blockText('reviewer', reviewer, quota, seats.routing)})`
     : `reviewer: reviewer (${launchText(reviewer)}${accountSuffix('reviewer', reviewer, quota)})`);
-  lines.push(`advisor: advisor (${launchText(effectiveSeatConfig('advisor', seats, quota))})`);
+  const advisor = effectiveSeatConfig('advisor', seats, quota);
+  const advisorBlock = unavailablePiSeat(advisor, seats.routing);
+  lines.push(advisorBlock === null ? `advisor: advisor (${launchText(advisor)})` : `advisor: none (${advisorBlock})`);
   return lines.join('\n');
 }

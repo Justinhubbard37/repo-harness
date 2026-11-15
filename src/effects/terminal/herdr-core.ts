@@ -97,6 +97,8 @@ export const RH_LABEL = {
   issue: 'repo-harness.issue',
   pr: 'repo-harness.pr',
   parent: 'repo-harness.parent',
+  /** The owner decision URL that lifted the Claude quota reservation for one seat launch (#2769). */
+  ownerException: 'repo-harness.owner-exception',
   /** A resident repo-harness program that is not a seat (#1509). */
   service: 'repo-harness.service',
 } as const;

@@ -2,13 +2,15 @@ import { Command } from 'commander';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { CLAUDE_BUILTIN_AGENT_TYPES, SeatPaneNameError, buildSeatLaunch, seatPaneName, seatTabName, type SeatLaunchV1 } from '../../core/board/seat-launch';
-import { LAUNCH_SEAT_IDS, SeatsConfigMigrationRequiredError, decodeSeatsConfig, isWorkerSeat, type LaunchSeatId, type SeatConfigV1, type SeatsConfigV1 } from '../../core/board/seats-settings';
+import { LAUNCH_SEAT_IDS, SeatsConfigMigrationRequiredError, decodeSeatsConfig, isWorkerSeat, unavailablePiSeat, type LaunchSeatId, type SeatConfigV1, type SeatsConfigV1 } from '../../core/board/seats-settings';
 import { claudeReserved, effectiveGatekeeper, effectiveSeatConfig, seatAccount, seatAccountQuotas, seatState, type SeatRouteV1 } from '../../core/board/seat-routing';
 import { classifyQuotaReading, type QuotaAccount, type QuotaReading } from '../../core/board/quota';
 import { readClaudeQuota, readCodexQuota } from '../../effects/board/quota';
 import { version as PACKAGE_VERSION } from '../../../package.json';
 import { readGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { resolveGitCommonDirectory } from '../../effects/git/common-directory';
+import { gitExecFileSync } from '../../effects/git/runner';
+import { githubRemoteRepository } from '../../core/board/source';
 import { ClaudeAgentTypesError, claudeHostAgentTypes } from '../../effects/board/claude-agent-types';
 import { RepoHarnessRegistryStrictError, canonicalRepoPath, readRepoHarnessRegistryStrictSnapshot, repoCheckoutProbeEnv, setRepoHarnessPanePrefix } from '../../effects/repo-registry';
 import { HerdrCoreError, RH_LABEL, hcLabel, hcLabelPairs, type HcLabels } from '../../effects/terminal/herdr-core';
@@ -21,7 +23,7 @@ import { seatResetAction, seatResetIdentity, seatResetSteps, type SeatResetIdent
 const CLI_ENTRY = fileURLToPath(new URL('../index.ts', import.meta.url));
 
 class SeatsCommandError extends Error {
-  constructor(readonly code: 'seat_unknown' | 'seat_not_configured' | 'seat_quota_exhausted' | 'seat_quota_reserved' | 'config_invalid' | 'label_value_invalid' | 'repository_id_required' | 'terminal_unknown' | 'seat_identity_missing' | 'seat_session_unknown' | 'seat_context_unknown', message: string) {
+  constructor(readonly code: 'seat_unknown' | 'seat_not_configured' | 'seat_quota_exhausted' | 'seat_quota_reserved' | 'seat_provider_unavailable' | 'owner_exception_invalid' | 'config_invalid' | 'label_value_invalid' | 'repository_id_required' | 'terminal_unknown' | 'seat_identity_missing' | 'seat_session_unknown' | 'seat_context_unknown', message: string) {
     super(message);
   }
 }
@@ -35,13 +37,44 @@ export interface SeatLabelInput {
   /** Pane name inputs only (#1544): the release item digits and the slice word. */
   readonly release?: string;
   readonly qualifier?: string;
+  /** An owner decision URL on this repository (#2769): it lifts the Claude quota reservation for this one launch. */
+  readonly ownerException?: string;
 }
 
 const POSITIVE = /^[1-9][0-9]*$/u;
 
 /** The seat labels that the board reads (#1505), or none without `--repository-id`. The GitHub numeric repository id identifies the repository. */
+const OWNER_DECISION_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/[1-9][0-9]*(?:#(?:issuecomment-|pullrequestreview-|discussion_r)[1-9][0-9]*)?$/u;
+
+/** The `owner/name` of an owner decision URL, or the refusal. The URL shape keeps the label value free of shell and label syntax. */
+function ownerDecisionRepository(url: string): string {
+  const match = OWNER_DECISION_URL.exec(url);
+  if (match === null) {
+    throw new SeatsCommandError('owner_exception_invalid', '--owner-exception must be a https://github.com/<owner>/<repo>/issues/<n> or /pull/<n> URL, optionally with a comment or review anchor.');
+  }
+  return match[1]!.toLowerCase();
+}
+
+/** The owner exception must name an issue or PR of the origin repository of `cwd`. */
+function checkOwnerException(url: string, cwd: string, env: NodeJS.ProcessEnv): void {
+  const repository = ownerDecisionRepository(url);
+  let origin: string | null;
+  try {
+    origin = githubRemoteRepository(gitExecFileSync(['remote', 'get-url', 'origin'], { cwd, env: repoCheckoutProbeEnv(env), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch {
+    origin = null;
+  }
+  if (origin !== repository) {
+    throw new SeatsCommandError('owner_exception_invalid', `--owner-exception names ${repository}, but the origin of ${cwd} is ${origin ?? 'no GitHub repository'}.`);
+  }
+}
+
 function seatLabels(seat: LaunchSeatId, input: SeatLabelInput): HcLabels | undefined {
-  const { repositoryId, release, qualifier, ...dispatch } = input;
+  const { repositoryId, release, qualifier, ownerException, ...dispatch } = input;
+  if (ownerException !== undefined) {
+    ownerDecisionRepository(ownerException);
+    if (repositoryId === undefined) throw new SeatsCommandError('repository_id_required', '--owner-exception needs --repository-id, so the seat label records it.');
+  }
   for (const [name, value] of Object.entries({ repositoryId, ...dispatch })) {
     if (value !== undefined && !POSITIVE.test(value)) throw new SeatsCommandError('label_value_invalid', `--${name === 'repositoryId' ? 'repository-id' : name} must be a positive decimal integer.`);
   }
@@ -61,6 +94,7 @@ function seatLabels(seat: LaunchSeatId, input: SeatLabelInput): HcLabels | undef
     ...(dispatch.issue === undefined ? {} : { [RH_LABEL.issue]: dispatch.issue }),
     ...(dispatch.pr === undefined ? {} : { [RH_LABEL.pr]: dispatch.pr }),
     ...(dispatch.parent === undefined ? {} : { [RH_LABEL.parent]: dispatch.parent }),
+    ...(ownerException === undefined ? {} : { [RH_LABEL.ownerException]: ownerException }),
   };
 }
 
@@ -73,12 +107,17 @@ function seatId(seat: string): LaunchSeatId {
 /**
  * The seat argv labels its own terminal before the agent starts (#1695). `herdr-app do` runs the argv in the new hc
  * terminal, so `seats label` labels `HC_TERMINAL_ID`, then `exec` replaces the shell with the agent. When the label
- * fails, the shell stops before the agent starts. Each token in the script is a seat id or a checked positive integer.
+ * fails, the shell stops before the agent starts. Each token in the script is a seat id or a checked positive integer;
+ * the owner exception URL goes in as the positional `$2`, never into the script text.
  */
 function selfLabelingArgv(seat: LaunchSeatId, input: SeatLabelInput, agent: readonly string[]): string[] {
   const flags = ([['--repository-id', input.repositoryId], ['--issue', input.issue], ['--pr', input.pr], ['--parent', input.parent]] as const)
     .flatMap(([flag, value]) => value === undefined ? [] : [flag, value]);
-  return ['/bin/sh', '-c', `"$0" "$1" seats label ${[seat, ...flags].join(' ')} && shift && exec "$@"`, process.execPath, CLI_ENTRY, ...agent];
+  if (input.ownerException === undefined) {
+    return ['/bin/sh', '-c', `"$0" "$1" seats label ${[seat, ...flags].join(' ')} && shift && exec "$@"`, process.execPath, CLI_ENTRY, ...agent];
+  }
+  return ['/bin/sh', '-c', `"$0" "$1" seats label ${[seat, ...flags].join(' ')} --owner-exception "$2" && shift 2 && exec "$@"`,
+    process.execPath, CLI_ENTRY, input.ownerException, ...agent];
 }
 
 /** `seats label`: set the seat labels on the calling hc terminal. The seat argv runs it before the agent starts. */
@@ -113,7 +152,7 @@ function plannedGatekeeper(route: SeatRouteV1): SeatConfigV1 {
  * The seat config that launches for `id` under the current quota, or the quota refusal. `modeKnown` is false when the
  * account of the launched seat has no fresh weekly reading (missing, unreadable or stale capture), so its mode is unknown.
  */
-async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configured: SeatConfigV1, env: NodeJS.ProcessEnv): Promise<{
+async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configured: SeatConfigV1, env: NodeJS.ProcessEnv, ownerException: string | undefined): Promise<{
   readonly seat: SeatConfigV1; readonly modeKnown: boolean;
 }> {
   const readings: QuotaReading[] = [];
@@ -136,14 +175,25 @@ async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configur
   if (account !== null && seatState(launchedId, launched, quota) === 'exhausted') {
     throw new SeatsCommandError('seat_quota_exhausted', `The ${account} account is exhausted. Wait for quota before launching ${id}.${gatekeeper === null ? '' : ` Route ${gatekeeper.line}`}`);
   }
-  if (account === 'claude' && id !== 'advisor' && id !== 'orchestrator' && claudeReserved(quota)) {
-    throw new SeatsCommandError('seat_quota_reserved', 'Claude is reserved for the advisor and the orchestrator. Use the quota routes.');
+  const reserved = account === 'claude' && id !== 'advisor' && id !== 'orchestrator' && claudeReserved(quota);
+  if (reserved && ownerException === undefined) {
+    throw new SeatsCommandError('seat_quota_reserved', 'Claude is reserved for the advisor and the orchestrator. Use the quota routes, or pass --owner-exception <owner decision URL> for one launch.');
   }
-  return { seat: gatekeeper?.id === 'gatekeeper-fallback' ? gatekeeper.seat : effectiveSeatConfig(id, seats, quota)!,
-    modeKnown: account === null || quota[account].mode !== 'unknown' };
+  // The exception lifts only this refusal, so a launch without one has nothing to record.
+  if (!reserved && ownerException !== undefined) {
+    throw new SeatsCommandError('owner_exception_invalid', `The ${id} launch has no Claude quota reservation to lift. Launch it without --owner-exception.`);
+  }
+  const seat = gatekeeper?.id === 'gatekeeper-fallback' ? gatekeeper.seat : effectiveSeatConfig(id, seats, quota)!;
+  const unavailable = unavailablePiSeat(seat, seats.routing);
+  if (unavailable !== null) throw new SeatsCommandError('seat_provider_unavailable', `The ${id} seat cannot launch: ${unavailable}. See the quota routes.`);
+  return { seat, modeKnown: account === null || quota[account].mode !== 'unknown' };
 }
 
-type SeatLaunchResult = SeatLaunchV1 & { readonly labels: readonly string[]; readonly name: string | null; readonly tab: string | null };
+type SeatLaunchResult = SeatLaunchV1 & {
+  readonly labels: readonly string[]; readonly name: string | null; readonly tab: string | null;
+  /** The owner decision URL that lifted the Claude quota reservation for this launch (#2769). */
+  readonly ownerException: string | null;
+};
 
 export async function seatLaunch(seat: string, labels: SeatLabelInput = {}, env: NodeJS.ProcessEnv = process.env, cwd = process.cwd(), planned?: SeatRouteV1): Promise<SeatLaunchResult> {
   return (await effectiveSeatLaunch(seat, labels, env, cwd, planned)).launch;
@@ -174,8 +224,12 @@ async function effectiveSeatLaunch(seat: string, labels: SeatLabelInput, env: No
   if (configured === null) throw new SeatsCommandError('seat_not_configured', `The ${id} seat is not configured. Configure it in the seats section before launch.`);
   // The board review passes the gatekeeper route that its plan checked: the launched seat is the planned one, with no second quota read.
   // The config is still read for the source of the brief and for the migration error.
+  if (labels.ownerException !== undefined) {
+    if (planned !== undefined) throw new SeatsCommandError('owner_exception_invalid', 'A planned gatekeeper launch takes no owner exception.');
+    checkOwnerException(labels.ownerException, cwd, env);
+  }
   const { seat: effective, modeKnown } = id === 'gatekeeper' && planned !== undefined ? { seat: plannedGatekeeper(planned), modeKnown: true }
-    : await quotaCheckedSeat(id, seats, configured, env);
+    : await quotaCheckedSeat(id, seats, configured, env, labels.ownerException);
   if (effective.runtime === 'pi') await assertPiShell(env, cwd);
   const labelSet = seatLabels(id, labels);
   // The pane name needs the registry prefix, so it comes only with the seat labels.
@@ -192,7 +246,7 @@ async function effectiveSeatLaunch(seat: string, labels: SeatLabelInput, env: No
   return { effective, modeKnown, launch: {
     ...launch,
     argv: labelSet === undefined ? launch.argv : selfLabelingArgv(id, labels, launch.argv),
-    labels: labelSet === undefined ? [] : hcLabelPairs(labelSet), name, tab,
+    labels: labelSet === undefined ? [] : hcLabelPairs(labelSet), name, tab, ownerException: labels.ownerException ?? null,
   } };
 }
 
@@ -231,12 +285,14 @@ export function buildSeatsCommand(loadNotify?: () => Promise<SeatResetNotify>): 
     .option('--parent <n>', 'Parent issue number for the seat labels and the tab name')
     .option('--release <digits>', 'Release item of a worker pane name, for example 0252 for rh-w-rel0252')
     .option('--qualifier <word>', 'Slice word of a worker pane name when one issue has two live worker panes')
+    .option('--owner-exception <url>', 'Owner decision URL on an issue or PR of this repository: lifts the Claude quota reservation for this one launch; needs --repository-id')
     .option('--json', 'Print the argv, the seat brief, the source, the limits, the labels, the pane name and the tab name as JSON')
     .action(async (seat: string, options: SeatLabelInput & { json?: boolean }) => {
       let launch: Awaited<ReturnType<typeof seatLaunch>>;
       try {
         launch = await seatLaunch(seat, {
           repositoryId: options.repositoryId, issue: options.issue, pr: options.pr, parent: options.parent, release: options.release, qualifier: options.qualifier,
+          ownerException: options.ownerException,
         }, process.env, process.cwd());
       } catch (error) {
         const code = error instanceof SeatsCommandError || error instanceof ClaudeAgentTypesError || error instanceof PiFleetRolesError || error instanceof PiShellError || error instanceof SeatPaneNameError
@@ -259,6 +315,7 @@ export function buildSeatsCommand(loadNotify?: () => Promise<SeatResetNotify>): 
       }
       if (launch.labels.length > 0) process.stderr.write(`labels: ${launch.labels.join(' ')}\n`);
       if (launch.name !== null) process.stderr.write(`name: ${launch.name}\ntab: ${launch.tab}\n`);
+      if (launch.ownerException !== null) process.stderr.write(`owner exception: ${launch.ownerException}\n`);
     });
   seats
     .command('label')
@@ -268,9 +325,10 @@ export function buildSeatsCommand(loadNotify?: () => Promise<SeatResetNotify>): 
     .option('--issue <n>', 'Issue number')
     .option('--pr <n>', 'PR number')
     .option('--parent <n>', 'Parent issue number')
+    .option('--owner-exception <url>', 'Owner decision URL that lifted the Claude quota reservation for this launch')
     .action((seat: string, options: SeatLabelInput) => {
       try {
-        labelOwnTerminal(seat, { repositoryId: options.repositoryId, issue: options.issue, pr: options.pr, parent: options.parent });
+        labelOwnTerminal(seat, { repositoryId: options.repositoryId, issue: options.issue, pr: options.pr, parent: options.parent, ownerException: options.ownerException });
       } catch (error) {
         if (!(error instanceof SeatsCommandError || error instanceof HerdrCoreError)) throw error;
         const code = error instanceof SeatsCommandError ? error.code : 'label_failed';

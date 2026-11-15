@@ -67,9 +67,14 @@ export type SeatRoutingV1 = { readonly [task in RoutingClass]: readonly WorkerSe
   /** Below this credit balance the credit mode acts as `off`. */
   readonly codex_credit_floor: number;
   readonly low_quota_explorer: SeatModelV1;
+  /**
+   * The owner's list of Pi model prefixes that routing does not pick (#2769), such as `magpie/anthropic` for an API key
+   * that has no budget left. The quota reader sees only the subscription windows, not this spend.
+   */
+  readonly unavailable_pi_providers: readonly string[];
 };
 export const ROUTING_KEYS = [...ROUTING_CLASSES, 'claude_saving_below_remaining', 'claude_hyper_at_or_above_remaining', 'codex_hyper_at_or_above_remaining',
-  'codex_credit_mode', 'codex_credit_floor', 'low_quota_explorer'] as const satisfies readonly (keyof SeatRoutingV1)[];
+  'codex_credit_mode', 'codex_credit_floor', 'low_quota_explorer', 'unavailable_pi_providers'] as const satisfies readonly (keyof SeatRoutingV1)[];
 export type SeatsConfigV1 = { readonly [seat in Exclude<SeatId, OptionalSeatId>]: SeatConfigV1 } & {
   readonly [seat in OptionalSeatId]: SeatConfigV1 | null;
 } & {
@@ -110,16 +115,18 @@ export const DEFAULT_SEATS_CONFIG: SeatsConfigV1 = Object.freeze({
     simple_fast: Object.freeze(['worker'] as const),
     frontend: Object.freeze(['worker-important', 'worker-important-fast'] as const),
     low_quota_explorer: Object.freeze({ model: 'haiku', effort: 'high' }),
+    unavailable_pi_providers: Object.freeze([]),
   }),
 });
 
 export const SEATS_CONFIG_UPDATE_ACTION = 'rh update';
 
-/** The routing keys that came after the first stored sections (#2630, #2633): `rh update` adds each with its default. */
+/** The routing keys that came after the first stored sections (#2630, #2633, #2769): `rh update` adds each with its default. */
 export const INTRODUCED_ROUTING_DEFAULTS = Object.freeze({
   codex_credit_mode: DEFAULT_SEATS_CONFIG.routing.codex_credit_mode,
   codex_credit_floor: DEFAULT_SEATS_CONFIG.routing.codex_credit_floor,
   claude_hyper_at_or_above_remaining: DEFAULT_SEATS_CONFIG.routing.claude_hyper_at_or_above_remaining,
+  unavailable_pi_providers: DEFAULT_SEATS_CONFIG.routing.unavailable_pi_providers,
 }) satisfies Partial<SeatRoutingV1>;
 
 export class SeatsConfigMigrationRequiredError extends Error {
@@ -215,6 +222,21 @@ function ascending<T extends string>(value: unknown, accept: (item: unknown) => 
 
 const isTool = (value: unknown): value is SeatTool => SEAT_TOOLS.includes(value as SeatTool);
 const isRole = (value: unknown): value is string => typeof value === 'string' && ROLE.test(value);
+const PI_PROVIDER = /^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/u;
+const isPiProvider = (value: unknown): value is string => typeof value === 'string' && PI_PROVIDER.test(value);
+
+/**
+ * Why a Pi seat may start a provider that the owner lists as unavailable, or null (#2769). A listed prefix matches the
+ * seat model at a `/` boundary. While the list is non-empty, a Pi seat without a model is unavailable too: Pi then picks
+ * its own host default provider, and routing does not read Pi settings as a second authority for that provider.
+ */
+export function unavailablePiSeat(seat: { readonly runtime: SeatRuntime; readonly model: string | null }, routing: SeatRoutingV1): string | null {
+  if (seat.runtime !== 'pi' || routing.unavailable_pi_providers.length === 0) return null;
+  const model = seat.model;
+  if (model === null) return 'pi default provider unknown: give the seat an explicit model or empty seats.routing.unavailable_pi_providers';
+  const provider = routing.unavailable_pi_providers.find(prefix => model.startsWith(`${prefix}/`));
+  return provider === undefined ? null : `pi provider ${provider} unavailable`;
+}
 
 function decodeSeat(id: SeatId, value: unknown, code: string): SeatConfigV1 {
   const record = object(value, ['runtime', 'model', 'effort', 'tools', 'fleet'], code);
@@ -259,7 +281,8 @@ function decodeRouting(value: unknown, code: string): SeatRoutingV1 {
     codex_credit_mode: CODEX_CREDIT_MODES.includes(record.codex_credit_mode as CodexCreditMode) ? record.codex_credit_mode as CodexCreditMode : invalid(code),
     codex_credit_floor: typeof record.codex_credit_floor === 'number' && Number.isFinite(record.codex_credit_floor) && record.codex_credit_floor >= 0
       ? record.codex_credit_floor : invalid(code),
-    low_quota_explorer: decodeModel(record.low_quota_explorer, code) };
+    low_quota_explorer: decodeModel(record.low_quota_explorer, code),
+    unavailable_pi_providers: ascending(record.unavailable_pi_providers, isPiProvider, code) };
 }
 
 function decodeSeatsRecord(record: Record<string, unknown>, code: string, requireExplorerModel = true): SeatsConfigV1 {

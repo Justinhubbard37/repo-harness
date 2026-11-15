@@ -38,7 +38,7 @@ test('update removes stored routing mode and hyper values once, keeps a null wor
   try {
     mkdirSync(join(home, '.repo-harness'));
     const path = join(home, '.repo-harness', 'config.json');
-    const { claude_saving_below_remaining: _claude, claude_hyper_at_or_above_remaining: _claudeHyper, codex_hyper_at_or_above_remaining: _codex, codex_credit_mode: _mode, codex_credit_floor: _floor, ...routes } = DEFAULT_SEATS_CONFIG.routing;
+    const { claude_saving_below_remaining: _claude, claude_hyper_at_or_above_remaining: _claudeHyper, codex_hyper_at_or_above_remaining: _codex, codex_credit_mode: _mode, codex_credit_floor: _floor, unavailable_pi_providers: _unavailable, ...routes } = DEFAULT_SEATS_CONFIG.routing;
     const seats = { ...DEFAULT_SEATS_CONFIG, 'worker-light': null, routing: { ...routes, mode: 'hyper', hyper: {
       claude: { model: 'opus', effort: 'high' }, advisor: { model: 'opus', effort: 'max' }, codex: { model: 'gpt-6-astra', effort: 'high' },
     } } };
