@@ -1914,7 +1914,11 @@ function bunExecutable() {
  * resolvePackageLocalArchctx() is the only rule: it checks the version, the
  * Node engine contract, bin.archctx and the binary. This probe runs that
  * function under Bun from the repo-harness package root and reports its
- * answer. The runnable command, with the resolved Node path, comes from
+ * answer. It also validates `<Bun global>/node_modules/archctx`, the copy that
+ * `rh update` links as PATH archctx. Only that directory counts: an ancestor
+ * node_modules copy is outside the Bun global install and is not the managed
+ * link. The
+ * runnable command, with the resolved Node path, comes from
  * `rh architecture-projection status --json`. The selection is the
  * one that the shell gate read above: without `selected` the probe loads no
  * provider, `selected` is false, and the CodeGraph and archctx detectors
@@ -1929,30 +1933,39 @@ function detectManagedArchctx() {
   const bun = bunExecutable();
   if (!bun) return unusable("bun is not available, so the managed archctx cannot be resolved");
   const script = [
-    "const [contracts, providers, consumerRoot] = process.argv.slice(1);",
+    "const [contracts, providers, skillProjection, consumerRoot] = process.argv.slice(1);",
     "const { architecturePort, registerArchitecturePorts } = await import(contracts);",
     "registerArchitecturePorts((await import(providers)).ARCHITECTURE_PROVIDERS);",
     "const runtime = architecturePort('runtime');",
-    "try { console.log(JSON.stringify({ ok: true, required: runtime.requiredArchctxVersion, resolved: runtime.resolvePackageLocalArchctx(consumerRoot) })); }",
-    "catch (error) { console.log(JSON.stringify({ ok: false, required: runtime.requiredArchctxVersion, reason: error instanceof Error ? error.message : String(error) })); }",
+    "const { existsSync } = await import('fs');",
+    "const { resolve } = await import('path');",
+    "const globalPackageRoot = (await import(skillProjection)).bunGlobalPackageRoot(process.env);",
+    "const globalRoot = globalPackageRoot && resolve(globalPackageRoot, '..', '..');",
+    "let linkedBinPath = null;",
+    "try { if (globalRoot && existsSync(resolve(globalRoot, 'node_modules', 'archctx', 'package.json'))) linkedBinPath = runtime.resolvePackageLocalArchctx(globalRoot).binaryPath; } catch { /* An invalid copy is not the managed link. */ }",
+    "try { console.log(JSON.stringify({ ok: true, required: runtime.requiredArchctxVersion, resolved: runtime.resolvePackageLocalArchctx(consumerRoot), linkedBinPath })); }",
+    "catch (error) { console.log(JSON.stringify({ ok: false, required: runtime.requiredArchctxVersion, reason: error instanceof Error ? error.message : String(error), linkedBinPath })); }",
   ].join("\n");
   const result = run(bun, [
     "-e", script,
     path.join(PACKAGE_ROOT, "src", "core", "architecture", "contracts.ts"),
     path.join(PACKAGE_ROOT, "src", "effects", "architecture", "providers.ts"),
+    path.join(PACKAGE_ROOT, "src", "cli", "installer", "skill-projection.ts"),
     PACKAGE_ROOT,
   ], { cwd: PACKAGE_ROOT, timeoutMs: 15000 });
   const answer = result.ok ? parseJson(result.stdout.trim()) : null;
   if (!answer || typeof answer !== "object") {
     return unusable(`the provider resolution did not run: ${(result.error || result.stderr || result.stdout).trim().slice(0, 300) || `exit ${result.status}`}`);
   }
-  if (!answer.ok) return { ...unusable(answer.reason), required_version: answer.required };
+  // The global link is validated on its own, so a failed local copy does not make it unrelated.
+  if (!answer.ok) return { ...unusable(answer.reason), required_version: answer.required, linked_bin_path: answer.linkedBinPath };
   return {
     status: "present",
     selected: true,
     version: answer.resolved.version,
     required_version: answer.required,
     bin_path: answer.resolved.binaryPath,
+    linked_bin_path: answer.linkedBinPath,
     node_range: answer.resolved.nodeRange,
     reason: null,
     command_source: ARCHCTX_STATUS_COMMAND,
@@ -1978,7 +1991,8 @@ function detectArchctx(managed) {
     packageRoot = parent;
   }
   pathVersion ??= versionOutput && !versionOutput.includes("\n") ? versionOutput : null;
-  const unrelated = !!pathBin && realBin !== resolveRealPath(managed.bin_path || "");
+  // `rh update` links PATH archctx to the Bun global copy at the pin; repo-harness may run a nested copy.
+  const unrelated = !!pathBin && ![managed.bin_path, managed.linked_bin_path].some(bin => bin && realBin === resolveRealPath(bin));
   const warnings = [];
   if (managed.status !== "present") {
     warnings.push(`Managed archctx is not usable: ${managed.reason}. Run rh update.`);

@@ -1889,6 +1889,58 @@ describe("check-agent-tooling", () => {
     }
   }, 15000);
 
+  // An off-pin nested copy fails on its own; the valid global link stays managed. An off-pin global link
+  // stays unrelated, and so does a pinned copy in an ancestor node_modules when the Bun global copy is absent.
+  for (const [layout, globalOnPin, nestedOnPin] of [["hoisted only", true, true], ["hoisted plus nested", true, true], ["hoisted plus off-pin nested", true, false], ["off-pin hoisted", false, true], ["ancestor only", true, true]] as const) {
+    test(`classifies the PATH link to the Bun global archctx (${layout})`, () => {
+      const envRoot = setupFakeEnvironment("check-agent-tooling-archctx-hoisted");
+      try {
+        writeArchctxRepo(envRoot.root, "registry");
+        const packaged = JSON.parse(readFileSync(join(ROOT, "node_modules", "archctx", "package.json"), "utf-8"));
+        const writeArchctxCopy = (dir: string, onPin: boolean) => {
+          const version = onPin ? packaged.version : "0.0.0-off-pin";
+          mkdirSync(join(dir, "bin"), { recursive: true });
+          writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "archctx", version, engines: packaged.engines, bin: { archctx: "./bin/archctx.mjs" } }));
+          writeExecutable(join(dir, "bin", "archctx.mjs"), `#!/bin/sh\necho ${version}\n`);
+        };
+        const globalModules = join(envRoot.home, ".bun", "install", "global", "node_modules");
+        const linkedCopy = layout === "ancestor only" ? join(envRoot.home, "node_modules", "archctx") : join(globalModules, "archctx");
+        writeArchctxCopy(linkedCopy, globalOnPin);
+        symlinkSync(join(linkedCopy, "bin", "archctx.mjs"), join(envRoot.fakeBin, "archctx"));
+        // Hoisted only runs the source checkout; hoisted plus nested runs the installed package with its nested copy.
+        let script = SCRIPT;
+        if (layout.includes("nested")) {
+          const packageRoot = join(globalModules, "repo-harness");
+          mkdirSync(join(packageRoot, "scripts"), { recursive: true });
+          copyFileSync(SCRIPT, join(packageRoot, "scripts", "check-agent-tooling.sh"));
+          for (const dir of ["agents", "assets", "src"]) symlinkSync(join(ROOT, dir), join(packageRoot, dir));
+          symlinkSync(join(ROOT, "scripts", "lib"), join(packageRoot, "scripts", "lib"));
+          writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "repo-harness" }));
+          writeArchctxCopy(join(packageRoot, "node_modules", "archctx"), nestedOnPin);
+          script = join(packageRoot, "scripts", "check-agent-tooling.sh");
+        }
+
+        const res = spawnSync("bash", [script, "--json", "--host", "claude"], {
+          cwd: envRoot.root, encoding: "utf-8", env: { ...process.env, HOME: envRoot.home, BUN_INSTALL: "", PATH: envRoot.fakeBin },
+        });
+
+        expect(res.status).toBe(0);
+        const archctx = JSON.parse(res.stdout).tools.archctx;
+        expect(archctx.managed.status).toBe(nestedOnPin ? "present" : "invalid");
+        if (globalOnPin && layout !== "ancestor only") {
+          expect(archctx.path_copy).toMatchObject({ relation: "managed", fix_command: null, fix_note: null });
+          expect(archctx.warnings).toEqual(nestedOnPin ? [] : [expect.stringContaining("Managed archctx is not usable")]);
+        } else {
+          expect(archctx.path_copy.relation).toBe("unrelated");
+          expect(archctx.warnings).toEqual([expect.stringMatching(/is unrelated to the managed archctx .*Remove /)]);
+        }
+        if (nestedOnPin && globalOnPin && layout !== "ancestor only") expect(archctx.readiness).toBe("advisory");
+      } finally {
+        rmSync(envRoot.root, { recursive: true, force: true });
+      }
+    }, 15000);
+  }
+
   test("reports a managed archctx with the right version but a missing binary as invalid", () => {
     const envRoot = setupFakeEnvironment("check-agent-tooling-archctx-missing-binary");
     try {
