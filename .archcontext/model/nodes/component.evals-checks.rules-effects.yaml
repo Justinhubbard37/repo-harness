@@ -1,0 +1,15 @@
+schemaVersion: archcontext.node/v2
+id: component.evals-checks.rules-effects
+kind: component
+name: Rules Promotion Effects
+status: active
+parent: capability.verification.evals-checks
+layer: effects
+summary: Files one rules promotion issue under the rules parent and reconciles its route label and sub-issue link through the GitHub runner.
+responsibilities:
+  - Read issue bodies and paged sub-issues to find the parent and prevent duplicate open candidates.
+  - Create the exact promotion prompt as an issue and add its route label and parent link after reading the current state.
+  - Complete an interrupted filing from its candidate marker without dispatching a seat or writing repository files.
+source:
+  include:
+    - src/effects/rules/**

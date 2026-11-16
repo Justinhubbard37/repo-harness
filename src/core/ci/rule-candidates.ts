@@ -31,6 +31,10 @@ export interface TriageThemeV1 {
   readonly key: string;
   readonly theme: string;
   readonly name: string | null;
+  readonly prevention_rule: string;
+  readonly why: string;
+  /** Every correction source across the theme's entries, unique and sorted. */
+  readonly correction_sources: readonly string[];
   readonly seen: number;
   readonly enforced_by: string;
   readonly promoted: string | null;
@@ -114,6 +118,12 @@ function freeText(value: unknown, what: string): string {
   return value;
 }
 
+/** The ledger parser accepts continued lesson prose with no short-field length limit. */
+function lessonProse(value: unknown, what: string): string {
+  if (typeof value !== 'string' || CONTROL.test(value)) throw new Error(`rules triage invalid: ${what}`);
+  return value;
+}
+
 function keys(value: unknown, expected: readonly string[], what: string): Record<string, unknown> {
   if (!isRecord(value) || Object.keys(value).sort().join(',') !== [...expected].sort().join(',')) {
     throw new Error(`rules triage invalid: ${what}`);
@@ -132,13 +142,16 @@ function list<T>(value: unknown, what: string, read: (item: unknown, at: number)
 }
 
 function decodeTheme(value: unknown, at: number): TriageThemeV1 {
-  const row = keys(value, ['key', 'theme', 'name', 'seen', 'enforced_by', 'promoted', 'lines'], `themes[${at}]`);
+  const row = keys(value, ['key', 'theme', 'name', 'prevention_rule', 'why', 'correction_sources', 'seen', 'enforced_by', 'promoted', 'lines'], `themes[${at}]`);
   // The key grammar is the ledger contract that `LedgerEnforcement` checks (#2815).
   // A second grammar here would make two authorities for one value.
   return {
     key: text(row.key, `themes[${at}].key`),
     theme: text(row.theme, `themes[${at}].theme`),
     name: row.name === null ? null : text(row.name, `themes[${at}].name`),
+    prevention_rule: lessonProse(row.prevention_rule, `themes[${at}].prevention_rule`),
+    why: lessonProse(row.why, `themes[${at}].why`),
+    correction_sources: list(row.correction_sources, `themes[${at}].correction_sources`, (source, index) => text(source, `themes[${at}].correction_sources[${index}]`)),
     seen: count(row.seen, `themes[${at}].seen`, 1),
     enforced_by: text(row.enforced_by, `themes[${at}].enforced_by`),
     promoted: row.promoted === null ? null : text(row.promoted, `themes[${at}].promoted`),

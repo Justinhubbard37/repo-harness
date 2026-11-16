@@ -164,6 +164,11 @@ report_json="$(
           | .[$key] = (($acc[$key] // {lines: []}) + {
               theme: value($entry; "Mistake pattern"),
               name: (value($entry; "Name") | if . == "" then null else . end),
+              prevention_rule: value($entry; "Prevention rule"),
+              why: value($entry; "Why"),
+              correction_sources: (((($acc[$key].correction_sources) // []) +
+                (value($entry; "Triggered by correction") | split(",")
+                  | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(length > 0)))) | unique),
               seen: (value($entry; "Seen") | rtrimstr("×") | tonumber),
               enforced_by: value($entry; "Enforced by"),
               lines: ((($acc[$key].lines) // []) + [$entry.line])
@@ -181,6 +186,7 @@ report_json="$(
     | (if $themes == null then null else
         $themes | to_entries | sort_by(.key)
         | map({key, theme: .value.theme, name: .value.name, seen: .value.seen,
+               prevention_rule: .value.prevention_rule, why: .value.why, correction_sources: .value.correction_sources,
                enforced_by: .value.enforced_by, promoted: (.value.promoted // null), lines: .value.lines})
       end) as $theme_list
 

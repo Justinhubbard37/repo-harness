@@ -27,6 +27,9 @@ function theme(overrides: Partial<TriageThemeV1> = {}): TriageThemeV1 {
     key: 'trace-trigger-to-effect',
     theme: 'trace-trigger-to-effect',
     name: 'Trace trigger to effect',
+    prevention_rule: 'Keep the failure evidence.',
+    why: '',
+    correction_sources: ['c27a36e8'],
     seen: 1,
     enforced_by: 'judgment',
     promoted: null,
@@ -186,11 +189,30 @@ function status(repo: string, ...extra: string[]) {
 }
 
 describe('rh rules status on a checkout', () => {
+  test('lesson prose longer than 500 characters survives the real ledger parser', () => {
+    const prevention = 'Trace each trigger to its observable effect. '.repeat(20).trim();
+    const why = 'A symptom fix left the original cause in place. '.repeat(20).trim();
+    const repo = ledgerRepo(entry('alpha', '3×')
+      .replace('- Prevention rule: Keep the failure evidence.', `- Prevention rule: ${prevention}\n- Why: ${why}`));
+    try {
+      const result = status(repo, '--json');
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+      const document = JSON.parse(result.stdout);
+      expect(document.ledger.valid).toBe(true);
+      expect(document.themes[0].prevention_rule).toBe(prevention);
+      expect(document.themes[0].why).toBe(why);
+      expect(document.themes[0].actions).toHaveLength(2);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
   test('a judgment theme at Seen 2 opens only enforce', () => {
     const repo = ledgerRepo(entry('alpha', '2×'));
     try {
       const document = JSON.parse(status(repo, '--json').stdout);
       expect(document.themes[0].governance).toBe('judgment_unpromoted');
+      expect(document.themes[0].prevention_rule).toBe('Keep the failure evidence.');
+      expect(document.themes[0].why).toBe('');
+      expect(document.themes[0].correction_sources).toEqual(['c27a36e8']);
       expect(document.themes[0].actions.map((row: { kind: string }) => row.kind)).toEqual(['enforce']);
     } finally { rmSync(repo, { recursive: true, force: true }); }
   });

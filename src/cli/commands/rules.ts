@@ -29,6 +29,12 @@ import {
   type RuleStatusV1,
 } from '../../core/ci/rule-candidates';
 import { RULES } from '../../core/ci/rules';
+import {
+  DEFAULT_PROMPT_ROUTE, RULES_PROMOTE_KIND, RulesPromoteError,
+  promotionCandidate, renderPromotionPrompt,
+} from '../../core/ci/rule-prompt';
+import { promoteRules, promotionRoute, reconcileRules, type RulesPromoteResult } from '../../effects/rules/promote';
+import type { GithubCommandRunner } from '../../effects/github/issues';
 import { POLICY_PATH, decodeWorkflowPolicy } from '../../core/workflow/policy-schema';
 import { githubRemoteRepository } from '../../core/board/source';
 import { sha256Hex } from '../../core/evidence/sha256';
@@ -285,6 +291,39 @@ interface RulesStatusOptions {
   json?: boolean;
 }
 
+export interface RulesPromoteOptions {
+  candidate: string;
+  target?: string;
+  route?: string;
+  ledgerBlob?: string;
+  promptFile?: string;
+  printPrompt?: boolean;
+  reconcile?: boolean;
+  json?: boolean;
+}
+
+/** Print is read-only; reconcile depends only on the repository and the filed marker. */
+export function runRulesPromote(options: RulesPromoteOptions, runner?: GithubCommandRunner): RulesPromoteResult | string {
+  if (!/^[a-f0-9]{64}$/u.test(options.candidate)) throw new RulesPromoteError('candidate_not_found');
+  if ((options.reconcile && (options.printPrompt || options.route || options.ledgerBlob || options.promptFile))
+    || (options.printPrompt && (options.promptFile || options.ledgerBlob))
+    || (!options.reconcile && !options.printPrompt && (!options.route || !options.ledgerBlob))) {
+    throw new RulesPromoteError('options_invalid');
+  }
+  const target = statusGit(resolve(options.target ?? process.cwd()), ['rev-parse', '--show-toplevel'], 'repository_unavailable').trim();
+  if (options.reconcile) return reconcileRules({ repository_id: repositoryIdentity(target), candidate_id: options.candidate }, runner);
+  const status = runRulesStatus({ target });
+  const route = promotionRoute(options.route ?? DEFAULT_PROMPT_ROUTE);
+  const candidate = promotionCandidate(status, options.candidate, options.ledgerBlob);
+  if (options.printPrompt) return renderPromotionPrompt(candidate, route);
+  let prompt: string | undefined;
+  if (options.promptFile !== undefined) {
+    try { prompt = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readFileSync(options.promptFile)); }
+    catch { throw new RulesPromoteError('prompt_unreadable'); }
+  }
+  return promoteRules({ status, candidate_id: options.candidate, route, ledger_blob: options.ledgerBlob!, prompt }, runner);
+}
+
 /** The refusal document of `rh rules status`: one error code, no partial status. */
 function statusRefusal(code: string, message: string): void {
   process.stderr.write(`rh rules status: ${code}: ${message}\n`);
@@ -335,6 +374,30 @@ export function buildRulesCommand(): Command {
       if (options.json) process.stdout.write(`${JSON.stringify(status)}\n`);
       else process.stdout.write(`${describeRuleStatus(status).join('\n')}\n`);
       process.exitCode = status.ledger.valid ? 0 : 1;
+    });
+  rules
+    .command('promote')
+    .description('Print, file or reconcile one rules promotion task; never dispatch a seat')
+    .requiredOption('--candidate <id>', 'promotion candidate id from rules status')
+    .option('--target <path>', 'target checkout (default: the working directory)')
+    .option('--print-prompt', 'print the prompt without any GitHub call')
+    .option('--route <class>', 'routing class (print-prompt default: important_fast)')
+    .option('--ledger-blob <sha>', 'expected committed ledger blob')
+    .option('--prompt-file <path>', 'UTF-8 prompt to file byte for byte')
+    .option('--reconcile', 'complete the label and parent link of a filed task')
+    .option('--json', 'print the result document')
+    .action((options: RulesPromoteOptions) => {
+      try {
+        const result = runRulesPromote(options);
+        process.stdout.write(typeof result === 'string' ? result : `${JSON.stringify(result)}\n`);
+        process.exitCode = 0;
+      } catch (error) {
+        if (!(error instanceof RulesPromoteError) && !(error instanceof RulesStatusError)) throw error;
+        const code = error instanceof RulesStatusError && error.code !== 'repository_unavailable' ? 'ledger_invalid' : error.code;
+        process.stdout.write(`${JSON.stringify({ kind: RULES_PROMOTE_KIND, protocol: 1,
+          error: { code, issue: error instanceof RulesPromoteError ? error.issue : null } })}\n`);
+        process.exitCode = 1;
+      }
     });
   return rules;
 }

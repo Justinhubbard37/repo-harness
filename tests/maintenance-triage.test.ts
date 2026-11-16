@@ -131,11 +131,14 @@ describe("maintenance triage judgment themes", () => {
       const report = JSON.parse(res.stdout) as { judgment: { key: string; seen: number; promoted: string | null }[] };
       const lines = ledgerLines(repo);
       const themes = [
-        ["below-three", "Below three", 2, "judgment", null, [lines[1], lines[2]]],
-        ["counted-by-seen", null, 4, "judgment", "#30", [lines[0]]],
-        ["migrated-to-check", null, 3, "tests/maintenance-triage.test.ts", null, [lines[3], lines[4]]],
-        ["repeat-after-promotion", null, 4, "judgment", "#31", [lines[5], lines[6]]],
-      ].map(([key, name, seen, enforced_by, promoted, owned]) => ({ key, theme: key, name, seen, enforced_by, promoted, lines: owned }));
+        ["below-three", "Below three", 2, "judgment", null, [lines[1], lines[2]], ["#11", "#12"]],
+        ["counted-by-seen", null, 4, "judgment", "#30", [lines[0]], ["#10"]],
+        ["migrated-to-check", null, 3, "tests/maintenance-triage.test.ts", null, [lines[3], lines[4]], ["#13", "#14"]],
+        ["repeat-after-promotion", null, 4, "judgment", "#31", [lines[5], lines[6]], ["#15", "#16"]],
+      ].map(([key, name, seen, enforced_by, promoted, owned, correction_sources]) => ({
+        key, theme: key, name, seen, enforced_by, promoted, lines: owned,
+        prevention_rule: "Keep the failure evidence.", why: "", correction_sources,
+      }));
       expect((report as unknown as { themes: unknown }).themes).toEqual(themes);
       expect(report.judgment.map(({ key, seen, promoted }) => ({ key, seen, promoted }))).toEqual([
         { key: "counted-by-seen", seen: 4, promoted: "#30" },

@@ -30,7 +30,9 @@ function fixture() {
 }
 function snapshot(id = 'repo-a'): RulesSnapshotV1 {
   return { protocol: 1, kind: 'operator_rules', repository_id: id, collected_at: AT, status: ruleStatus({
-    judgment: [], field_errors: [], evidence_errors: [], themes: [{ key: 'alpha', theme: 'alpha', name: 'Alpha', seen: 3, enforced_by: 'judgment', promoted: null, lines: [3] }],
+    judgment: [], field_errors: [], evidence_errors: [], themes: [{ key: 'alpha', theme: 'alpha', name: 'Alpha', seen: 3,
+      prevention_rule: 'Keep evidence.', why: 'The earlier fix missed the cause.', correction_sources: ['#10'],
+      enforced_by: 'judgment', promoted: null, lines: [3] }],
   }, 'github:owner/repo', { head: 'a'.repeat(40), blob: 'b'.repeat(40), dirty: false }) };
 }
 function collect(options: Parameters<typeof startRulesCollector>[0]) {
@@ -121,7 +123,9 @@ test('real CLI output is served unchanged, including exit 1 ledger errors; GET s
   writeFileSync(join(f.repo, 'README.md'), 'fixture'); commitAll(f.repo, 'fixture');
   const correction = run('git', ['rev-parse', 'HEAD'], f.repo).stdout.trim();
   mkdirSync(join(f.repo, 'tasks'));
-  const ledger = (seen: string) => `# Lessons\n\n- Date: 2026-10-01\n- Name: Alpha\n- Mistake pattern: alpha\n- Prevention rule: Keep evidence.\n- Enforced by: judgment\n- Triggered by correction: ${correction}\n- Seen: ${seen}\n`;
+  const prevention = 'Keep the evidence for each observable trigger and its effect. '.repeat(20).trim();
+  const why = 'The earlier fix treated a symptom and left the cause in place. '.repeat(20).trim();
+  const ledger = (seen: string) => `# Lessons\n\n- Date: 2026-10-01\n- Name: Alpha\n- Mistake pattern: alpha\n- Prevention rule: ${prevention}\n- Why: ${why}\n- Enforced by: judgment\n- Triggered by correction: ${correction}, #10\n- Seen: ${seen}\n`;
   writeFileSync(join(f.repo, 'tasks/lessons.md'), ledger('3×'));
   commitAll(f.repo, 'ledger');
   let cache: RulesRepositoryCache = { state: 'unavailable', reason: 'rules_pending' };
@@ -151,6 +155,12 @@ test('real CLI output is served unchanged, including exit 1 ledger errors; GET s
         expect(body.status).toEqual(JSON.parse(cli.stdout));
         expect(body.status.ledger.valid).toBe(valid);
         if (!valid) expect(body.status.ledger.field_errors.length).toBeGreaterThan(0);
+        else {
+          expect(body.status.themes).toHaveLength(1);
+          expect(body.status.themes[0]).toMatchObject({
+            prevention_rule: prevention, why, correction_sources: ['#10', correction],
+          });
+        }
         const head = await fetch(url, { method: 'HEAD' });
         expect(head.status).toBe(200); expect(await head.text()).toBe('');
         expect(spawn).not.toHaveBeenCalled(); expect(exec).not.toHaveBeenCalled(); expect(sync).not.toHaveBeenCalled();
