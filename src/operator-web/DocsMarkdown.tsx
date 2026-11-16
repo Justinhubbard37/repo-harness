@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import Markdown, { type Components, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ImageIcon } from '@phosphor-icons/react';
-import { DIAGRAM_MAX_DEPTH, diagramTooDeep, type DocsDiagramFailure } from '../core/operator/docs';
+import { diagramSourceIssues, type DocsDiagramFailure } from '../core/operator/docs';
 import type { OperatorTranslate } from './i18n';
 import { fetchDocsDiagram } from './repository-reads';
 import type { ThemeMode } from './theme';
@@ -86,41 +86,6 @@ export const validateDiagramWithCapability: DiagramValidator = async document =>
 const DIAGRAM_REFRESH_MS = 5_000;
 
 export const DIAGRAM_LANGUAGE = 'eraser-diagram';
-
-const REMOTE_ADDRESS = /^\s*(?:[a-z][a-z0-9+.-]*:|\/\/)/iu;
-
-/**
- * Errors the core owns before the capability sees the block: a JSON syntax error, and a
- * remote or scheme-bearing `icon` address (the only resource field; icons load from a local set).
- */
-export function diagramSourceIssues(source: string): { readonly document: unknown; readonly issues: readonly DiagramIssue[] } {
-  let document: unknown;
-  try { document = JSON.parse(source); } catch (error) {
-    return { document: null, issues: [{ element: 'block', field: 'JSON', fix: `Fix the JSON syntax: ${error instanceof Error ? error.message : 'the text does not parse'}.` }] };
-  }
-  if (diagramTooDeep(document)) {
-    return { document, issues: [{ element: 'block', field: 'depth', fix: `Nest the JSON at most ${DIAGRAM_MAX_DEPTH} levels deep.` }] };
-  }
-  const issues: DiagramIssue[] = [];
-  // Iterative: a deeply nested block must not overflow the call stack. A pointer is built only for an issue.
-  interface Step { readonly value: unknown; readonly parent: Step | null; readonly key: string }
-  const pointerOf = (step: Step | null): string => {
-    const keys: string[] = [];
-    for (let at = step; at !== null && at.parent !== null; at = at.parent) keys.push(at.key);
-    return keys.length === 0 ? '/' : `/${keys.reverse().join('/')}`;
-  };
-  const stack: Step[] = [{ value: document, parent: null, key: '' }];
-  for (let step = stack.pop(); step !== undefined; step = stack.pop()) {
-    const { value } = step;
-    if (value === null || typeof value !== 'object') continue;
-    for (const [key, child] of Object.entries(value)) {
-      if (key === 'icon' && typeof child === 'string' && REMOTE_ADDRESS.test(child)) {
-        issues.push({ element: pointerOf(step), field: 'icon', fix: 'Use the name of a local icon; a remote address is not allowed.' });
-      } else stack.push({ value: child, parent: step, key });
-    }
-  }
-  return { document, issues };
-}
 
 export type DocsLink =
   | { readonly kind: 'external'; readonly href: string }

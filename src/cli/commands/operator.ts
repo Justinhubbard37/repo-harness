@@ -26,6 +26,11 @@ export function buildOperatorCommand(loadReviewHost: () => Promise<CleanupReview
     .requiredOption('--snapshot <path>', 'New absolute snapshot path in an owned private directory')
     .argument('<argv...>', 'Child command and arguments after --')
     .action(async (argv: string[], raw: OperatorCaptureRawOptions) => (await actions()).capture(argv, raw));
+  operator
+    .command('diagram')
+    .description('Draw one eraser-diagram block and print its PNG path, or the errors (needs the optional render capability)')
+    .argument('<file>', 'File with the block JSON, or - for stdin')
+    .action(async (file: string) => (await actions()).diagram(file));
   // The job child of POST /api/v1/worktrees/cleanup/investigation. Only the operator server starts it.
   operator
     .command('cleanup-investigation-job', { hidden: true })

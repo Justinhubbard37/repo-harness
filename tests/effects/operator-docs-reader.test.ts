@@ -9,6 +9,7 @@ import { DOCS_FILE_MAX_BYTES, DocsReadError, DocsReader } from '../../src/effect
 import { decodeDocsFile } from '../../src/core/operator/docs';
 import { repoHarnessRepoIdFor } from '../../src/effects/repo-registry';
 import { diagramHash, docsDiagramState, startDiagramRenderer } from '../../src/effects/operator/diagram-renderer';
+import { readbackDiagram, readbackExitCode } from '../../src/effects/operator/diagram-readback';
 import { readDiagramImage, RENDER_LIBRARY_VERSION, type RenderPassResult } from '../../src/effects/operator/diagram-render';
 import type { DocsRepositoryCache } from '../../src/effects/operator/docs-collector';
 
@@ -449,4 +450,39 @@ test('the diagram renderer draws a block once per content and fingerprint, and a
   } finally {
     await renderer.close();
   }
+});
+
+test('the diagram readback returns the PNG path of one render pass, and an error that names the element with a non-zero exit', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'diagram-readback-')); cleanup.push(home);
+  const env = { ...process.env, REPO_HARNESS_HOME: home, REPO_HARNESS_RENDER_BROWSER: join(home, 'browser') };
+  const signal = new AbortController().signal;
+  const passes: Array<{ svg: boolean; png: boolean }> = [];
+  const render = async (options: { document: unknown; outputs: { svg: boolean; png: boolean } }): Promise<RenderPassResult> => {
+    passes.push(options.outputs);
+    return JSON.stringify(options.document).includes('"bad"')
+      ? { ok: false, kind: 'invalid', issues: [{ element: '/entities/0', field: 'E_UNKNOWN_TAG', fix: 'Use a known tag.' }] }
+      : { ok: true, svg: '<svg/>', png: Buffer.from('png-bytes') };
+  };
+  const unavailable = await readbackDiagram('{}', { env, signal, render });
+  expect(unavailable).toMatchObject({ ok: false, status: 'unavailable', reason: 'capability_missing', message: 'render capability not installed' });
+  expect(readbackExitCode(unavailable)).toBe(2);
+  const library = join(home, 'operator/render-capability/node_modules/@eraserlabs/diagrams');
+  mkdirSync(library, { recursive: true });
+  writeFileSync(join(library, 'package.json'), JSON.stringify({ version: RENDER_LIBRARY_VERSION }));
+  writeFileSync(join(home, 'browser'), '');
+  const good = { entities: [{ id: 'a' }] };
+  const ok = await readbackDiagram(JSON.stringify(good), { env, signal, render });
+  expect(ok).toMatchObject({ ok: true, hash: diagramHash(good) });
+  expect(readbackExitCode(ok)).toBe(0);
+  expect(readFileSync((ok as { png: string }).png).toString()).toBe('png-bytes');
+  // One pass gives the SVG of the docs page and the PNG together.
+  expect(passes).toEqual([{ svg: true, png: true }]);
+  const bad = await readbackDiagram(JSON.stringify({ entities: [{ id: 'bad' }] }), { env, signal, render });
+  expect(bad).toMatchObject({ ok: false, status: 'invalid', issues: [{ element: '/entities/0' }] });
+  expect(readbackExitCode(bad)).toBe(1);
+  // A remote icon fails before any render, with the element named as on the docs page.
+  const remote = await readbackDiagram(JSON.stringify({ entities: [{ id: 'a', icon: '//example.invalid/a.svg' }] }), { env, signal, render });
+  expect(remote).toMatchObject({ status: 'invalid', issues: [{ element: '/entities/0', field: 'icon' }] });
+  expect(passes).toHaveLength(2);
+  expect(await readbackDiagram('{not json', { env, signal, render })).toMatchObject({ status: 'invalid', issues: [{ element: 'block', field: 'JSON' }] });
 });

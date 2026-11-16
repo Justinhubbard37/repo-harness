@@ -49,7 +49,8 @@ import {
   startOperatorServer,
 } from '../../src/effects/operator/server';
 import { buildOperatorCommand } from '../../src/cli/commands/operator';
-import { parseOperatorServeOptions, resolveOperatorAssets } from '../../src/cli/commands/operator-actions';
+import { RENDER_LIBRARY_VERSION } from '../../src/effects/operator/diagram-render';
+import { diagram as diagramCommand, parseOperatorServeOptions, resolveOperatorAssets } from '../../src/cli/commands/operator-actions';
 import { decodeArchitectureMapRefusal, projectArchitectureMap, type ArchitectureMapV1, type ArchitecturePullRequestsSource } from '../../src/core/operator/architecture-map';
 import { startArchitectureMapCollector, type ArchitectureMapRepositoryCache } from '../../src/effects/operator/architecture-map-collector';
 import { worktreeDigestRow } from '../../src/core/operator/worktree-cleanup';
@@ -1879,4 +1880,37 @@ describe('worktree cleanup write route', () => {
       rmSync(hold, { recursive: true, force: true });
     }
   });
+});
+
+test('operator diagram aborts an in-flight render on SIGTERM, waits for its cleanup and removes the handlers', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'diagram-interrupt-'));
+  const library = join(home, 'operator/render-capability/node_modules/@eraserlabs/diagrams');
+  mkdirSync(library, { recursive: true });
+  writeFileSync(join(library, 'package.json'), JSON.stringify({ version: RENDER_LIBRARY_VERSION }));
+  writeFileSync(join(home, 'browser'), '');
+  writeFileSync(join(home, 'block.json'), '{"entities":[]}');
+  const env = { ...process.env, REPO_HARNESS_HOME: home, REPO_HARNESS_RENDER_BROWSER: join(home, 'browser') };
+  const before = process.listenerCount('SIGTERM');
+  const steps: string[] = [];
+  const stdout = spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const previousExit = process.exitCode;
+  try {
+    const run = diagramCommand(join(home, 'block.json'), { env, render: async ({ signal }) => {
+      steps.push('started');
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve()));
+      await Bun.sleep(20);
+      steps.push('cleaned');
+      return { ok: false, kind: 'failed', reason: 'render_failed' };
+    } });
+    await waitFor(() => steps.includes('started'), 'render did not start');
+    expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+    process.emit('SIGTERM');
+    await run;
+    expect(steps).toEqual(['started', 'cleaned']);
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  } finally {
+    stdout.mockRestore();
+    process.exitCode = previousExit ?? 0;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
