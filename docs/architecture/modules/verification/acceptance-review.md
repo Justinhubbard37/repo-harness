@@ -209,7 +209,7 @@ sequenceDiagram
 
 ### Generic review 取代 Claude 专用 review 命令（2026-10-03，PR #476、PR #484）
 
-- `repo-harness review` 通过 Herdr task-agent 和 OAR SDK 运行 fleet `deep-reasoner` 角色。
+- `rh review` 通过 Herdr task-agent 和 OAR SDK 运行 fleet `deep-reasoner` 角色。
 - 旧的 Claude 专用 review 命令只留下 fail-closed stub。PR #484 删除三个 direct cross-review 文件。
 
 ### packet 先于 reviewer 启动保存（2026-10-06，PR #578）

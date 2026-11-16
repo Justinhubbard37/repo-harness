@@ -121,7 +121,7 @@ sequenceDiagram
 3. **有决定的建议不再显示。** 状态为 accepted、rejected、deferred、waived、resolved、superseded、expired 的建议被过滤（`recommendations.ts:52`、`:63`）。repo-harness 不保存投递账本、冷却时间或本地建议状态。
 4. **证据不完整时不给建议。** code facts 不完整或被截断时返回 `proof_required`（`recommendations.ts:103-105`）。任何文件有多个归属 capability 时也返回 `proof_required`，因为模块统计会重复计数这些文件（`recommendations.ts:106-110`）。模型未初始化时返回 `unavailable`（`:100`）。
 5. **只记录用户决定，从不执行重构。** `refactor decide` 在建议尚未记录时先记录扫描，再把 accept、defer 或 reject 连同理由交给 ArchContext（`src/cli/commands/refactor.ts:33-40`）。接受的建议走普通的 plan 和 PR 流程。
-6. **建议是按需证据，不是推送。** 没有 hook 扫描建议。Bot 调用 `repo-harness refactor recommendations --json` 读取证据，再决定是否调度工作（PR #617；`assets/skill-commands/repo-harness-check/references/architecture-evidence.md`）。
+6. **建议是按需证据，不是推送。** 没有 hook 扫描建议。Bot 调用 `rh refactor recommendations --json` 读取证据，再决定是否调度工作（PR #617；`assets/skill-commands/repo-harness-check/references/architecture-evidence.md`）。
 7. **包内 archctx 先过版本检查。** 每个仓库根第一次调用时检查 `capabilities --json` 的精确版本（`archctx-provider.ts:17-20`）。provider 错误统一转成 `refactor_provider_unavailable`（`:24`）。archctx 超时转成 `refactor_provider_timeout`，动作为 `raise-timeout-and-retry`。
 
 ### 3.2 关键权衡

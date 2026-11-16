@@ -232,7 +232,7 @@
       "docs/reference-configs/heartbeat-triage.md",
       "docs/reference-configs/document-generation.md",
       "docs/reference-configs/global-working-rules.md",
-      "docs/reference-configs/minimal-change-hooks.md",
+      "docs/reference-configs/change-assessment.md",
       "deploy/README.md",
       "docs/researches/README.md"
     ],

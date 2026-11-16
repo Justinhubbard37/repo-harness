@@ -238,7 +238,7 @@ sequenceDiagram
 3. **ROUTES 顺序是稳定契约。** Codex 按 `(absolute-path, event-snake, i, j)` 哈希 adapter 条目，重排会重新弹出信任提示（`route-registry.ts:14-16`）。新增 route 只能追加。
 4. **handler 不碰 fd。** typed `HookHandlerResult` 是 handler 的唯一出口。`hook-protocol.ts` 的 `HOST_RENDERERS` 表是唯一入海口。Claude 与 Codex 的输出语义差异只能在这张表里表达。
 5. **opt-in marker 是硬门。** 没有 `.ai/harness/workflow-contract.json` 就静默退出 —— 装了 CLI 的用户在非 harness 仓库不应付出任何代价。
-6. **没有 shell operator library。** [archived hooks](https://github.com/Ancienttwo/repo-harness/tree/13a589c0c07f886891add648f0a54852dede7323/assets/hooks) 已删除。operator helper 经 `repo-harness run <helper>` 运行，policy 路径由 `resolveHarnessPaths` 一处解析，failure log 用 edit guard 写入的同一个 `FAILURE_LOG_FILE`（#696）。
+6. **没有 shell operator library。** [archived hooks](https://github.com/Ancienttwo/repo-harness/tree/13a589c0c07f886891add648f0a54852dede7323/assets/hooks) 已删除。operator helper 经 `rh run <helper>` 运行，policy 路径由 `resolveHarnessPaths` 一处解析，failure log 用 edit guard 写入的同一个 `FAILURE_LOG_FILE`（#696）。
 7. **遥测非安全权威，但消费者 fail-closed。** 字段缺失、畸形、重复或混协议时消费者必须停，不得补零。
 8. **Hook 不做架构工作。** Hook 不记录架构漂移，不运行投影，不写 capability 块。架构更新在 PR 里显式完成：ChangeSet 加 `architecture-projection apply`。
 9. **payload 与 identity 只解析一次。** host event 的 payload 解析一次，identity 只来自 payload 的 `session_id`、`run_id`、`turn_id`；缺失保持 null。hook 不生成、不存储 identity，handler 不读 session、run 或 turn 环境变量。`HOOK_HOST` 缺失、route 未知或该 host 未安装 route 时，在 handler 运行前停止。
@@ -255,7 +255,7 @@ sequenceDiagram
 | 退役 routes 与 managed command 在同一 release 删除（#705） | Codex 只重新信任一次。旧 adapter 在 reinstall 前会收到 exit 2。 |
 | 两条 subagent route 各有一个 handler（`return-channel`、`subagent-context`） | `PreToolUse.subagent` 只处理 Claude `Agent`。`SubagentStart.context` 只装进 Codex。runtime 统一检查 host。 |
 | `hook-entry.ts` 与完整 commander CLI 分离 | 热路径不冷加载非 hook 命令模块（文件头 `:5` 明写理由），代价是子命令分派在 entry 里手写成一串 `if` |
-| 删除 `workflow-state.sh`，helper 改调 TypeScript | 路径与 stem 只有一个 TypeScript 实现。代价：`prepare-handoff` 与 `summarize-failures` 现在需要 Bun，旧的 `hook-lib path` 下游调用方要改成 `repo-harness run <helper>` |
+| 删除 `workflow-state.sh`，helper 改调 TypeScript | 路径与 stem 只有一个 TypeScript 实现。代价：`prepare-handoff` 与 `summarize-failures` 现在需要 Bun，旧的 `hook-lib path` 下游调用方要改成 `rh run <helper>` |
 | 空 lifecycle hooks 已移除 | Scaffold 和 template assembly 直接执行各自任务。它们不再调用空 runner。 |
 
 ### 3.3 组件拆分（2026-10-11）
@@ -405,7 +405,7 @@ fields are missing, malformed, duplicated, or mixed-protocol.
 ### Migration to the typed authority (原 P2 段落，逐字保留)
 
 ```text
-repo-harness init / runInit
+rh init / runInit
   -> standard-plan (pure operation list)
   -> exact-hash retired-file checks + managed adapter stripping
   -> one FsTransaction apply + manifest
@@ -451,7 +451,7 @@ does not inspect legacy command shapes, so there is no dual-read path.
   the edit route uses, and hands one deterministic
   `ArchitectureProjectionSourceEvent` to `drainArchitectureProjectionJobs`. When
   projection is disabled the same path list drives `processArchitectureCascade`.
-  `repo-harness architecture-projection drain --json` reads the same authority;
+  `rh architecture-projection drain --json` reads the same authority;
   its output schema is unchanged.
 - P3: the cursor (`.ai/harness/state/architecture-drift-cursor.json`, a single
   slot following `session-run-identity.json`) advances to HEAD only on an
@@ -499,7 +499,7 @@ does not inspect legacy command shapes, so there is no dual-read path.
   helpers then had no automatic trigger. They are deleted, not gated. The
   entries above from 2026-08-12 describe that retired design.
 - P2: the pull request is the architecture update unit. A responsibility change
-  is an archctx model change plus `repo-harness architecture-projection apply`
+  is an archctx model change plus `rh architecture-projection apply`
   in the same branch.
 - P3: this capability's primary flow is now route dispatch:
   `runHook` resolves one typed handler through `getHandlerForRoute`.

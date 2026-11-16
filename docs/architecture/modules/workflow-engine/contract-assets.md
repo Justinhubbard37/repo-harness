@@ -216,7 +216,7 @@ Hooks continue to check file existence.
 Adoption replaces old content with the marker and keeps a transaction backup.
 Inspect reads only the package body.
 Shell scaffold scripts do not write the marker.
-Run `repo-harness init --repo <target-repo>` after the shell scaffold.
+Run `rh init --repo <target-repo>` after the shell scaffold.
 Earlier byte-parity statements in dated closeouts describe the old design.
 
 ## Architecture automation defaults
@@ -272,7 +272,7 @@ regressions verify these separate boundaries.
 | --- | ---: | --- | --- |
 | `component.contract-assets.primary`（Workflow Contract And Policy） | 12 / 4,410 | 契约主体、opt-in marker、harness policy、context map、契约加载器与 context 门禁 | capability-registry（`check-context-map.ts` 读注册表） |
 | `component.contract-assets.capability-registry` | 148 / 6,981 | `.archcontext/**` 模型文件、纯注册表、resolver 与 config CLI、capability context 命令 | 无组件外调用；workflow-state 的 resolver 调用它 |
-| `component.contract-assets.template-projection`（可扩展） | 180 / 35,687 | standalone resolver 与 reference config 投影、`repo-harness init` | primary、planning-helpers、workflow-state、execution-primitives、adoption、hook-adapters、global-runtime-reconciliation |
+| `component.contract-assets.template-projection`（可扩展） | 180 / 35,687 | standalone resolver 与 reference config 投影、`rh init` | primary、planning-helpers、workflow-state、execution-primitives、adoption、hook-adapters、global-runtime-reconciliation |
 | `component.contract-assets.contract-worktree-lifecycle` | 8 / 6,505 | worktree 生命周期、publication、merge gate、contract brief runner、归档 | workflow-state（worktree 拓扑锁）、execution-primitives（Git binary） |
 | `component.contract-assets.planning-helpers` | 21 / 4,034 | 计划、spec、sprint、triage 与 factor-lab helper，`run` 与 `brain` 命令，受保护 helper runner | execution-primitives（有界子进程） |
 
@@ -308,7 +308,7 @@ template-projection 标记为可扩展。`assets/templates/helpers/` 现在只�
 另有两处已由后续 slice 取代，历史段落本身未改写：
 
 - 旧文档头部与 P1 曾把已退役的 merge-gate Skill 目录列为 matched prefix。该目录在 HEAD 不存在（Skill 来源由 `assets/skill-commands/manifest.json` 控制）。这与 2026-07-21 段落一致。
-- 旧 P2 只描述 shell 路线（`pi_install_workflow_contract` → `pi_write_harness_policy` → …）。这些函数仍在 `scripts/lib/project-init-lib.sh`，调用者是 `scripts/create-project-dirs.sh` 与 `scripts/init-project.sh`，两者都归 inspection-migration。`repo-harness init` 的实际路径是 TS 事务模型。
+- 旧 P2 只描述 shell 路线（`pi_install_workflow_contract` → `pi_write_harness_policy` → …）。这些函数仍在 `scripts/lib/project-init-lib.sh`，调用者是 `scripts/create-project-dirs.sh` 与 `scripts/init-project.sh`，两者都归 inspection-migration。`rh init` 的实际路径是 TS 事务模型。
 
 ---
 
@@ -320,7 +320,7 @@ template-projection 标记为可扩展。`assets/templates/helpers/` 现在只�
 
 - 本 capability 拆成五个组件：primary（契约与 policy）、capability-registry、template-projection、contract-worktree-lifecycle、planning-helpers。见 §3.3。
 - 之前没有 owner 的 29 个 `scripts/` 契约与 helper 脚本进入 include，另外加入 `src/core/capabilities/**`、当时位于 core 层的 source projection 模块（#942 移到 effects 层）、`run`/`brain`/`brain-root` 命令、`.archcontext/**`、`.ai/context/**`、`assets/{AGENTS,CLAUDE}.md`、partials、project structures 与 `.claude/templates/**`。没有删除任何既有 include。
-- 入口从 adoption 拥有的 `src/core/adoption/workflow-contract-asset.ts` 移到本 capability 的 `scripts/sync-helper-sources.ts#main`。新增第二条 flow：`repo-harness run` 解析 helper 并交给 execution-primitives 运行。
+- 入口从 adoption 拥有的 `src/core/adoption/workflow-contract-asset.ts` 移到本 capability 的 `scripts/sync-helper-sources.ts#main`。新增第二条 flow：`rh run` 解析 helper 并交给 execution-primitives 运行。
 - 以下三段原在 §3 末尾，现逐字移入本节：
 
 ### 2026-08-11 Codex Native Agent Policy Cutover
@@ -562,7 +562,7 @@ template-projection 标记为可扩展。`assets/templates/helpers/` 现在只�
 
 - The `helpers.descriptions` key in `assets/workflow-contract.v1.json` is the sole authority for the one-line description of every bundled helper (helper id, filename minus extension, mapped to description text). `helpers.scripts` keeps sole authority over which helpers exist; descriptions attach display data to those ids without introducing a second id list.
 - The contract parser fails closed in `src/effects/runtime/helper-runner.ts` (`readContractHelperDescriptions`): a missing `descriptions` object, a scripts entry without a description, an empty or non-string value, or a description key with no matching script is a contract error, so the description map cannot drift from the script list.
-- `repo-harness run --help` now renders the full helper enumeration lazily through `listHelpers()` (`src/cli/commands/run.ts`), closing the discovery gap where the 46-helper surface was previously printed only on an unknown-helper failure. `.ai/harness/workflow-contract.json` remains the byte-identical installed mirror of the assets contract; no module boundary, dependency direction, or verification command changed.
+- `rh run --help` now renders the full helper enumeration lazily through `listHelpers()` (`src/cli/commands/run.ts`), closing the discovery gap where the 46-helper surface was previously printed only on an unknown-helper failure. `.ai/harness/workflow-contract.json` remains the byte-identical installed mirror of the assets contract; no module boundary, dependency direction, or verification command changed.
 - Regression coverage: `tests/workflow-contract.test.ts` (descriptions cover `helpers.scripts` 1:1 with non-empty text) and `tests/cli/run.test.ts` (fail-closed validation plus `run --help` enumeration output).
 - The invariant was exercised live at ship time: rebasing onto origin/main added two upstream helpers (`run-bounded-verifier-command.ts`, `validate-harness-profile-benchmark.ts`) and the fail-closed check blocked shipping until their descriptions landed, bringing the map to 48 entries.
 

@@ -24,12 +24,11 @@ falsifier; once that output is frozen into a task contract's `## Why` and
 consulted again for that task.
 
 `rh install` is allowed to bootstrap the workflow-owned global runtime
-in one pass: the `repo-harness` CLI, repo-harness runtime aliases, user-level
-Codex/Claude hook adapters, Waza (`think`, `hunt`, `check`, `health`), brain
-root persistence, Mermaid, and CodeGraph CLI/MCP configuration.
-`rh init` remains a compatibility alias for existing automation. The
-bootstrap path must not silently install unrelated toolchains or Claude
-marketplace plugins. User-managed plugins remain outside repo-harness installation.
+in one pass: the `rh` CLI, user-level Codex/Claude hook adapters, Waza
+(`think`, `hunt`, `check`, `health`), Mermaid, and CodeGraph CLI/MCP
+configuration. The bootstrap path must not silently install unrelated
+toolchains or Claude marketplace plugins. User-managed plugins remain outside
+repo-harness installation.
 
 `rh uninstall --dry-run` previews user-level cleanup without writing
 configuration, locks or receipts. `rh uninstall` applies it; `--json`

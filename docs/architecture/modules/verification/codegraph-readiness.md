@@ -164,7 +164,7 @@ changing host adapter installation semantics.
   installation and index init/sync.
 - `src/cli/tools/codegraph.ts` owns CLI resolution and
   `src/cli/tools/codegraph-reader.ts` owns MCP index integration.
-- `repo-harness install --target codex|claude|both` remains host adapter
+- `rh install --target codex|claude|both` remains host adapter
   installation only.
 - MCP config writes stay explicit and out of the default ensure/check path.
 
@@ -206,7 +206,7 @@ scripts/ensure-codegraph.sh --init|--sync
 
 以下三处历史 prose 与 main@13686d8d 源码不一致，按事实优先级以源码为准：
 
-1. "`scripts/ensure-codegraph.sh` is the mutating entrypoint" — 该脚本当前只有 16 行，是 `repo-harness tools ensure codegraph` 的 bun shim；变更逻辑在 `src/cli/tools/codegraph.ts#ensureCodegraph`。
+1. "`scripts/ensure-codegraph.sh` is the mutating entrypoint" — 该脚本当前只有 16 行，是 `rh tools ensure codegraph` 的 bun shim；变更逻辑在 `src/cli/tools/codegraph.ts#ensureCodegraph`。
 2. "`src/cli/tools/codegraph-reader.ts` owns MCP index integration" — 该文件是 repo-harness **自身 MCP server** 读取 CodeGraph 索引的适配器（`discoverRepo`/`refreshRepo`），与 host MCP 配置注册无关；host MCP 配置由 `configureCodegraph` 负责。
 3. "Repo-local `node_modules/.bin/codegraph` wins over global" — 方向正确但不完整：平台包 `node_modules/@colbymchenry/codegraph-<platform>-<arch>/bin/codegraph` 排在 `node_modules/.bin/codegraph` 之前（`check-agent-tooling.sh:1406`-`:1407`），本仓实测解析到的正是平台包路径。
 

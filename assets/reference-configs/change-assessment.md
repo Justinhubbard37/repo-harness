@@ -1,0 +1,36 @@
+# Change Assessment
+
+The smallest coherent change is a review rule, not a hook. The approved
+admission scope, verification plan, tests and review decide whether a change
+grew too large. Change Assessment is the deterministic boundary.
+
+## Boundary
+
+Hook output and `.ai/harness/events.jsonl` remain advisory and fail-open: a
+hook crash must not create or remove merge authority. Before semantic review or
+acceptance, run `rh run change-assessment prepare` from the execution
+repository with the active admission selectors: `--repository-id`, `--issue-id`,
+`--campaign-id`, `--grant-sha256`, `--policy-sha256` and `--actor`. The trusted
+control Bot supplies the approval; selector values alone do not grant
+permission. Change Assessment v1 then recomputes the normalized final subject
+from the sole policy-owned base
+`.ai/harness/policy.json#worktree_strategy.review_base`. Missing or malformed
+policy, an unobservable final subject, an invalid packet, or an unmet declared
+oracle fails the assessment boundary closed. `verification-plan execute`
+records declared check execution. It does not prepare the assessment.
+
+The assessment has no model or Hook-journal input. It emits only the closed
+reason vocabulary `authority_change`, `irreversible_effect`,
+`pattern_novelty`, `reviewer_disagreement`, and `oracle_gap`. A later reviewer
+may append `reviewer_disagreement` for paths already bound to the packet, but
+cannot remove a reason, lower a selection, or change the packet subject/target.
+
+Prepare it again with the same admission selectors and
+`change-assessment prepare --packet .ai/harness/checks/change-assessment.latest.json`
+to preserve the overlay. The acceptance owner recomputes the base assessment
+and validates the packet against the current subject and target. A missing or
+stale packet fails closed. Native execution facts remain separate.
+
+`rh run change-assessment validate` rechecks a packet against the current
+subject. `rh run change-assessment escalate-disagreement` appends a reviewer
+disagreement for bound paths with `--paths` and `--summary`.

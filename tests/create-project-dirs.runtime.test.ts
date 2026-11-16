@@ -237,7 +237,7 @@ describe("create-project-dirs runtime smoke", () => {
       expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/document-generation.md");
       expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/global-working-rules.md");
       expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/heartbeat-triage.md");
-      expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/minimal-change-hooks.md");
+      expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/change-assessment.md");
       expect(workflowContract.artifacts.requiredFiles).toContain("deploy/README.md");
       expect(workflowContract.artifacts.requiredDirectories).toContain("deploy/scripts");
       expect(workflowContract.artifacts.requiredDirectories).toContain("deploy/sql");

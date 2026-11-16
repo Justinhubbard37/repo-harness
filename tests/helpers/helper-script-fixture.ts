@@ -217,7 +217,7 @@ export function writeWorkflowRequiredSurface(cwd: string) {
     "docs/reference-configs/handoff-protocol.md",
     "docs/reference-configs/document-generation.md",
     "docs/reference-configs/global-working-rules.md",
-    "docs/reference-configs/minimal-change-hooks.md",
+    "docs/reference-configs/change-assessment.md",
     "deploy/README.md",
   ]) {
     writeFileSync(join(cwd, file), "# Fixture\n");

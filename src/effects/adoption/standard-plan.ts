@@ -403,7 +403,7 @@ function addReferenceOperations(repoRoot: string, documentationProfile: string, 
     "heartbeat-triage.md",
     "document-generation.md",
     "global-working-rules.md",
-    "minimal-change-hooks.md",
+    "change-assessment.md",
   ]);
   const warnings: AdoptionWarning[] = [];
   for (const name of readdirSync(REFERENCE_ROOT).filter((entry) => entry.endsWith(".md")).sort()) {

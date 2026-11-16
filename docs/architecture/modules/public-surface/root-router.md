@@ -92,7 +92,7 @@ sequenceDiagram
 
 1. **根 router 有 2048 字节的常驻预算。** 每个 host 在每个 session 选择动作之前都加载 `SKILL.md`。测试注释写明这是常驻成本预算，不是风格规则（`tests/bootstrap-files.test.ts:48-52`）。当前正文 1999 字节（含 frontmatter）。
 2. **五个动作封闭。** setup、plan、execute、verify、handoff 的序号和加粗格式被逐字断言。新增公开命令不能变成第六个动作，只能挂在现有动作下作为 facade。
-3. **状态权威唯一。** `repo-harness state resolve --json` 是唯一入口。其他文件只在这个 JSON 指向时才读。router 不缓存也不复述状态。
+3. **状态权威唯一。** `rh state resolve --json` 是唯一入口。其他文件只在这个 JSON 指向时才读。router 不缓存也不复述状态。
 4. **`AGENTS.md` 与 `CLAUDE.md` 是两份独立的普通文件，共享规则逐字相同。** 两个文件在 host 专属章节（`## Codex` 与 `## Claude Code`）之前的部分必须相等（`tests/bootstrap-files.test.ts:160-162`）。两者不能是 symlink，也不能用 `@` 引用对方（`:153-155`）。PR #486 恢复了这个形状。
 5. **内部步骤不是公共命令。** `hooks-init`、`docs-init`、`create-project-dirs` 永远不公开。
 6. **专用 skill 不进入隐式发现。** `repo-harness-setup`、`repo-harness-strategy` 的 `explicitOnly: true` 加上 `cli-reference` 或 `explicit-setup` 的 discoverability，使任何插件选择都不投影它们。它们只能经 router 或显式安装到达。
@@ -119,12 +119,12 @@ sequenceDiagram
 
 | 项 | 声明 | 工作树事实 | 判定 |
 | --- | --- | --- | --- |
-| verify 命令形态 | `docs/spec.md:58`、`:182` 规定 canonical helper 调用是 `repo-harness run <helper>` | `README.md:117` 写 `bash scripts/check-task-workflow.sh` | 本自托管仓库两种都能运行。README 是下游读者的入口，它展示的是非 canonical 形态。 |
+| verify 命令形态 | `docs/spec.md:58`、`:182` 规定 canonical helper 调用是 `rh run <helper>` | `README.md:117` 写 `bash scripts/check-task-workflow.sh` | 本自托管仓库两种都能运行。README 是下游读者的入口，它展示的是非 canonical 形态。 |
 
 ### 3.5 归属与开放问题（2026-10-11）
 
 - include 增加原本没有归属的路径：四个 README 译本、`references/arch/**` 和 `src/cli/commands/docs.ts`。没有删除任何条目。
-- `src/cli/commands/docs.ts` 列出并读取 `assets/reference-configs/*.md`（`docs.ts:15`）。归属提议说它解析 `references/*.md`，这与源码不符。它的数据归 contract-assets。命令归本 capability，是因为 `repo-harness docs` 是面向用户的文档入口。这个选择的置信度是 MEDIUM。
+- `src/cli/commands/docs.ts` 列出并读取 `assets/reference-configs/*.md`（`docs.ts:15`）。归属提议说它解析 `references/*.md`，这与源码不符。它的数据归 contract-assets。命令归本 capability，是因为 `rh docs` 是面向用户的文档入口。这个选择的置信度是 MEDIUM。
 - `references/arch/**`（7 个技术栈推荐文档，来自 2026-03-19 的初始提交）在仓库里没有任何引用者。已决定：退役。#768 删除这些文件，并从 include 删除这一条。
 - `SKILL.md` links `references/bot-control.md`, `references/pm-boundary.md` and `references/handoff.md`. The coordinator boundary belongs to this capability. The other loose references have no model owner. Dot PM control and PM operations references are retired.
 
@@ -150,10 +150,10 @@ Strong dependencies:
 
 Weak dependencies:
 
-- `repo-harness install --profile <profile>` owns first-run global bootstrap;
+- `rh install --profile <profile>` owns first-run global bootstrap;
   the closed vocabulary is `minimal|full`, and full is the default.
-- `repo-harness uninstall` previews/applies owned user-configuration cleanup via `--dry-run`/`--json`, restores receipted configuration fragments, and reports unresolved ownership with a nonzero partial result. Existing profile ownership governs file removal; static history and third-party packages remain.
-- `repo-harness init` owns repo-local harness adoption and refresh.
+- `rh uninstall` previews/applies owned user-configuration cleanup via `--dry-run`/`--json`, restores receipted configuration fragments, and reports unresolved ownership with a nonzero partial result. Existing profile ownership governs file removal; static history and third-party packages remain.
+- `rh init` owns repo-local harness adoption and refresh.
 - `geju` is a pre-contract framing skill; repo-harness has no external knowledge-CLI runtime or readiness dependency. This self-host repo vendors CodeGraph as a dev dependency while downstream generated repos keep global MCP setup explicit unless policy opts in.
 
 Out of scope:
@@ -165,7 +165,7 @@ Out of scope:
 ### Pre-rewrite `## P2 Trace`
 
 Concrete route: user explicitly asks for setup -> root `SKILL.md` selects setup
--> `repo-harness install` selects full and plans CLI, effective state, guards,
+-> `rh install` selects full and plans CLI, effective state, guards,
 handoff, adapters, planning integrations, agent fleet, verifier, cross-model
 acceptance, and release gates -> `--dry-run` lists install/skip/remove -> apply
 persists protocol-2 `~/.repo-harness/install-state.json`. Explicit
@@ -174,9 +174,9 @@ protocol-1 state is rejected outside `--migrate-profile-state`.
 
 Concrete route: user asks for an existing repo install -> root `SKILL.md`
 selects the setup action -> `repo-harness-setup` (init mode) routes to
-`repo-harness init --repo <repo>` ->
+`rh init --repo <repo>` ->
 the command runs `inspect-project-state.ts --repo <repo> --format text` -> if no
-legacy state is found, `repo-harness init --repo <repo>`
+legacy state is found, `rh init --repo <repo>`
 installs or refreshes the workflow -> repo-local checks verify the target repo.
 
 Concrete route: user asks for product discovery or a complex/design architecture
@@ -221,7 +221,7 @@ commands available without making them default model context.
 
 - P1 的 5 个 prefix、2KB 上限、strong/weak dependency 列表——**全部复验通过**。
 - P2 第一条 route（install profile / 7-hook / 11-hook / protocol-2 / 遗留拒绝）——**全部复验通过**。
-- P2 第二条 route 中"`repo-harness init --repo <repo>` -> the command runs `inspect-project-state.ts`"——**与源码冲突**。`src/cli/**` 对 `inspect-project-state` 零引用；该探测是 `repo-harness-setup` 的 Shared Preflight 第 ② 步（`assets/skills/repo-harness-setup/SKILL.md:16`），发生在 mode selection **之前**、`init` 调用**之前**。所有者与时序两处都不同，正确形态见 §2.1。
+- P2 第二条 route 中"`rh init --repo <repo>` -> the command runs `inspect-project-state.ts`"——**与源码冲突**。`src/cli/**` 对 `inspect-project-state` 零引用；该探测是 `repo-harness-setup` 的 Shared Preflight 第 ② 步（`assets/skills/repo-harness-setup/SKILL.md:16`），发生在 mode selection **之前**、`init` 调用**之前**。所有者与时序两处都不同，正确形态见 §2.1。
 - P3 的三段判断——**复验通过**，§3 在其基础上补了 manifest 组合爆炸这个具体的 10x 失效机制。
 
 ### 2026-10-11 归属扩展与 P3 复核
@@ -236,7 +236,7 @@ commands available without making them default model context.
 
 ### 2026-11-03 #1601 install profile 删除
 
-- §4 逐字保留的 P1 / P2 原文里，`--profile <profile>`、`minimal|full`、7-hook / 11-hook、protocol-2 和 `--migrate-profile-state` 都已失效。现在 `repo-harness install` 默认选择本 host 能运行的全部插件，`--plugins <ids>` 选择指定插件，`--no-plugins` 只装 core。全部 7 条 hook route 都属于 core。install state 是 protocol 3。
+- §4 逐字保留的 P1 / P2 原文里，`--profile <profile>`、`minimal|full`、7-hook / 11-hook、protocol-2 和 `--migrate-profile-state` 都已失效。现在 `rh install` 默认选择本 host 能运行的全部插件，`--plugins <ids>` 选择指定插件，`--no-plugins` 只装 core。全部 7 条 hook route 都属于 core。install state 是 protocol 3。
 - §3.1 第 6、7 条和 §3.3 按新的 owner 字段与 protocol 3 改写。
 
 ## Optimization Backlog

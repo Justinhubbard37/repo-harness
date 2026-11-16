@@ -94,7 +94,7 @@ Inspect reads only the package contract body.
 The repo file is an opt-in marker. Its content does not affect inspection.
 A missing repo file still produces `missing-runtime-contract-manifest`.
 The shell scaffold does not write the marker.
-Run `repo-harness init --repo <target-repo>` to attach the workflow.
+Run `rh init --repo <target-repo>` to attach the workflow.
 The installed-contract resolver statements in earlier dated closeouts are historical.
 
 ## 3. P3：设计决策与不变量
@@ -138,7 +138,7 @@ bun scripts/inspect-project-state.ts --repo . --format text
 ### 3.5 跨 capability 边界
 
 - 本 capability 只读 contract-assets 的契约。`inspectRepo` 调用 `scripts/workflow-contract.ts` 的 `loadWorkflowContract`（`scripts/inspect-project-state.ts:3`、`:101`）。模型里对应关系是 `relation.inspection-migration.primary.contract-assets`（`reads`）。
-- `repo-harness init` 不属于本 capability。`src/cli/commands/init.ts` 归 contract-assets 的 template-projection 组件。#930 起 init 不再运行 inspector。inspector 由 `repo-harness run inspect-project-state`（`src/effects/runtime/helper-runner.ts` 的 `runHelper`）、`scripts/check-ci.sh:192` 与 `scripts/run-skill-evals.ts:612` 当子进程运行，所以 CodeGraph 没有到 inspector 的调用边。
+- `rh init` 不属于本 capability。`src/cli/commands/init.ts` 归 contract-assets 的 template-projection 组件。#930 起 init 不再运行 inspector。inspector 由 `rh run inspect-project-state`（`src/effects/runtime/helper-runner.ts` 的 `runHelper`）、`scripts/check-ci.sh:192` 与 `scripts/run-skill-evals.ts:612` 当子进程运行，所以 CodeGraph 没有到 inspector 的调用边。
 - 组件：只有 `component.inspection-migration.primary`，9 个文件、4,023 行（`archctx refactor scan`，2026-10-11）。
 
 ## 4. 历史决策记录（append-only）

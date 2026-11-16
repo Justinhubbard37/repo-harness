@@ -153,12 +153,12 @@ sequenceDiagram
 - plan 覆盖 scaffold/state 文件、typed hook 投影、模板、reference stub、workflow archive、known-generated 清理、deployment scaffold 和 managed-block 更新。写入前拒绝畸形 managed JSON、symlink、unsafe path、已占用的 move target 和归属不明的目标。
 - HRD-09 迁移把退役的 generated hook asset 按精确相对路径和 `sha256` 写进 workflow-contract migration manifest。`addLegacyCleanup()`（`src/effects/adoption/standard-plan.ts#addLegacyCleanup`）只在当前字节匹配声明指纹时删除；不匹配就告警并保留，通配符和未声明指纹被拒绝。repo-local `.codex/hooks.json` 只由显式 migration step 解析；managed command detector 删除 repo-harness 自有的命令，保留 custom commands、unrelated events 和 sibling hook blocks。删除、`gitUntrack`、adapter rewrite 与 typed helper 投影由同一个 `FsTransaction` 提交，没有 post-apply shell cleanup，也没有 runtime dual-read。self-host 源码 checkout 不进入下游 generated-runtime cleanup。
 - 事务在 apply 后持久化 manifest 和 registry projection，然后刷新 handoff 与 strict workflow evidence。每次写入把原字节和 content hash 存入 `.ai/harness/backups/fs-transaction/<transaction>/manifest.json`。remove 把旧文件移入 transaction backup area；move 记录 source 和 destination。manifest 落盘失败是 failed apply，不是 success。rollback 只恢复 transaction-owned operation，并拒绝覆盖 apply 之后的用户编辑。
-- `repo-harness init rollback --transaction <manifest>` 只在 target 仍归本事务时恢复 backup 和 Git index。`gitUntrack` rollback 恢复记录的 index mode 和 blob，不 stage 当前工作树字节。apply 只记录一个 `100644` 或 `100755` 的 stage-0 entry；mutation 前拒绝 unmerged entry、其他 mode 和 intent-to-add entry。changed target、changed index entry、missing blob、occupied restore path、symlink（含 dangling）或 invalid manifest 给出结构化失败，不覆盖用户数据。manifest 没有 index entry 时，提示用户手动运行 `git add -- <path>`。
+- `rh init rollback --transaction <manifest>` 只在 target 仍归本事务时恢复 backup 和 Git index。`gitUntrack` rollback 恢复记录的 index mode 和 blob，不 stage 当前工作树字节。apply 只记录一个 `100644` 或 `100755` 的 stage-0 entry；mutation 前拒绝 unmerged entry、其他 mode 和 intent-to-add entry。changed target、changed index entry、missing blob、occupied restore path、symlink（含 dangling）或 invalid manifest 给出结构化失败，不覆盖用户数据。manifest 没有 index entry 时，提示用户手动运行 `git add -- <path>`。
 
 ### 3.6 归属与开放问题（2026-10-11）
 
 - include 增加原本没有归属的 `src/cli/repo-adoption/**` 和 `src/cli/commands/migrate.ts`。没有删除任何条目。
-- `repo-harness migrate`（`src/cli/commands/migrate.ts`）删除 repo 级旧 hook adapter。它与 `init` 共用 `core/adoption/managed-hook-config.ts` 的识别逻辑。它的写入用逐文件备份加原子写（`migrate.ts:14-18`），不经过 `applyAdoptionPlan`。这是 §3.1 第 5 条之外的第二条写入路径。它是有意保留的独立迁移命令，还是应该并入 FsTransaction？没有记录。
+- `rh migrate`（`src/cli/commands/migrate.ts`）删除 repo 级旧 hook adapter。它与 `init` 共用 `core/adoption/managed-hook-config.ts` 的识别逻辑。它的写入用逐文件备份加原子写（`migrate.ts:14-18`），不经过 `applyAdoptionPlan`。这是 §3.1 第 5 条之外的第二条写入路径。它是有意保留的独立迁移命令，还是应该并入 FsTransaction？没有记录。
 - `src/effects/path-safety.ts` 被 `src/core/evidence/` 和 `src/effects/evidence/` 下的 7 个文件 import（归属提议 §7 风险 3）。这条反向依赖会在 evidence-ledger 建立后成为一条进入本 capability 的跨 capability 边。它是否应该移到共享位置？没有记录。
 
 ---
@@ -190,5 +190,5 @@ bun src/cli/index.ts init --repo . --dry-run
 
 ## Optimization Backlog
 
-- 决定 `repo-harness migrate` 是否并入 FsTransaction（见 §3.6）。
+- 决定 `rh migrate` 是否并入 FsTransaction（见 §3.6）。
 - 在 arch-context#296 之后，删除与 evals-checks 重复的测试条目（`tests/cli/adoption-plan.test.ts`、`tests/fixtures/adoption/**`），`verification` 命令保持不变。

@@ -176,7 +176,7 @@ describe("create-project-dirs scaffold parity", () => {
       expect(existsSync(join(scaffolded, "docs/reference-configs/heartbeat-triage.md"))).toBe(true);
       expect(existsSync(join(scaffolded, "docs/reference-configs/document-generation.md"))).toBe(true);
       expect(existsSync(join(scaffolded, "docs/reference-configs/global-working-rules.md"))).toBe(true);
-      expect(existsSync(join(scaffolded, "docs/reference-configs/minimal-change-hooks.md"))).toBe(true);
+      expect(existsSync(join(scaffolded, "docs/reference-configs/change-assessment.md"))).toBe(true);
       for (const docId of ["harness-overview", "agentic-development-flow", "external-tooling"]) {
         const stub = readFileSync(join(scaffolded, "docs/reference-configs", `${docId}.md`), "utf-8");
         expect(stub).toContain("<!-- repo-harness: reference-config-stub v1 -->");
