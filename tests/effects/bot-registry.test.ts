@@ -49,6 +49,7 @@ describe('Bot registry', () => {
         { bot_id: 'ok', name: ' padded', host: 'X' },
         { bot_id: 'ok', name: 'X', host: 'X', slack_bot_id: 'https://hooks.slack.example/T0' },
         { bot_id: 'ok', name: 'X', host: 'X', herdr_agent: 'Has Space' },
+        { bot_id: 'ok', name: `ghp_${'A'.repeat(36)}`, host: 'X' },
       ]) expect(code(() => registerBot(input, h.env))).toBe('bot_invalid');
     } finally { h.cleanup(); }
   });
@@ -80,7 +81,15 @@ describe('Bot registry', () => {
       expect(code(() => readBotRegistry(h.env))).toBe('bot_registry_invalid');
       writeFileSync(join(directory, 'impostor.json'), '{"protocol":1');
       expect(code(() => readBotRegistry(h.env))).toBe('bot_registry_invalid');
+      writeFileSync(join(directory, 'impostor.json'), JSON.stringify({ ...hermes, bot_id: 'impostor', name: `ghp_${'A'.repeat(36)}`, herdr_agent: null }));
+      expect(code(() => readBotRegistry(h.env))).toBe('bot_registry_invalid');
       rmSync(join(directory, 'impostor.json'));
+      const token = `sk-${'a'.repeat(20)}`;
+      writeFileSync(join(directory, `${token}.json`), JSON.stringify({ ...hermes, bot_id: token, herdr_agent: null }));
+      let failure: unknown;
+      try { readBotRegistry(h.env); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({ code: 'bot_registry_invalid', message: 'bot registry entry <credential-shaped file name> is invalid' });
+      rmSync(join(directory, `${token}.json`));
       expect(readBotRegistry(h.env)).toHaveLength(1);
     } finally { h.cleanup(); }
   });
@@ -94,7 +103,7 @@ describe('Bot registry', () => {
       let failure: unknown;
       try { readBotRegistry(h.env); } catch (error) { failure = error; }
       expect(failure).toBeInstanceOf(BotRegistryError);
-      expect(failure).toMatchObject({ code: 'bot_registry_invalid', message: `BOT_RECORD_RETIRED_FIELD: mcp_client_id; remove the key from ${path}` });
+      expect(failure).toMatchObject({ code: 'bot_registry_invalid', message: 'BOT_RECORD_RETIRED_FIELD: mcp_client_id; remove the key from "hermes.json"' });
     } finally { h.cleanup(); }
   });
 

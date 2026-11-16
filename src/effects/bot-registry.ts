@@ -7,6 +7,7 @@
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'fs';
 import { retryWindowsSharingRace } from './atomic-append';
 import { join } from 'path';
+import { containsSecret } from '../core/security/secret-patterns';
 import { withExclusiveDirectoryLock } from './locking/exclusive-directory-lock';
 import { repoHarnessHome } from './repo-harness-home';
 
@@ -35,7 +36,8 @@ export interface BotRecordV1 {
   readonly registered_at: string;
 }
 
-export type BotRegistryErrorCode = 'bot_invalid' | 'bot_exists' | 'bot_conflict' | 'bot_registry_full' | 'bot_registry_invalid';
+export type BotRegistryErrorCode =
+  | 'bot_invalid' | 'bot_id_invalid' | 'bot_not_registered' | 'bot_exists' | 'bot_conflict' | 'bot_registry_full' | 'bot_registry_invalid';
 
 export class BotRegistryError extends Error {
   constructor(readonly code: BotRegistryErrorCode, message: string) {
@@ -76,7 +78,7 @@ export function validateBotRecord(value: unknown, file = 'the Bot record'): BotR
   if (typeof record.registered_at !== 'string' || !TIMESTAMP.test(record.registered_at) || new Date(record.registered_at).toISOString() !== record.registered_at) {
     invalid('registered_at is invalid');
   }
-  return Object.freeze({
+  const bot = Object.freeze({
     protocol: BOT_RECORD_PROTOCOL,
     kind: BOT_RECORD_KIND,
     bot_id: record.bot_id,
@@ -86,6 +88,12 @@ export function validateBotRecord(value: unknown, file = 'the Bot record'): BotR
     herdr_agent: nullable(record.herdr_agent, HERDR_AGENT, 'herdr_agent'),
     registered_at: record.registered_at,
   });
+  // Readers print every field, so a record never holds a credential, whoever wrote the file.
+  for (const field of ['bot_id', 'name', 'host', 'slack_bot_id', 'herdr_agent'] as const) {
+    const value = bot[field];
+    if (value !== null && containsSecret(value)) invalid(`${field} looks like a credential`);
+  }
+  return bot;
 }
 
 export function botRegistryPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -126,21 +134,31 @@ export function readBotRegistry(env: NodeJS.ProcessEnv = process.env): readonly 
   if (files.length > BOT_REGISTRY_MAX_RECORDS) throw new BotRegistryError('bot_registry_invalid', 'bot registry has too many entries');
   const bots = files.map((name) => {
     const path = join(directory, name);
+    // An older rh accepted a credential-shaped bot_id, and the file name repeats it.
+    const label = containsSecret(name) ? '<credential-shaped file name>' : JSON.stringify(name);
     try {
       const stat = lstatSync(path);
       if (!name.endsWith('.json') || !stat.isFile() || stat.size > BOT_RECORD_MAX_BYTES) throw new Error('entry');
-      const bot = validateBotRecord(JSON.parse(readFileSync(path, 'utf8')), path);
+      const bot = validateBotRecord(JSON.parse(readFileSync(path, 'utf8')), label);
       if (`${bot.bot_id}.json` !== name) throw new Error('name');
       return bot;
     } catch (error) {
       if (error instanceof BotRegistryError && error.message.startsWith(`${BOT_RECORD_RETIRED_FIELD}:`)) {
         throw new BotRegistryError('bot_registry_invalid', error.message);
       }
-      throw new BotRegistryError('bot_registry_invalid', `bot registry entry ${JSON.stringify(name)} is invalid`);
+      throw new BotRegistryError('bot_registry_invalid', `bot registry entry ${label} is invalid`);
     }
   });
   assertUniqueIdentities(bots, 'bot_registry_invalid');
   return Object.freeze(bots);
+}
+
+/** One record by id; the whole registry must read cleanly, as for every reader. */
+export function findBot(botId: string, env: NodeJS.ProcessEnv = process.env): BotRecordV1 {
+  if (!BOT_ID.test(botId)) throw new BotRegistryError('bot_id_invalid', 'bot id must match [a-z][a-z0-9-]{0,62}');
+  const bot = readBotRegistry(env).find(entry => entry.bot_id === botId);
+  if (bot === undefined) throw new BotRegistryError('bot_not_registered', botId);
+  return bot;
 }
 
 export interface RegisterBotInput {
