@@ -454,7 +454,11 @@ error code in the executor JSON.
 
 ## Dispatch packet
 
-Send through the host channel. Never restate the issue.
+Send through the host channel. Never restate the issue. `rh board dispatch`
+sends this text. The `Authority:` line is `WORKER_AUTHORITY` in
+`src/effects/board/dispatch.ts`, which is the single source: change the
+constant first, then this quote. `tests/board-dispatch.test.ts` keeps them
+equal.
 
 ```text
 Role: worker (read references/worker.md of repo-harness-issue-flow)

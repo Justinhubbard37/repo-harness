@@ -238,9 +238,9 @@ module is in the title so that a list view shows the write scopes.
 ## 7. Dispatch
 
 - The issue is the brief. The dispatch packet holds only the issue URL,
-  the role (`worker`), the worktree path and branch name, the model and the
-  report channel. Do not restate the requirement in chat. A second copy
-  becomes a second authority.
+  the role (`worker`), the worktree path and branch name, the model, the
+  report channel and the `Authority:` line. Do not restate the requirement
+  in chat. A second copy becomes a second authority.
 - Post the claim, then the packet. Post one `issue claim` on the child
   issue for the worker with the required fields in `templates.md` § issue
   claim. The claim is the worker's identity on the board, and the worker

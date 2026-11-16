@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { DispatchError, planDispatch, type DispatchPlanV1 } from '../src/core/board/dispatch';
-import { executeDispatch, type DispatchPorts } from '../src/effects/board/dispatch';
+import { WORKER_AUTHORITY, executeDispatch, type DispatchPorts } from '../src/effects/board/dispatch';
 import { withSeatLine } from '../src/core/board/seat-line';
 import { HerdrCoreError } from '../src/effects/terminal/herdr-core';
 import type { SeatAccountQuotas } from '../src/core/board/seat-routing';
@@ -183,6 +185,16 @@ test('coordinator ties use comment IDs and a handoff selects the successor', () 
   const selected = (claims: BoardCommentV1[]) => planDispatch({ seats: DEFAULT_SEATS_CONFIG, quota: NORMAL, terminals: [], parent: { ...parent, parent: { ...parent.parent, comments: { truncated: false, comments: [comment(planBody(4)), ...claims] } } } }).coordinator;
   expect(selected([second, first])).toBe(first.url);
   expect(selected([first, { ...second, body: `${second.body}\nPrior claim: ${first.url}` }])).toBe(second.url);
+});
+
+test('the packet carries the worker Authority line, and templates.md quotes the same text', async () => {
+  const tasks: string[] = [];
+  const run = ports({ openTab: args => { tasks.push(String(args.task)); } });
+  await executeDispatch(planOf(['route:important_deep']), context, run.base);
+  expect(tasks).toHaveLength(1);
+  expect(tasks[0]).toContain(`Authority: ${WORKER_AUTHORITY}`);
+  const templates = readFileSync(join(import.meta.dir, '..', 'assets/skills/repo-harness-issue-flow/references/templates.md'), 'utf8');
+  expect(templates).toContain(`\nAuthority: ${WORKER_AUTHORITY}\n`);
 });
 
 test('a tab failure before the request releases the claim; an ambiguous one keeps it and reports launch_unknown', async () => {

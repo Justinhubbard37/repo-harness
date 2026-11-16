@@ -69,8 +69,14 @@ function claimBody(decision: DispatchedV1, branch: string, tab: string | null, r
   ].join('\n');
 }
 
+/**
+ * The worker's authority, verbatim (#2923). A worker whose packet is silent applies its global push rule and waits for a push go.
+ * `templates.md` § Dispatch packet quotes this text, and `tests/board-dispatch.test.ts` keeps the two equal.
+ */
+export const WORKER_AUTHORITY = 'implement, push the PR branch as soon as checks pass, open the PR, run your own fix rounds. No merge, no deletion outside the issue, no credentials.';
+
 function packet(decision: DispatchedV1, worktree: string, claimUrl: string): string {
-  return `Task: issue #${decision.issue} (${decision.title}). Worktree: ${worktree}. Claim: ${claimUrl}. Read the issue body and every comment first: gh issue view ${decision.issue} --comments. Work as the writer of repo-harness-issue-flow and report to the orchestrator when done.`;
+  return `Task: issue #${decision.issue} (${decision.title}). Worktree: ${worktree}. Claim: ${claimUrl}. Read the issue body and every comment first: gh issue view ${decision.issue} --comments. Work as the writer of repo-harness-issue-flow and report to the orchestrator when done. Authority: ${WORKER_AUTHORITY}`;
 }
 
 /** Failures that stop `tab.new` before it sends a request. Any other failure (a timeout, an unreadable answer) may follow a created tab. */
