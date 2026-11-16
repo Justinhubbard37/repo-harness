@@ -1744,6 +1744,9 @@ export const WORKFLOW_POLICY_KEYS = {
   external_tooling: { agent_fleet: { managed_agents: true, install_mode: true } },
   security: { reviewed_findings: {} },
   internal_pr_authors: {},
+  rules: {
+    TestBudget: { enabled: true, ratio_cap: true, file_cap: true, test_paths: true, product_paths: true },
+  },
 } as const satisfies PolicyKeyTree;
 
 type PolicyPathsOf<Tree, Prefix extends string> = {

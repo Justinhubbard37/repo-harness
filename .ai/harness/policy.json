@@ -54,5 +54,14 @@
       "install_mode": "auto-install-on-init"
     }
   },
-  "internal_pr_authors": []
+  "internal_pr_authors": [],
+  "rules": {
+    "TestBudget": {
+      "enabled": true,
+      "ratio_cap": 2,
+      "file_cap": 1,
+      "test_paths": ["tests"],
+      "product_paths": ["src", "scripts"]
+    }
+  }
 }
