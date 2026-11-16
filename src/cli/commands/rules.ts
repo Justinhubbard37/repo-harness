@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { appendFileSync, readFileSync } from 'fs';
+import { appendFileSync, existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import {
   TEST_BUDGET_IMPLEMENTATION_VERSION,
@@ -232,6 +232,9 @@ export function repositoryIdentity(target: string): string {
  * come from git; no ledger text is read here.
  */
 function readLedger(target: string): RuleLedgerReadV1 {
+  if (!existsSync(resolve(target, RULES_LEDGER_PATH))) {
+    throw new RulesStatusError('ledger_missing', `working-tree ${RULES_LEDGER_PATH} is missing`);
+  }
   const head = statusGit(target, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'], 'ledger_unreadable').trim();
   if (!COMMIT_SHA.test(head)) throw new RulesStatusError('ledger_unreadable', 'git rev-parse HEAD gave no commit id');
   const blob = statusGit(target, ['rev-parse', '--verify', '--end-of-options', `HEAD:${RULES_LEDGER_PATH}`], 'ledger_missing').trim();
@@ -247,7 +250,7 @@ function readLedger(target: string): RuleLedgerReadV1 {
  * ledger values; git is the only source of the head, the blob and the dirty flag.
  */
 export function runRulesStatus(input: { target: string }): RuleStatusV1 {
-  const target = resolve(input.target);
+  const target = statusGit(resolve(input.target), ['rev-parse', '--show-toplevel'], 'repository_unavailable').trim();
   const ledger = readLedger(target);
   const run = runHelper({ helper: 'maintenance-triage', args: ['--json'], cwd: target, stdio: 'pipe' });
   // Exit 1 with a valid document is a ledger with an error row, not a failed read.

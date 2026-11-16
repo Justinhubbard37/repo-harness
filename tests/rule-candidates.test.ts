@@ -250,6 +250,32 @@ describe('rh rules status on a checkout', () => {
     } finally { rmSync(repo, { recursive: true, force: true }); }
   });
 
+  test.each(['cwd', 'target'])('a subdirectory %s reads the root ledger and its dirty state', (mode) => {
+    const repo = ledgerRepo(entry('alpha', '3×'));
+    try {
+      const nested = join(repo, 'nested');
+      mkdirSync(nested);
+      writeFileSync(join(repo, RULES_LEDGER_PATH), `# Lessons\n\n${entry('beta', '2×')}`);
+      const result = run('bun', [CLI, 'rules', 'status', '--json', ...(mode === 'target' ? ['--target', nested] : [])], mode === 'cwd' ? nested : repo);
+      expect(result.status).toBe(0);
+      const document = JSON.parse(result.stdout);
+      expect(document.ledger.dirty).toBe(true);
+      expect(document.themes.map((row: { key: string }) => row.key)).toEqual(['beta']);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
+  test.each([false, true])('a deleted working-tree ledger is refused (staged: %s)', (staged) => {
+    const repo = ledgerRepo(entry('alpha', '3×'));
+    try {
+      rmSync(join(repo, RULES_LEDGER_PATH));
+      if (staged) expect(run('git', ['add', RULES_LEDGER_PATH], repo).status).toBe(0);
+      const result = status(repo, '--json');
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toEqual({ kind: 'repo-harness.rules.status', protocol: 1, error: { code: 'ledger_missing' } });
+      expect(result.stderr).toContain(`working-tree ${RULES_LEDGER_PATH} is missing`);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
   test('an entry with no Enforced by makes the ledger invalid and exits 1', () => {
     const repo = ledgerRepo(entry('alpha', '3×').replace('- Enforced by: judgment\n', ''));
     try {
