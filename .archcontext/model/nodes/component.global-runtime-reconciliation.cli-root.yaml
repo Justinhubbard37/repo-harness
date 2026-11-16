@@ -23,6 +23,8 @@ source:
     - "src/cli/commands/events.ts"
     - "src/cli/commands/worktrees.ts"
     - "src/cli/commands/catch-up.ts"
+    - "src/cli/commands/commands.ts"
+    - "scripts/check-cli-manifest.ts"
   entrypoints:
     - id: entrypoint.global-runtime-reconciliation.cli-root
       path: "src/cli/index.ts"

@@ -65,6 +65,7 @@
     "check:archctx-integration": "bun scripts/axr5-archctx-clean-room.ts",
     "check:state-boundaries": "bun scripts/check-state-boundaries.ts",
     "check:context-map": "bun scripts/check-context-map.ts",
+    "check:cli-manifest": "bun scripts/check-cli-manifest.ts",
     "check:ci": "bash scripts/check-ci.sh",
     "check:release": "bash scripts/check-npm-release.sh",
     "check:release-published": "bash scripts/check-release-published.sh",

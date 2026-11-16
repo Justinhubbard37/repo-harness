@@ -428,3 +428,49 @@ describe("check-context-map", () => {
     });
   }, 30_000);
 });
+
+describe("check-cli-manifest", () => {
+  const manifestScript = join(ROOT, "scripts/check-cli-manifest.ts");
+
+  function run(content: string, file = "README.md") {
+    const repo = mkdtempSync(join(tmpdir(), "cli-manifest-"));
+    try {
+      execFileSync("git", ["init", "-q", repo]);
+      write(repo, file, content);
+      execFileSync("git", ["-C", repo, "add", "."]);
+      return spawnSync("bun", [manifestScript, "--repo", repo], { encoding: "utf8" });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }
+
+  test("an unregistered command fails with its file and line", () => {
+    const result = run("text\n`rh nosuch`\n");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('README.md:2: unknown command "rh nosuch"');
+  });
+
+  test("an undeclared option fails, but a passthrough command accepts any option", () => {
+    expect(run("`rh board --nosuch`\n").stdout).toContain('unknown option "--nosuch" for "rh board"');
+    expect(run("`rh run verify-sprint --anything`\n").status).toBe(0);
+  });
+
+  test("a parent option before a nested command is valid; a bad nested command after it fails", () => {
+    expect(run("`rh board --parent 2862 attention --watch`\n").status).toBe(0);
+    expect(run("`rh board --parent 2862 attentionz`\n").stdout).toContain('unknown command "rh board attentionz"');
+  });
+
+  test("tokens after the -- terminator are not option names", () => {
+    expect(run("`rh operator capture --provider pi -- pi --nosuch`\n").status).toBe(0);
+    expect(run("`rh -- nosuch`\n").stdout).toContain('unknown command "rh nosuch"');
+  });
+
+  test("a short flag and --version on a subcommand are unknown", () => {
+    expect(run("`rh status -x`\n").stdout).toContain('unknown option "-x" for "rh status"');
+    expect(run("`rh status --version`\n").stdout).toContain('unknown option "--version" for "rh status"');
+  });
+
+  test("files outside the scanned locations are not read", () => {
+    expect(run("`rh nosuch`\n", "docs/note.md").status).toBe(0);
+  });
+});

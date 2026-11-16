@@ -290,6 +290,8 @@ if [[ "$lane" == all || "$lane" == governance ]]; then
   bash scripts/check-context-files.sh
   echo "[ci] context map"
   with_architecture_selection bun run check:context-map
+  echo "[ci] cli manifest"
+  bun run check:cli-manifest
 
   echo "[ci] repository inspection"
   bun scripts/inspect-project-state.ts --repo . --format text >/dev/null
