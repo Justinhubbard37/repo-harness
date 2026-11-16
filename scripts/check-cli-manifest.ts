@@ -22,9 +22,20 @@ const SCANNED = [
   /^CLAUDE\.md$/,
 ];
 const PATH_END = /[<[|$…]/;
+const FLAG = /^[[(]*(--?[A-Za-z][\w-]*)/;
 
 function findChild(command: Command, name: string): Command | undefined {
   return command.commands.find(child => child.name() === name || child.aliases().includes(name));
+}
+
+/** The flag one span token names, or undefined when the token is not a flag. */
+function flagOf(token: string): string | undefined {
+  return FLAG.exec(token)?.[1];
+}
+
+/** A declared option takes the next token as its value unless the value is inline (`--flag=value`). */
+function takesValue(option: Option | undefined, token: string): boolean {
+  return option !== undefined && (option.required || option.optional) && !token.includes("=");
 }
 
 /** The option a flag token names, in the chain or in any command below the last chain command (Commander passes an unmatched option down to the subcommand). */
@@ -35,6 +46,29 @@ function findOption(chain: readonly Command[], flag: string): Option | undefined
   const search = (command: Command): Option | undefined =>
     command.options.find(matches) ?? command.commands.map(search).find(found => found !== undefined);
   return search(chain[chain.length - 1]);
+}
+
+/**
+ * The target an implicit help command reads: the first operand of this command. Commander collects the
+ * operands with the options the chain declares and stops the list at a flag it does not know, so an
+ * unknown flag before the target leaves the command no target, and no target is no error.
+ */
+function helpTarget(chain: readonly Command[], tokens: readonly string[], start: number): string | undefined {
+  const declared = effectiveOptions(chain);
+  let optionsEnded = false;
+  for (let index = start; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!optionsEnded && token === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    const flag = optionsEnded ? undefined : flagOf(token);
+    if (flag === undefined) return token;
+    const option = declared.find(candidate => candidate.long === flag || candidate.short === flag);
+    if (option === undefined) return undefined;
+    if (takesValue(option, token) && index + 1 < tokens.length && !tokens[index + 1].startsWith("-")) index += 1;
+  }
+  return undefined;
 }
 
 function isBuiltinFlag(chain: readonly Command[], flag: string): boolean {
@@ -56,11 +90,10 @@ export function checkSpan(root: Command, span: string): string[] {
       optionsEnded = true;
       continue;
     }
-    const flag = optionsEnded ? undefined : /^[[(]*(--?[A-Za-z][\w-]*)/.exec(token)?.[1];
-    if (flag !== undefined && token.replace(/^[[(]*/, "").startsWith("-")) {
+    const flag = optionsEnded ? undefined : flagOf(token);
+    if (flag !== undefined) {
       flags.push(flag);
-      const option = findOption(chain, flag);
-      if (option && (option.required || option.optional) && !token.includes("=") && index + 1 < tokens.length && !tokens[index + 1].startsWith("-")) index += 1;
+      if (takesValue(findOption(chain, flag), token) && index + 1 < tokens.length && !tokens[index + 1].startsWith("-")) index += 1;
       continue;
     }
     if (!pathOpen) continue;
@@ -75,8 +108,12 @@ export function checkSpan(root: Command, span: string): string[] {
       pathTokens.push(token);
       continue;
     }
-    // `rh <path> help [<command>]` is Commander's implicit help command: it prints help and exits 0, and it reads the rest of the line as its target. The same rule decides it here and in the manifest walk.
-    if (implicitHelpCommand(current)?.name() === token) return [];
+    // `rh <path> help [<command>]` is Commander's implicit help command. `_dispatchHelpCommand(target)` prints help and exits 0 when this command resolves the target, and when there is none. A target it cannot resolve is a usage error, so the gate reports it. The same rule decides it here and in the manifest walk.
+    if (implicitHelpCommand(current)?.name() === token) {
+      const target = helpTarget(chain, tokens, index + 1);
+      if (target === undefined || PATH_END.test(target) || findChild(current, target) !== undefined) return [];
+      return [`unknown command "rh ${[...pathTokens, token, target].join(" ")}"`];
+    }
     if (current.commands.length > 0 && current.registeredArguments.length === 0) {
       return [`unknown command "rh ${[...pathTokens, token].join(" ")}"`];
     }
