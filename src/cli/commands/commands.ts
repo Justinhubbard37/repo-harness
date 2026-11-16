@@ -29,6 +29,12 @@ export function allowsUnknownOptions(command: Command): boolean {
   return (command as unknown as { _allowUnknownOption: boolean })._allowUnknownOption;
 }
 
+/** The implicit help command of one command, or undefined. Commander adds this command to the parse path at run time, so `rh <path> help [<sub>]` prints help and exits 0, while a command with its own action (`rh board help`) is a usage error. Commander keeps the accessor private; this is the only reader. */
+export function implicitHelpCommand(command: Command): Command | undefined {
+  // SAFETY: Commander 15 defines `_getHelpCommand` on every Command and it returns the implicit help command or null; the public type has no equivalent.
+  return (command as unknown as { _getHelpCommand: () => Command | null })._getHelpCommand() ?? undefined;
+}
+
 /** The options that bind for the last command of a chain: its own, then each ancestor's. Commander binds an ancestor option wherever it appears. A nearer declaration of the same flag wins. */
 export function effectiveOptions(chain: readonly Command[]): Option[] {
   const seen = new Set<string>();
@@ -57,8 +63,8 @@ function argumentLabel(argument: Command['registeredArguments'][number]): string
   return argument.required ? `<${name}>` : `[${name}]`;
 }
 
-/** Every leaf command of the tree, hidden ones included, sorted by its path. */
-export function collectCommandManifest(root: Command): ManifestCommand[] {
+/** One walk of the commander tree gives every listing: the JSON manifest, the plain `rh commands` list and, through `implicitHelpCommand()`, the drift gate. A leaf is a registered command without subcommands, so Commander's implicit help command is never a leaf. */
+function collectLeaves(root: Command): Array<ManifestCommand & { readonly hidden: boolean }> {
   const entries: Array<ManifestCommand & { readonly hidden: boolean }> = [];
   const help = root.createHelp();
   const walk = (chain: readonly Command[], hidden: boolean): void => {
@@ -82,21 +88,17 @@ export function collectCommandManifest(root: Command): ManifestCommand[] {
     }
   };
   walk([root], false);
-  return entries.sort((a, b) => a.path.join(' ').localeCompare(b.path.join(' '))).map(({ hidden: _hidden, ...entry }) => entry);
+  return entries.sort((a, b) => a.path.join(' ').localeCompare(b.path.join(' ')));
 }
 
+/** Every leaf command of the tree, hidden ones included, sorted by its path. */
+export function collectCommandManifest(root: Command): ManifestCommand[] {
+  return collectLeaves(root).map(({ hidden: _hidden, ...entry }) => entry);
+}
+
+/** `rh commands` text: the visible leaves of the same walk as the JSON manifest, so the plain list and the JSON name one set of leaves. */
 function visiblePaths(root: Command): string[] {
-  const paths: string[] = [];
-  const help = root.createHelp();
-  const walk = (command: Command, prefix: readonly string[]): void => {
-    for (const child of help.visibleCommands(command)) {
-      const path = [...prefix, child.name()];
-      if (child.commands.length > 0) walk(child, path);
-      else paths.push(path.join(' '));
-    }
-  };
-  walk(root, []);
-  return paths.sort();
+  return collectLeaves(root).filter(entry => !entry.hidden).map(entry => entry.path.join(' '));
 }
 
 /** `rh commands`: the command tree as data, derived from the commander tree at run time. */

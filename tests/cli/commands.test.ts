@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Command } from "commander";
 import { buildProgram } from "../../src/cli/index";
+import { checkSpan } from "../../scripts/check-cli-manifest";
 
 type Manifest = { kind: string; protocol: number; commands: { path: string[]; plugin: string; options: { flags: string }[] }[] };
 
@@ -11,16 +12,20 @@ function leafPaths(command: Command, prefix: string[] = []): string[] {
   });
 }
 
-async function manifest(): Promise<Manifest> {
+async function output(argv: string[]): Promise<string[]> {
   const lines: string[] = [];
   const original = console.log;
   console.log = (line: string) => void lines.push(line);
   try {
-    await buildProgram().parseAsync(["bun", "rh", "commands", "--json"]);
+    await buildProgram().parseAsync(["bun", "rh", ...argv]);
   } finally {
     console.log = original;
   }
-  return JSON.parse(lines.join("\n")) as Manifest;
+  return lines;
+}
+
+async function manifest(): Promise<Manifest> {
+  return JSON.parse((await output(["commands", "--json"])).join("\n")) as Manifest;
 }
 
 describe("rh commands", () => {
@@ -45,5 +50,22 @@ describe("rh commands", () => {
     const flags = (await manifest()).commands.find(entry => entry.path.join(" ") === "board parents")?.options.map(option => option.flags) ?? [];
     expect(flags).toContain("--json");
     expect(flags.some(flag => flag.startsWith("--parent"))).toBe(true);
+  });
+
+  test("every printed path passes the manifest gate", async () => {
+    const root = buildProgram();
+    const printed = await output(["commands"]);
+    expect(printed.length).toBeGreaterThan(0);
+    expect(printed.filter(path => checkSpan(root, `rh ${path}`).length > 0)).toEqual([]);
+  });
+
+  test("the gate accepts Commander's implicit help command where the CLI prints help", () => {
+    const root = buildProgram();
+    expect(checkSpan(root, "rh review help")).toEqual([]);
+    expect(checkSpan(root, "rh tools ensure help")).toEqual([]);
+    expect(checkSpan(root, "rh help")).toEqual([]);
+    expect(checkSpan(root, "rh review help round")).toEqual([]);
+    // `rh board` owns an action, so Commander adds no help command there and the CLI rejects the word.
+    expect(checkSpan(root, "rh board help")).toContainEqual('unknown command "rh board help"');
   });
 });

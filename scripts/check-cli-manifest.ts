@@ -8,7 +8,7 @@ import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import type { Command, Option } from "commander";
-import { allowsUnknownOptions, effectiveOptions } from "../src/cli/commands/commands";
+import { allowsUnknownOptions, effectiveOptions, implicitHelpCommand } from "../src/cli/commands/commands";
 import { buildProgram } from "../src/cli/index";
 
 const SCANNED = [
@@ -75,6 +75,8 @@ export function checkSpan(root: Command, span: string): string[] {
       pathTokens.push(token);
       continue;
     }
+    // `rh <path> help [<command>]` is Commander's implicit help command: it prints help and exits 0, and it reads the rest of the line as its target. The same rule decides it here and in the manifest walk.
+    if (implicitHelpCommand(current)?.name() === token) return [];
     if (current.commands.length > 0 && current.registeredArguments.length === 0) {
       return [`unknown command "rh ${[...pathTokens, token].join(" ")}"`];
     }
