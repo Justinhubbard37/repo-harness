@@ -232,11 +232,11 @@ You are the head owner. Only you push to this branch.
   checks, push, answer the threads. The fix-loop rule of `SKILL.md` and
   `acceptor.md` §2.2 sets the rounds. The coordinator starts each review
   with `rh board review`; you do not start one.
-- **Review threads.** Fix each P0, P1 and P2 in this branch. Reply in the
-  thread with the fix SHA. Do not resolve another reviewer's thread. For a
-  P3 or a finding that you dispute, reply with your reason and leave the
-  disposition to the coordinator. Rule 4 of `acceptor.md` §2.2 can move a
-  P2 family to a follow-up issue.
+- **Review threads.** Fix each P0 and P1 in this branch. Reply in the
+  thread with the fix SHA. Do not resolve another reviewer's thread. A P2
+  is a follow-up issue, not a fix round: the coordinator files it and
+  resolves its thread. For a P3 or a finding that you dispute, reply with
+  your reason and leave the disposition to the coordinator.
 - **Fix the class.** For each finding, list the sibling inputs: the other
   inputs that reach the same defect. Cover the finding and its siblings in
   one table-driven case, and name the siblings in the fix commit. After a

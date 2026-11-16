@@ -6,6 +6,7 @@ import { isRecord } from '../evidence/is-record';
 import { SHA256_PREFIXED_PATTERN } from '../evidence/sha256-pattern';
 import { sha256Prefixed } from '../evidence/sha256';
 import { modelFamily } from './model-family';
+import { isBlockingSeverity, type ReviewSeverity } from './finding-severity';
 import { isReviewRuntimeId, type ReviewRuntimeId } from './review-runtimes';
 
 export { canonicalize as stableJson } from '../evidence/canonical-json';
@@ -34,7 +35,7 @@ export type AcceptancePolicyV2 = {
 export type AcceptancePolicy = AcceptancePolicyV1 | AcceptancePolicyV2;
 
 export type AcceptanceFinding = {
-  severity: 'P0' | 'P1' | 'P2' | 'P3';
+  severity: ReviewSeverity;
   message: string;
 };
 
@@ -550,7 +551,7 @@ export function validateDisposition(
     if (!['Claude', 'Codex', 'Pi'].includes(reviewer) || source !== expectedSource || actor !== null) {
       fail('external_pass reviewer/source must match the approved reviewer policy');
     }
-    if (findings.some((finding) => finding.severity === 'P0' || finding.severity === 'P1')) {
+    if (findings.some((finding) => isBlockingSeverity(finding.severity))) {
       fail('external_pass cannot carry P0 or P1 findings');
     }
     return;
@@ -565,7 +566,7 @@ export function validateDisposition(
   if (!['Claude', 'Codex', 'Pi'].includes(reviewer) || source !== acceptancePolicySource()) {
     fail('reject reviewer/source must match the approved reviewer policy');
   }
-  if (findings.length === 0) fail('reject requires at least one finding');
+  if (!findings.some((finding) => isBlockingSeverity(finding.severity))) fail('reject requires at least one P0 or P1 finding');
 }
 
 /**

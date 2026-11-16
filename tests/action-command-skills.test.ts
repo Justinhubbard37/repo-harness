@@ -620,24 +620,25 @@ describe("repo-harness action command skills", () => {
     expect(acceptor).toContain("repo-harness-review-publish-receipt");
     expect(acceptor).toContain("review_publish_unknown");
     expect(acceptor).toContain("model_relation");
-    // M32: reviewers read CI and the recorded evidence. #2008 rule 4: a P2 family can be deferred; a merge needs a PASS.
+    // M32: reviewers read CI and the recorded evidence. #2936: a FAIL needs a P0 or P1; a P2 is a follow-up; a merge needs a PASS.
     const flat = (text: string) => text.replace(/\s+/g, " ");
     expect(flat(acceptor)).toContain("Never rerun a passing typecheck or test.");
     expect(flat(acceptor)).toContain("Round 3** runs with no owner question");
-    expect(flat(acceptor)).toContain("Rule 4 decides whether a `FAIL` after round 3 takes another round, defers a P2 family or becomes an owner gate. A merge always needs a `PASS` record.");
+    expect(flat(acceptor)).toContain("A `FAIL` has at least one P0 or P1 finding. A P2 and a P3 do not block a merge: a `PASS` record carries them as follow-ups. Rule 4 decides whether a `FAIL` after round 3 takes another round or becomes an owner gate. A merge always needs a `PASS` record.");
+    expect(flat(acceptor)).not.toContain("defers a P2 family");
     expect(worker).toContain("**Fix the class.**");
 
-    // rv1608-r1-02: every rule that resolves threads or needs zero open threads allows the rule-4 deferral.
-    const ruleFourThreadSites: Array<[string, string]> = [
-      ["references/acceptor.md", "resolves each remaining P2 thread with a reply that links the follow-up issue (§6)"],
-      ["references/acceptor.md", "A PR with a rule-4 deferral (§2.2) passes this check only after the coordinator resolves the deferred P2 threads (§6)"],
-      ["references/acceptor.md", "or with the follow-up issue link of a rule-4 deferral (§2.2)"],
-      ["references/board.md", "or with the rule-4 follow-up issue link (`acceptor.md` §2.2)"],
+    // #2936: every rule that resolves threads or needs zero open threads names the P2 follow-up.
+    const p2ThreadSites: Array<[string, string]> = [
+      ["references/acceptor.md", "coordinator then resolves each P2 thread with a `deferred` reply that links"],
+      ["references/acceptor.md", "A P2 thread passes this check only after the coordinator files the"],
+      ["references/acceptor.md", "with the follow-up issue link of a P2 (§2.2). Both are a"],
+      ["references/board.md", "link of a P2 (`acceptor.md` §2.2)"],
       ["references/templates.md", "| deferred #<follow-up issue>"],
-      ["references/orchestrator.md", "For a rule-4 deferral, you resolve the deferred P2 threads first (`acceptor.md` §6)"],
-      ["references/orchestrator.md", "A rule-4 deferral of `acceptor.md` §2.2 still needs that `PASS`."],
+      ["references/orchestrator.md", "You resolve a P2 thread with its follow-up issue link first (`acceptor.md` §6)"],
+      ["references/orchestrator.md", "with a P2 needs no fix round: the P2 is a follow-up issue"],
     ];
-    for (const [path, text] of ruleFourThreadSites) {
+    for (const [path, text] of p2ThreadSites) {
       expect(flat(readFileSync(join(SKILLS_ROOT, "repo-harness-issue-flow", path), "utf-8"))).toContain(text);
     }
   });

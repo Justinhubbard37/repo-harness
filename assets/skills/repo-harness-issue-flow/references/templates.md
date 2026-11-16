@@ -138,6 +138,16 @@ archimap, a source scan or memory.
 The child has no dependency section. Its parent, blockers, milestone and
 tier are GitHub fields (Plan data, above).
 
+## Follow-up issue (P2 findings of a review)
+
+A review that returns `PASS` with P2 findings makes one follow-up issue
+for the whole PR, under the same parent (`acceptor.md` §2.2). It is a child
+issue in the shape above, with the P2 findings as its `Do` lines and the
+tier of the module it touches. Write the title as
+`<module>: <outcome> (P2 follow-up of #<PR>)`. Name every P2 finding ID and
+its review thread URL, so the coordinator can resolve each thread with the
+`deferred #<follow-up issue>` reply.
+
 ## PR body
 
 ````markdown
@@ -412,8 +422,8 @@ Why: <reason; for fixed, the test that fails on the base; for confirmed, the acc
 ```
 
 The head owner replies `fixed` or `disputed` and leaves the thread open.
-Only the coordinator replies `rejected`, or `deferred` for a rule-4
-deferral (`acceptor.md` §2.2), then resolves the thread (`board.md` rule 5).
+Only the coordinator replies `rejected`, or `deferred` for a P2
+(`acceptor.md` §2.2), then resolves the thread (`board.md` rule 5).
 `rh review publish` writes the `confirmed` reply. It posts it on each
 thread in the receipt's `confirmed_fixed` list and then resolves that
 thread (`acceptor.md` §6). Nobody writes this disposition by hand.

@@ -155,7 +155,7 @@ map ─▶ split ─▶ gap review ─▶ publish ─▶ dispatch ─▶ worker 
   provisional; confirm the evidence before the merge (`references/acceptor.md` §1). The rolling projection PR
   (`archctx/projection`) merges on green CI; its merge is its acceptance.
 - Fix rounds. A fix loop continues after round 3 without the owner while
-  each round has fewer blocking findings (P0-P2) than the round before and
+  each round has fewer blocking findings (P0-P1) than the round before and
   the scope does not grow. A grown scope is a joint decision. When the count does not drop but no open blocking finding touches I1 or I2, the loop continues by joint decision under one rule. A new P0
   finding, or a new P1 finding on I1 or I2, goes to the owner as a notice. The loop continues
   without an owner word when the fix closes the finding. It stops at the
@@ -163,7 +163,9 @@ map ─▶ split ─▶ gap review ─▶ publish ─▶ dispatch ─▶ worker 
   control or grow the scope. Each merge outside rule 2, each release, each change that reads, moves or exposes a
   credential and each deletion that git cannot restore stay with
   the owner. Any other new P1 finding does not stop the loop. Round 5 is
-  the hard stop. Details:
+  the hard stop. A P2 does not block a merge: the `PASS` record carries it,
+  and the coordinator files one follow-up issue for the PR's P2 findings
+  under the same parent. Details:
   `references/acceptor.md` §2.2. For issue-flow review loops,
   this rule replaces the three-round cap of the managed global working
   rules.

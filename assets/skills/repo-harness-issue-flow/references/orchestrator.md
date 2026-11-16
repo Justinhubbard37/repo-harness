@@ -423,9 +423,11 @@ host's PR events or check when the worker reports.
   Send each reviewer the review packet of `acceptor.md` §2.1. Each reviewer
   posts an `acceptance claim` before it reads. Who reviews each
   round, and how many claims a round has, follow `acceptor.md` §2.2.
-  Findings take the severities of `acceptor.md` §3. A P3 does not block
-  the PR; apply the deferred-scope rule (§2) to its follow-up. Send the
-  findings to the worker that
+  Findings take the severities of `acceptor.md` §3. A P2 and a P3 do not
+  block the PR: the `PASS` record carries them, and you file one follow-up
+  issue for the PR's P2 findings under the same parent and resolve their
+  threads with the `deferred` reply (`acceptor.md` §2.2, `templates.md`).
+  Send the findings to the worker that
   wrote the PR only when the worker cannot read them: the worker reads the
   acceptance records and review threads on its PR and runs its own fix
   rounds (`worker.md` §7). A Codex worker is the exception: you push its
@@ -588,15 +590,15 @@ A PR is eligible when all of these are true:
 
 - It is open and not draft.
 - Its required checks are SUCCESS on its own head.
-- Its tier review passed on a subject SHA. A rule-4 deferral of
-  `acceptor.md` §2.2 still needs that `PASS`. A Low PR needs no review, but
+- Its tier review passed on a subject SHA. A review that returns `PASS`
+  with a P2 needs no fix round: the P2 is a follow-up issue. A Low PR needs no review, but
   its PR body must hold the author verification evidence
   (`docs/reference-configs/agentic-development-flow.md`, Review by risk).
 - Its head equals the reviewed subject. Rows of an earlier head do not
   count for a later head.
 - It has no unresolved review thread that a person started. A review bot
-  thread is advisory input and does not block. For a rule-4 deferral, you
-  resolve the deferred P2 threads first (`acceptor.md` §6).
+  thread is advisory input and does not block. You resolve a P2 thread with
+  its follow-up issue link first (`acceptor.md` §6).
 - Its closing references are correct.
 
 ```bash

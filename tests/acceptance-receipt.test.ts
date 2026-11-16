@@ -146,6 +146,24 @@ test('generic review Receipt is launcher-independent and rejects every added bin
   writeFileSync(acceptanceReceiptPath(root,home),bytes[0]!);
 });
 
+test('a reject acceptance needs a P0 or P1 finding; a P2 is a follow-up, not a reject reason', async () => {
+  const { root, home } = makeFixture();
+  const input = { root, authority: authorityFor(root), authorityHome: home,
+    verification: '.ai/harness/runs/acceptance.report.json', disposition: 'reject' as const,
+    reviewer: 'Claude', source: 'generic-review', actor: null, author: null,
+    summary: '[fixture opinion] candidate refused', now: () => new Date('2026-10-02T00:00:00.000Z') };
+  // No finding at all, and a P2-only finding, both refuse: neither blocks a merge (#2936).
+  for (const findings of [[], [{ severity: 'P2' as const, message: '[fixture opinion] small defect' }]]) {
+    await expect(recordAcceptance({ ...input, findings, reviewResult: await fixtureReviewResult({ ...input, findings }) }))
+      .rejects.toThrow('reject requires at least one P0 or P1 finding');
+  }
+  // One P1 finding records the reject.
+  const findings = [{ severity: 'P1' as const, message: '[fixture opinion] wrong boundary' }];
+  const receipt = await recordAcceptance({ ...input, findings, reviewResult: await fixtureReviewResult({ ...input, findings }) });
+  expect(receipt.disposition).toBe('reject');
+  expect(receipt.findings).toEqual(findings);
+}, 60_000);
+
 afterEach(() => {
   for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
   admissions.clear();

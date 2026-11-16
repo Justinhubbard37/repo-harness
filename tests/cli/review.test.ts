@@ -238,6 +238,28 @@ test('a FAIL receipt with no blocking finding is invalid and posts nothing', asy
   expect(fixture.gh.calls()).toEqual([]);
 });
 
+test('a FAIL receipt whose only finding is a P2 is invalid: P2 does not block the merge', async () => {
+  const fixture = publishFixture();
+  const result = await runPublish(fixture, publishReceipt({ findings: [
+    { id: 'F1', severity: 'P2', path: 'src/example.ts', line: 12, evidence: 'A small real defect.', fix: 'Close the boundary case.' }] }));
+  expect(result.status).toBe(2);
+  expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, error: 'review_receipt_invalid', exit_code: 2, posted: [] });
+  expect(JSON.parse(result.stdout).message).toContain('FAIL requires at least one P0 or P1 finding');
+  expect(fixture.gh.calls()).toEqual([]);
+});
+
+test('a PASS receipt that carries a P2 is accepted, and the P2 gets its own follow-up thread', async () => {
+  const fixture = publishFixture();
+  const result = await runPublish(fixture, publishReceipt({ verdict: 'PASS', findings: [
+    { id: 'F2', severity: 'P2', path: 'src/example.ts', line: 12, evidence: 'A small real defect.', fix: 'Close the boundary case.' }] }));
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, threads: 1 });
+  const posts = fixture.gh.inputs().filter((entry) => entry.input !== '').map((entry) => JSON.parse(entry.input));
+  expect(posts[1].comments).toHaveLength(1);
+  expect(posts[1].comments[0].body).toContain('**P2 F2**');
+  expect(posts[2].body).toContain('PASS: 1 P2');
+});
+
 const OWNER_BASE = 'https://github.com/example/repo-harness';
 const ownerRecord = (path: string) => OWNER_BASE + path + '#issuecomment-900';
 

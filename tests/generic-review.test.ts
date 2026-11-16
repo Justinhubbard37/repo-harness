@@ -157,7 +157,7 @@ test('review packet preserves the exact transport text, domain identity and prio
   const expected = [
     'Review the complete current subject against its goal, approved admission and prepared verification evidence. Do not edit production code or invoke other reviewers. Only author one final JSON file to the exact request.result_ref; no temp/rename or alternate submission. Terminal output and idle are observation only.',
     'Outer transport JSON is {request_id: request.request_id, context_sha256: request.context_sha256, value: domain output}. Provider value has EXACTLY request_id, context_sha256, subject_sha256, verdict, summary, findings. Domain request_id is request.request_id; domain context_sha256 is the prepared domain hash below (distinct from transport packet hash). The owner adds actual harness/role/model from the bound task-agent and OAR Session observation, not your self-description.',
-    'PASS requires no unresolved P0/P1. FAIL requires at least one unresolved finding. Each finding has EXACTLY id, severity:P0|P1|P2|P3, status:new|open|resolved, message. Keep stable IDs: every prior finding must remain resolved/open with current evidence. A previous verdict is not evidence for current code.',
+    'PASS requires no unresolved P0 or P1; an unresolved P2 or P3 does not block. FAIL requires at least one unresolved P0 or P1 finding. A finding that touches I1 (a credential leak) or I2 (an unauthorized deletion or overwrite of a user file) is rated at least P1. Each finding has EXACTLY id, severity:P0|P1|P2|P3, status:new|open|resolved, message. Keep stable IDs: every prior finding must remain resolved/open with current evidence. A previous verdict is not evidence for current code.',
     'DOMAIN IDENTITY: {"context_sha256":"domain-context","subject_sha256":"subject","actual_harness":"claude","actual_role":"deep-reasoner"}',
     'PRIOR FINDINGS: [{"id":"f","severity":"P1","status":"new","message":"[fixture opinion] fix the fence"}]',
     'APPROVED ADMISSION:\nadmission\n', 'GOAL:\ngoal\n', 'PREPARED VERIFICATION:\nverification\n', 'CURRENT SOURCE:\nsource\n',
@@ -390,6 +390,11 @@ test('generic review validates exact domain binding, verdict, stable findings an
   for (const field of Object.keys(identity)) expect(() => validateReviewOutput({ ...fail, [field]: 'different' }, identity)).toThrow(`review_${field}_mismatch`);
   expect(() => validateReviewOutput({ ...fail, session_id: 'launcher' }, identity)).toThrow('review_malformed_result');
   expect(() => validateReviewOutput({ ...fail, verdict: 'PASS' }, identity)).toThrow('review_conflicting_verdict');
+  // A P2 or a P3 is a follow-up, so the same PASS verdict accepts it (#2936).
+  for (const severity of ['P2', 'P3'] as const) {
+    const followUp = { ...finding, id: 'f2', severity };
+    expect(validateReviewOutput({ ...fail, verdict: 'PASS', findings: [followUp] }, identity).findings).toEqual([followUp]);
+  }
   expect(() => validateReviewOutput({ ...fail, findings: [finding, finding] }, identity)).toThrow('review_malformed_finding');
   expect(() => validateReviewOutput(fail, identity, [finding])).toThrow('review_previous_finding_unaddressed');
   expect(() => validateReviewOutput({ ...fail, findings: [] }, identity, [finding])).toThrow('review_previous_finding_unaddressed');

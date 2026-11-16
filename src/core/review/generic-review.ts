@@ -1,8 +1,9 @@
 import { isReviewRuntimeId, type ReviewRuntimeId } from './review-runtimes';
+import { isBlockingSeverity } from './finding-severity';
 
 export const REVIEW_FINDING_RULES = {
-  prompt_version: '1',
-  text: 'PASS requires no unresolved P0/P1. FAIL requires at least one unresolved finding. Each finding has EXACTLY id, severity:P0|P1|P2|P3, status:new|open|resolved, message. Keep stable IDs: every prior finding must remain resolved/open with current evidence. A previous verdict is not evidence for current code.',
+  prompt_version: '2',
+  text: 'PASS requires no unresolved P0 or P1; an unresolved P2 or P3 does not block. FAIL requires at least one unresolved P0 or P1 finding. A finding that touches I1 (a credential leak) or I2 (an unauthorized deletion or overwrite of a user file) is rated at least P1. Each finding has EXACTLY id, severity:P0|P1|P2|P3, status:new|open|resolved, message. Keep stable IDs: every prior finding must remain resolved/open with current evidence. A previous verdict is not evidence for current code.',
 } as const;
 
 export const REVIEW_MAX_ROUNDS = 3;
@@ -50,7 +51,7 @@ export function validateReviewOutput(value: unknown, expected: Omit<ReviewOutput
       || !['P0', 'P1', 'P2', 'P3'].includes(finding.severity)
       || !['new', 'open', 'resolved'].includes(finding.status)) throw new Error('review_malformed_finding');
     ids.add(finding.id);
-    if (output.verdict === 'PASS' && finding.status !== 'resolved' && ['P0', 'P1'].includes(finding.severity)) {
+    if (output.verdict === 'PASS' && finding.status !== 'resolved' && isBlockingSeverity(finding.severity)) {
       throw new Error('review_conflicting_verdict');
     }
   }

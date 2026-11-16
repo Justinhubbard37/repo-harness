@@ -1,5 +1,6 @@
 import { isRecord } from '../evidence/is-record';
 import { isReviewRuntimeId, type ReviewRuntimeId } from './review-runtimes';
+import { isBlockingSeverity, type ReviewSeverity } from './finding-severity';
 import type { ModelRelation } from './acceptance-receipt';
 
 /**
@@ -12,7 +13,8 @@ import type { ModelRelation } from './acceptance-receipt';
  * fields that one review round needs to become a GitHub review:
  *
  * - P0/P1/P2 findings carry a path, a line, evidence and a bounded fix, so
- *   each one becomes exactly one inline review thread.
+ *   each one becomes exactly one inline review thread. Only P0 and P1 block
+ *   the merge; a P2 becomes a follow-up issue (`finding-severity.ts`).
  * - P3 findings are NITs. They carry no location, so they can appear only in
  *   the review body.
  * - `confirmed_fixed` names, by GitHub node id, the earlier-round review
@@ -22,7 +24,7 @@ import type { ModelRelation } from './acceptance-receipt';
  * text is rendered from this document alone; caller arguments never change it.
  */
 export type ReviewRiskTier = 'low' | 'medium' | 'high';
-export type ReviewPublishSeverity = 'P0' | 'P1' | 'P2' | 'P3';
+export type ReviewPublishSeverity = ReviewSeverity;
 
 export interface ReviewPublishBlockingFinding {
   readonly id: string;
@@ -154,9 +156,9 @@ export function validateReviewPublishReceipt(value: unknown): ReviewPublishRecei
     if (ids.has(entry.id)) invalid('finding ids must be unique');
     ids.add(entry.id);
   }
-  const blocking = findings.filter((entry) => entry.severity !== 'P3');
-  if (value.verdict === 'PASS' && blocking.length > 0) invalid('PASS cannot carry an unresolved P0/P1/P2 finding');
-  if (value.verdict === 'FAIL' && blocking.length === 0) invalid('FAIL requires at least one P0/P1/P2 finding');
+  const blocking = findings.filter((entry) => isBlockingSeverity(entry.severity));
+  if (value.verdict === 'PASS' && blocking.length > 0) invalid('PASS cannot carry an unresolved P0 or P1 finding');
+  if (value.verdict === 'FAIL' && blocking.length === 0) invalid('FAIL requires at least one P0 or P1 finding');
   if (!Array.isArray(value.confirmed_fixed)) invalid('confirmed_fixed must be an array');
   const confirmed = value.confirmed_fixed.map((entry) => {
     if (typeof entry !== 'string' || !THREAD_ID.test(entry)) invalid('confirmed_fixed entries must be review thread node ids');
@@ -182,7 +184,12 @@ export function reviewerIdentity(receipt: ReviewPublishReceipt): string {
   return receipt.reviewer.harness + ' (' + (receipt.reviewer.actual_model ?? 'unobserved') + ')';
 }
 
-export function blockingFindings(receipt: ReviewPublishReceipt): readonly ReviewPublishBlockingFinding[] {
+/**
+ * The findings that carry a location, so each one becomes exactly one inline
+ * review thread: P0, P1 and P2. The thread is not a merge block; only a P0 or
+ * a P1 needs a fix before the merge (`finding-severity.ts`).
+ */
+export function locatedFindings(receipt: ReviewPublishReceipt): readonly ReviewPublishBlockingFinding[] {
   return receipt.findings.filter((entry): entry is ReviewPublishBlockingFinding => entry.severity !== 'P3');
 }
 
@@ -313,14 +320,14 @@ export function reviewPayloadFromReceipt(receipt: ReviewPublishReceipt, diffLine
   readonly comments: readonly ReviewInlineComment[];
 } {
   const inDiff = (entry: ReviewPublishBlockingFinding) => diffLines.get(entry.path)?.has(entry.line) === true;
-  const blocking = blockingFindings(receipt);
-  const outside = blocking.filter((entry) => !inDiff(entry));
+  const located = locatedFindings(receipt);
+  const outside = located.filter((entry) => !inDiff(entry));
   const body = renderAcceptanceReview(receipt) + (outside.length
     ? '\n## Findings outside the diff\n\n' + outside.map((entry) => '- ' + findingSummary(entry)).join('\n') + '\n'
     : '');
   return Object.freeze({
     event: 'COMMENT' as const,
     body,
-    comments: Object.freeze(blocking.filter(inDiff).map(renderInlineComment)),
+    comments: Object.freeze(located.filter(inDiff).map(renderInlineComment)),
   });
 }

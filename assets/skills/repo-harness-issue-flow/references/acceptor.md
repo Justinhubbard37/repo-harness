@@ -100,7 +100,7 @@ The table rules govern how the row combines with the review.
 3. **Round 3** runs with no owner question when the round-2 findings are in
    the fix delta. It has the scope of round 2.
 4. **After round 3.** A fix loop continues after round 3 without the owner
-   while each round has fewer blocking findings (P0-P2) than the round
+   while each round has fewer blocking findings (P0-P1) than the round
    before and the scope does not grow. A grown scope is a joint decision.
    When the count does not drop but no open blocking finding touches I1 or I2, the loop continues by joint decision under one rule.
    A new P0 finding, or a new P1 finding on I1 or I2, goes to the owner as a notice. The loop continues
@@ -109,21 +109,19 @@ The table rules govern how the row combines with the review.
    control or grow the scope. Each merge outside rule 2, each release, each change that reads, moves or exposes a
    credential and each deletion that git cannot restore stay with
    the owner. Any other new P1 finding does not stop the loop. Round 5 is
-   the hard stop. When every remaining finding
-   is P2, all of them are in one bug family, and none concerns I1 or I2,
-   a recorded decision (the owner, or a joint decision of the orchestrator
-   and the advisor) may move that family to one follow-up issue after round
-   3 or round 4. The coordinator then resolves each remaining P2 thread with
-   a reply that links the follow-up issue (§6). The deferral takes effect at
-   the next head: a fix, a merge of main, or the commit that adds the
-   follow-up link. A `FAIL` row stays on its head, so the next round reviews
-   that new head with those threads deferred. It must return `PASS` for that
-   head before the PR merges, and its record names the follow-up issue. A
-   `FAIL` in round 5 is a hard stop and takes no deferral. A blocking
+   the hard stop. A blocking
    finding after round 5, or a fix for a new P0 or an I1/I2 P1 that would accept a
    residual, relax a control or grow the scope, becomes a parked owner gate
    (`docs/reference-configs/agentic-development-flow.md`, Park a gate).
    Other work continues.
+
+A P2 does not block a merge. It is a real defect that is small, so it is a
+follow-up, not a fix round: the round records `PASS` with it, and the
+coordinator files one follow-up issue for the PR's P2 findings under the
+same parent (rule 1 of `orchestrator.md` §2, deferred scope). The
+coordinator then resolves each P2 thread with a `deferred` reply that links
+that issue (§6). A finding that touches I1 or I2 is not a P2: the reviewer
+rates it at least P1 (§3).
 
 The worker fixes each finding by the class rule (`worker.md` §7).
 If a new P1 appears in the fix delta in two rounds in a row, stop
@@ -132,9 +130,10 @@ rescope the PR or revert it to the last clean rule. A new P0 or a new P1
 on I1 or I2 still goes to the owner
 as a notice.
 
-Return `PASS` or `FAIL`. A `FAIL` has at least one P0, P1 or P2 finding.
-Rule 4 decides whether a `FAIL` after round 3 takes another round, defers a
-P2 family or becomes an owner gate. A merge always needs a `PASS` record.
+Return `PASS` or `FAIL`. A `FAIL` has at least one P0 or P1 finding. A P2
+and a P3 do not block a merge: a `PASS` record carries them as follow-ups.
+Rule 4 decides whether a `FAIL` after round 3 takes another round or
+becomes an owner gate. A merge always needs a `PASS` record.
 
 ### 2.3 Review bot reference
 
@@ -170,7 +169,7 @@ The coordinator writes the replies, so each role keeps one GitHub write
 path. The acceptor stays read-only. The reply uses the `review reply`
 shape (`templates.md`): `rejected` for a decline or an outdated finding,
 `fixed <sha>` for an adopted one after its fix round, and `deferred
-#<follow-up issue>` for a rule-4 deferral. An adopted P3 gets `fixed <sha>`
+#<follow-up issue>` for a P2. An adopted P3 gets `fixed <sha>`
 when it is fixed and `deferred #<follow-up issue>` otherwise, each with the
 reason in `Why`. A thread that the coordinator answers with `rejected` or
 `deferred` is resolved with its reply. An adopted thread with a fix is resolved when the
@@ -188,10 +187,15 @@ gate.
 
 | Severity | Meaning | Where it goes |
 |---|---|---|
-| P0 | Data loss, a security defect or an unusable result | Inline thread on the changed line |
-| P1 | Wrong behavior or broken boundary | Inline thread on the changed line |
-| P2 | Real defect, small | Inline thread on the changed line |
+| P0 | Data loss, a security defect or an unusable result | Inline thread on the changed line; blocks the merge |
+| P1 | Wrong behavior or broken boundary | Inline thread on the changed line; blocks the merge |
+| P2 | Real defect, small | Inline thread on the changed line; a follow-up issue, not a fix round |
 | NIT (P3) | Improvement | Review body only. No thread and no merge block |
+
+Only P0 and P1 block a merge (`src/core/review/finding-severity.ts`). A
+finding that touches I1 (a credential leak by rh code) or I2 (an
+unauthorized deletion or overwrite of a user file) is rated at least P1, so
+it blocks. That rating is your duty: code reads a severity, not a subject.
 
 Judge a product PR on its own behavior and on I1 (no credential leak) and
 I2 (no deletion or overwrite of a user file without authorization). An
@@ -210,7 +214,7 @@ posts in this order:
 
 - the `acceptance claim`;
 - one COMMENT review, with one inline thread for each P0, P1 and P2
-  finding and the NIT findings in its body;
+  finding (only P0 and P1 block the merge) and the NIT findings in its body;
 - the `acceptance record`;
 - for each thread id in `confirmed_fixed`, a `review reply` that cites the
   record, then the resolve of that thread (§6).
@@ -281,8 +285,8 @@ Act on the exit code:
 The merge executor refuses a PR with an unresolved review thread.
 A bot thread is a reference input (§2.3): the coordinator answers and
 resolves it, and the bot never adds or removes a gate by itself.
-A PR with a rule-4 deferral (§2.2) passes this check only after the
-coordinator resolves the deferred P2 threads (§6).
+A P2 thread passes this check only after the coordinator files the
+follow-up issue and resolves the thread with the `deferred` reply (§6).
 
 ## 5. Result schema
 
@@ -319,7 +323,8 @@ findings: [{ id, severity: P0 | P1 | P2, path, line, evidence, fix }
 confirmed_fixed: [<review thread node id>]
 ```
 
-`PASS` carries no P0, P1 or P2 finding. `FAIL` carries at least one. Each
+`PASS` carries no P0 or P1 finding; it may carry P2 and P3 findings as
+follow-ups. `FAIL` carries at least one P0 or P1. Each
 blocking finding names one path, one line, the evidence and the smallest
 fix. A P3 finding carries no location. `model_relation` comes from the
 closed family table in `acceptance-receipt.ts`.
@@ -342,7 +347,7 @@ executor still refuses an unresolved thread.
 
 The coordinator resolves a bot thread (§2.3). The coordinator may also
 resolve a thread with a written rejection reason, or
-with the follow-up issue link of a rule-4 deferral (§2.2). Both are a
+with the follow-up issue link of a P2 (§2.2). Both are a
 `review reply` (`templates.md`).
 
 The head owner replies with the fix SHA and does not resolve. No worker
