@@ -135,20 +135,20 @@ describe('global runtime setup command env base', () => {
     const home = join(tmp, 'home');
     const statePath = installStateFixturePath({ HOME: home });
     const previousHome = process.env.HOME;
-    const previousFlag = process.env.AGENTIC_DEV_LINK_INSTALLED_COPIES;
+    const previousFlag = process.env.REPO_HARNESS_LINK_INSTALLED_COPIES;
     try {
       mkdirSync(join(home, '.repo-harness'), { recursive: true });
       // Retired protocol-1 state: readInstallState fails closed on it and the
       // error names the path it resolved, which is exactly the datum under guard.
       writeFileSync(statePath, JSON.stringify({ protocol: 1, profile: 'full' }));
       process.env.HOME = home;
-      delete process.env.AGENTIC_DEV_LINK_INSTALLED_COPIES;
+      delete process.env.REPO_HARNESS_LINK_INSTALLED_COPIES;
       body(tmp, home, statePath);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousFlag === undefined) delete process.env.AGENTIC_DEV_LINK_INSTALLED_COPIES;
-      else process.env.AGENTIC_DEV_LINK_INSTALLED_COPIES = previousFlag;
+      if (previousFlag === undefined) delete process.env.REPO_HARNESS_LINK_INSTALLED_COPIES;
+      else process.env.REPO_HARNESS_LINK_INSTALLED_COPIES = previousFlag;
       rmSync(tmp, { recursive: true, force: true });
     }
   }
@@ -156,7 +156,7 @@ describe('global runtime setup command env base', () => {
   test('npx cache source with no caller env keeps process.env as the constructed env base', () => {
     withOverriddenHome('npx', (tmp, home, statePath) => {
       // isNpxCacheSource() matches on the `_npx` path segment, so this drives the
-      // branch that injects AGENTIC_DEV_LINK_INSTALLED_COPIES with no caller env.
+      // branch that injects REPO_HARNESS_LINK_INSTALLED_COPIES with no caller env.
       const source = join(tmp, '_npx', 'abc123', 'node_modules', 'repo-harness');
       mkdirSync(source, { recursive: true });
       expect(runWithSeededHome(source, home)).toThrow(statePath);

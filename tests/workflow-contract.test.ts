@@ -349,8 +349,8 @@ describe("workflow contract manifest", () => {
           BUN_INSTALL: join(home, ".bun"),
           CODEX_SKILLS_ROOT: join(home, ".codex/skills"),
           CLAUDE_SKILLS_ROOT: join(home, ".claude/skills"),
-          AGENTIC_DEV_SOURCE_ROOT: ROOT,
-          AGENTIC_DEV_LINK_INSTALLED_COPIES: "0",
+          REPO_HARNESS_SOURCE_ROOT: ROOT,
+          REPO_HARNESS_LINK_INSTALLED_COPIES: "0",
           REPO_HARNESS_INSTALL_PLUGINS: "",
         },
       });

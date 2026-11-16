@@ -248,7 +248,7 @@ describe('install selection', () => {
     expect(spawnSync('git', ['init', '-q', source], { env }).status).toBe(0);
     const result = spawnSync('bash', [join(ROOT, 'scripts/sync-codex-installed-copies.sh'),
       '--stage-owned-copy', source, copied, 'canonical-skill'], {
-      env: { ...env, AGENTIC_DEV_SOURCE_ROOT: ROOT, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' }, encoding: 'utf8',
+      env: { ...env, REPO_HARNESS_SOURCE_ROOT: ROOT, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' }, encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
     expect(existsSync(join(source, '.git'))).toBe(true);
@@ -269,7 +269,7 @@ describe('install selection', () => {
       writePath(join(dest, 'SKILL.md'), 'user bytes\n');
       const result = spawnSync('bash', [join(ROOT, 'scripts/sync-codex-installed-copies.sh'),
         '--stage-owned-copy', source, dest, 'canonical-skill'], {
-        env: { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), AGENTIC_DEV_SOURCE_ROOT: ROOT }, encoding: 'utf8',
+        env: { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), REPO_HARNESS_SOURCE_ROOT: ROOT }, encoding: 'utf8',
       });
       expect(result.status, result.stderr).toBe(2);
       expect(readFileSync(join(dest, 'SKILL.md'), 'utf8')).toBe('user bytes\n');
@@ -287,7 +287,7 @@ describe('install selection', () => {
       symlinkSync(target, dest);
       const result = spawnSync('bash', [join(ROOT, 'scripts/sync-codex-installed-copies.sh'),
         '--stage-owned-copy', source, dest, 'canonical-skill'], {
-        env: { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), AGENTIC_DEV_SOURCE_ROOT: ROOT }, encoding: 'utf8',
+        env: { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), REPO_HARNESS_SOURCE_ROOT: ROOT }, encoding: 'utf8',
       });
       expect(result.status, result.stderr).toBe(2);
       expect(readlinkSync(dest)).toBe(target);
@@ -574,8 +574,8 @@ describe('install selection', () => {
         const skillSource = join(source, 'assets', 'skills', 'windows-python-first');
         cpSync(join(ROOT, 'assets', 'skills', 'windows-python-first'), skillSource, { recursive: true });
         const sync = runSkillSync(env, {
-          AGENTIC_DEV_SOURCE_ROOT: source,
-          AGENTIC_DEV_LINK_INSTALLED_COPIES: mode,
+          REPO_HARNESS_SOURCE_ROOT: source,
+          REPO_HARNESS_LINK_INSTALLED_COPIES: mode,
           ...(plugins === undefined ? {} : { REPO_HARNESS_INSTALL_PLUGINS: plugins }),
         });
         expect(sync.status, sync.stderr).toBe(0);
@@ -601,7 +601,7 @@ describe('install selection', () => {
     const { source } = writeManagedHostSurfaces(env);
     seedSyncRuntime(source);
     cpSync(join(ROOT, 'assets', 'skills', 'obsidian-memory'), join(source, 'assets', 'skills', 'obsidian-memory'), { recursive: true });
-    const sync = runSkillSync(env, { AGENTIC_DEV_SOURCE_ROOT: source, AGENTIC_DEV_LINK_INSTALLED_COPIES: '0', REPO_HARNESS_INSTALL_PLUGINS: 'strategy-memory' });
+    const sync = runSkillSync(env, { REPO_HARNESS_SOURCE_ROOT: source, REPO_HARNESS_LINK_INSTALLED_COPIES: '0', REPO_HARNESS_INSTALL_PLUGINS: 'strategy-memory' });
     expect(sync.status, sync.stderr).toBe(0);
     const copies = ['.codex', '.claude'].map((host) => join(env.HOME!, host, 'skills', 'obsidian-memory'));
     for (const copy of copies) expect(existsSync(join(copy, '.repo-harness-owner.json'))).toBe(true);
@@ -644,7 +644,7 @@ describe('install selection', () => {
       const before = realRoots.map(treeSnapshot);
 
       const transaction = beginInstallHostTransaction(installProfileTransactionPaths(env), env);
-      const sync = runSkillSync(env, { AGENTIC_DEV_SOURCE_ROOT: source, AGENTIC_DEV_LINK_INSTALLED_COPIES: '1', REPO_HARNESS_INSTALL_PLUGINS: '' });
+      const sync = runSkillSync(env, { REPO_HARNESS_SOURCE_ROOT: source, REPO_HARNESS_LINK_INSTALLED_COPIES: '1', REPO_HARNESS_INSTALL_PLUGINS: '' });
       expect(sync.status, sync.stderr).toBe(0);
       expect(syncedSkillRoots(sync.stdout)).toEqual([...effectiveSkillRoots([], env)]);
       for (const root of roots) expect(existsSync(join(root, 'repo-harness-retired-demo'))).toBe(false);
@@ -670,7 +670,7 @@ describe('install selection', () => {
       const before = [codexRoot, claudeRoot].map(treeSnapshot);
 
       const transaction = beginInstallHostTransaction(installProfileTransactionPaths(custom), custom);
-      const sync = runSkillSync(custom, { AGENTIC_DEV_SOURCE_ROOT: source, AGENTIC_DEV_LINK_INSTALLED_COPIES: '1', REPO_HARNESS_INSTALL_PLUGINS: '' });
+      const sync = runSkillSync(custom, { REPO_HARNESS_SOURCE_ROOT: source, REPO_HARNESS_LINK_INSTALLED_COPIES: '1', REPO_HARNESS_INSTALL_PLUGINS: '' });
       expect(sync.status, sync.stderr).toBe(0);
       expect(syncedSkillRoots(sync.stdout)).toEqual([...effectiveSkillRoots([], custom)]);
       expect(readlinkSync(join(codexRoot, 'repo-harness'))).toBe(source);
@@ -692,13 +692,13 @@ describe('install selection', () => {
     const codexRoot = join(env.HOME!, 'custom', 'codex-skills');
     const claudeRoot = join(env.HOME!, 'custom', 'claude-skills');
     const custom = { ...env, CODEX_SKILLS_ROOT: `${codexRoot}/`, CLAUDE_SKILLS_ROOT: `${claudeRoot}/` };
-    const sync = runSkillSync(custom, { AGENTIC_DEV_SOURCE_ROOT: source, AGENTIC_DEV_LINK_INSTALLED_COPIES: '1', REPO_HARNESS_INSTALL_PLUGINS: '' });
+    const sync = runSkillSync(custom, { REPO_HARNESS_SOURCE_ROOT: source, REPO_HARNESS_LINK_INSTALLED_COPIES: '1', REPO_HARNESS_INSTALL_PLUGINS: '' });
     expect(sync.status, sync.stderr).toBe(0);
     expect(syncedSkillRoots(sync.stdout)).toEqual([codexRoot, claudeRoot]);
     expect(effectiveSkillRoots([], custom)).toEqual([codexRoot, claudeRoot]);
 
     const { HOME: _home, CODEX_SKILLS_ROOT: _codex, ...homeless } = env;
-    const rejected = runSkillSync(homeless, { AGENTIC_DEV_SOURCE_ROOT: source, REPO_HARNESS_INSTALL_PLUGINS: '' });
+    const rejected = runSkillSync(homeless, { REPO_HARNESS_SOURCE_ROOT: source, REPO_HARNESS_INSTALL_PLUGINS: '' });
     expect(rejected.status).not.toBe(0);
     expect(rejected.stderr).toContain('HOME is required when CODEX_SKILLS_ROOT is not set.');
     expect(rejected.stdout).not.toContain('command facades');
@@ -1595,7 +1595,7 @@ describe('skill projection ownership', () => {
         symlinkSync(packageRoot, selectedSource);
       }
       const linked = mode === 'global' || mode === 'global-alias';
-      const activeEnv = { ...env, AGENTIC_DEV_LINK_INSTALLED_COPIES: mode === 'explicit-copy' ? '0' : '1' };
+      const activeEnv = { ...env, REPO_HARNESS_LINK_INSTALLED_COPIES: mode === 'explicit-copy' ? '0' : '1' };
       rmSync(canonical); symlinkSync(packageRoot, canonical);
       const paths = ['.claude', '.codex'].map(host => join(env.HOME!, host, 'skills/repo-harness-cross-review'));
       for (const dest of [...paths, join(env.HOME!, '.claude/skills/repo-harness-herdr-portal')]) rmSync(dest, { recursive: true, force: true });

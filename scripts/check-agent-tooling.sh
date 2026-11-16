@@ -1642,11 +1642,11 @@ function codeGraphPlatformBundleBin() {
 }
 
 function resolveCodeGraphBinary() {
-  const allowRepoLocal = process.env.AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL !== "0";
-  const allowGlobal = process.env.AGENTIC_DEV_CODEGRAPH_ALLOW_GLOBAL !== "0";
+  const allowRepoLocal = process.env.REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL !== "0";
+  const allowGlobal = process.env.REPO_HARNESS_CODEGRAPH_ALLOW_GLOBAL !== "0";
   const localCandidates = [];
-  const localOverride = process.env.AGENTIC_DEV_CODEGRAPH_LOCAL_BIN;
-  const globalOverride = process.env.AGENTIC_DEV_CODEGRAPH_GLOBAL_BIN;
+  const localOverride = process.env.REPO_HARNESS_CODEGRAPH_LOCAL_BIN;
+  const globalOverride = process.env.REPO_HARNESS_CODEGRAPH_GLOBAL_BIN;
 
   if (localOverride) localCandidates.push(localOverride);
   if (allowRepoLocal) {

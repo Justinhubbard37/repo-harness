@@ -214,7 +214,7 @@ function syncBundledItemsAtHome(
   const globalRoot = bunGlobalPackageRoot(env);
   const globalSource = isBunGlobalPackageSource(sourceRoot, env);
   const useLinks = globalSource
-    && (env ?? process.env).AGENTIC_DEV_LINK_INSTALLED_COPIES !== '0';
+    && (env ?? process.env).REPO_HARNESS_LINK_INSTALLED_COPIES !== '0';
   for (const { skill, host, step } of skills) {
     if (target !== "both" && target !== host) continue;
     if (!home) {

@@ -55,16 +55,16 @@ outcomes:
       label: Return the redacted tool result
   - id: error
     kind: error
-    label: Repository keeps a legacy repo-scope MCP config
+    label: User config keeps a retired key
     steps:
-      - id: refuse-legacy-config
+      - id: refuse-retired-key
         from: dispatch
         to: policy
-        label: Refuse the legacy repo-scope config before the server starts
+        label: Throw MCP_CONFIG_RETIRED_FIELD before the server starts
         evidence:
           entrypointId: entrypoint.mcp-sidecar.tool-context
           sourceSymbol: createMcpToolContext
-          sinkId: sink.mcp-sidecar.legacy-refusal
+          sinkId: sink.mcp-sidecar.startup-config
     terminal:
       participant: dispatch
-      label: Exit with the legacy config error and serve no tool
+      label: Exit with the retired key error and serve no tool

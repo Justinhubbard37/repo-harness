@@ -608,7 +608,7 @@ describe('doctor command (Phase 1C)', () => {
         HOME: envRoot.home,
         REPO_HARNESS_HOME: path.join(envRoot.home, '.repo-harness'),
         PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ''}`,
-        AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
+        REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
       };
       recordPluginSelection(env);
       const doctor = () => spawnSync('bun', [path.join(root, 'src/cli/index.ts'), 'doctor', '--json'], { cwd: envRoot.root, encoding: 'utf-8', env });
@@ -1012,24 +1012,3 @@ test('pi-retired-extension warns with a runnable mv -n only for a loaded extensi
   expect(checkRetiredPiExtension(env, now).status).toBe('ok');
 }));
 
-describe('legacy workflow-state diagnostic', () => {
-  test('reports a legacy copy from a nested cwd without changing its bytes', () => {
-    withTempHome('repo-harness-doctor', () => withTempRepo({ optIn: true }, (repo) => {
-      const legacy = path.join(repo, '.ai/hooks/lib/workflow-state.sh');
-      fs.mkdirSync(path.dirname(legacy), { recursive: true });
-      const content = '# Local operator changes\n';
-      fs.writeFileSync(legacy, content);
-      withEnv({ PATH: '/usr/bin:/bin', REPO_HARNESS_CHECK_UPDATES: '0' }, () => {
-        const check = runDoctor(CLI_PORTS.doctor, path.dirname(legacy)).checks.find((check) => check.id === 'legacy-workflow-state');
-        expect(check?.status).toBe('warn');
-        expect(check?.detail).toContain('rh run <helper>');
-        expect(check?.detail).not.toContain('hook-lib');
-        expect(check?.detail).toContain('back up');
-        expect(check?.detail).toContain('edited copies');
-        expect(fs.readFileSync(legacy, 'utf8')).toBe(content);
-        fs.unlinkSync(legacy);
-        expect(runDoctor(CLI_PORTS.doctor, repo).checks.find((check) => check.id === 'legacy-workflow-state')?.status).toBe('ok');
-      });
-    }));
-  }, DOCTOR_CHECK_TIMEOUT_MS);
-});

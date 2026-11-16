@@ -73,7 +73,7 @@ describe("tools ensure codegraph", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -126,7 +126,7 @@ test('standalone CodeGraph configure records restorable MCP provenance', () => {
     ].join('\n'));
     mkdirSync(join(fixture.home, '.codex'));
     writeFileSync(join(fixture.home, '.codex/config.toml'), 'model = "user-model"\n');
-    const env = { ...process.env, HOME: fixture.home, PATH: `${fixture.fakeBin}:${process.env.PATH ?? ''}`, AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: '0', BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
+    const env = { ...process.env, HOME: fixture.home, PATH: `${fixture.fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0', BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
     const configured = spawnSync('bun', [CLI, 'tools', 'configure', 'codegraph', '--target', 'codex', '--location', 'global', '--json', '--repo', ROOT], { cwd: ROOT, env, encoding: 'utf8' });
     expect(configured.status, configured.stderr).toBe(0);
     const receiptRaw = readFileSync(join(fixture.home, '.repo-harness/configuration-restore.json'), 'utf8');

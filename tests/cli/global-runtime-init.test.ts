@@ -232,7 +232,7 @@ function setupFakeSource(root: string): void {
   writeFileSync(join(root, 'assets', 'skills', 'repo-harness-cross-review', 'SKILL.md'), 'repo-harness-cross-review\n');
   writeExecutable(
     join(root, 'scripts', 'sync-codex-installed-copies.sh'),
-    '#!/bin/bash\nset -euo pipefail\necho "sync runtime link=${AGENTIC_DEV_LINK_INSTALLED_COPIES:-unset}"\n',
+    '#!/bin/bash\nset -euo pipefail\necho "sync runtime link=${REPO_HARNESS_LINK_INSTALLED_COPIES:-unset}"\n',
   );
   writeExecutable(
     join(root, 'scripts', 'install-agent-fleet.sh'),
@@ -772,7 +772,7 @@ describe('install command global runtime bootstrap', () => {
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
         },
       });
 
@@ -977,7 +977,7 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
           REPO_HARNESS_BUN_EXECUTABLE: join(fakeBin, 'bun'),
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
         },
       });
       // The 0.32 bin link that Bun keeps after the rename, and a user file that still calls the old command.
@@ -1865,7 +1865,7 @@ exit 0
           // real Node 24 on CI. Pin the tier-1 explicit authority at the incompatible fake so the
           // closure check fails closed before PATH and candidate scanning are reached.
           REPO_HARNESS_NODE_BIN: join(fakeBin, 'node'),
-          AGENTIC_DEV_SOURCE_ROOT: ROOT,
+          REPO_HARNESS_SOURCE_ROOT: ROOT,
           CODEX_SKILLS_ROOT: codexSkills,
         },
       });
@@ -2551,7 +2551,7 @@ exit 0
             PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
             REPO_HARNESS_BUN_EXECUTABLE: join(fakeBin, 'bun'),
             REPO_HARNESS_CLAUDE_EXECUTABLE: join(fakeBin, 'claude'),
-            AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
+            REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
           },
         },
       );

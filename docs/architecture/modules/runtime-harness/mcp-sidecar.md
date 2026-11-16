@@ -144,10 +144,10 @@ sequenceDiagram
 
 ### 3.1 必须保持的不变量
 
-1. **单一存储权威。** MCP 配置只存在 `mcpStorageDir()/mcp.local.json`（`src/cli/mcp/auth.ts:34-40`）。repo 级配置已退役。仓库里还有 `.repo-harness/mcp.local.json` 时，serve 和 doctor 都拒绝启动（`assertNoLegacyRepoScopeMcpConfig`，`auth.ts:43`）。没有 read-through 回退。
+1. **单一存储权威。** MCP 配置只存在 `mcpStorageDir()/mcp.local.json`（`src/cli/mcp/auth.ts:34-40`）。repo 级配置已退役。仓库里的 `.repo-harness/mcp.local.json` 没有读取方，serve 和 doctor 也不再检查它。没有 read-through 回退。
 2. **退役键 fail closed。** 配置里还有 `server`、`auth`、`chatgpt`、`coding`、`authorizationRevision`，或 `capabilities` 下的 `workspaceCoder`、`taskDispatch`、`publicationMerge`，或 `profile` 为 `orchestrator`、`coding` 时，解析抛出 `MCP_CONFIG_RETIRED_FIELD` 并列出这些键（`auth.ts:29-31`、`:73`）。没有命令改写这个文件。用户手动删除这些键。
 3. **只有两个 profile。** `isMcpProfileName` 只接受 `planner` 和 `executor`（`src/cli/mcp/policy.ts:144`）。两个 profile 都没有 shell、OAuth 或 HTTP。transport 只有 stdio（`src/cli/mcp/transports/stdio.ts`）。
-4. **doctor 只报告，不删除。** `runMcpDoctor`（`src/cli/mcp/doctor.ts:58`）不做 live 探测。旧 ChatGPT、OAuth 与 Codex MCP 文件还在时，它报告 `retired_chatgpt_state`，给出每个路径和删除命令（`retiredChatgptState`，`doctor.ts:33`）。它不删除 HOME 或用户仓库里的任何文件。
+4. **doctor 只报告，不删除。** `runMcpDoctor`（`src/cli/mcp/doctor.ts:58`）不做 live 探测。旧 ChatGPT 与 OAuth 文件还在时，它报告 `retired_chatgpt_state`，给出每个路径和删除命令（`retiredChatgptState`，`doctor.ts:33`）。它不删除 HOME 或用户仓库里的任何文件。
 5. **授权真相在注册表。** `read_write` 授权存在 `registered-repos.json`。`rh mcp access set` 写入它。registry 归 execution-primitives（见 §4 的 2026-11-01 条目）。
 6. **MCP 只投影状态，不解释状态，也不写状态。** `summarize_repo_harness_state`（`src/cli/mcp/state-tools.ts`）与 hook 使用同一个只读解析器 `resolveEffectiveStateReadOnly`，工具声明 `readOnlyHint: true`。它报告最后发布的 `state_version`；只有 `rh state resolve` 分配版本。
 7. **PRD 写入有 revision 前置条件。** `write_prd` 与 `write_prd_from_idea` 经 `guardedWriteFile`（`src/cli/mcp/guarded-write.ts`）写入。替换已有文件需要 `expected_sha256`。

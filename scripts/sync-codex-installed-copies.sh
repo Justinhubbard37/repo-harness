@@ -1,13 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-SOURCE_ROOT="${AGENTIC_DEV_SOURCE_ROOT:-}"
+SOURCE_ROOT="${REPO_HARNESS_SOURCE_ROOT:-}"
 if [[ -z "$SOURCE_ROOT" ]]; then
   SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
 SOURCE_ROOT="${SOURCE_ROOT%/}"
-LINK_INSTALLED_COPIES="${AGENTIC_DEV_LINK_INSTALLED_COPIES:-}"
+LINK_INSTALLED_COPIES="${REPO_HARNESS_LINK_INSTALLED_COPIES:-}"
 # REPO_HARNESS_INSTALL_PLUGINS is the comma-separated plugin selection; an
 # empty value selects core only. Unset, the sync projects every plugin, as a
 # fresh install with no --plugins does. skill-surface-select.ts rejects an
@@ -92,7 +92,7 @@ require_rsync_for_copy_mode() {
     return 0
   fi
   echo "[sync-installed] unsupported copy-mode: rsync capability is missing." >&2
-  echo "[sync-installed] Install rsync, or rerun with AGENTIC_DEV_LINK_INSTALLED_COPIES=1 on a filesystem that supports symlinks." >&2
+  echo "[sync-installed] Install rsync, or rerun with REPO_HARNESS_LINK_INSTALLED_COPIES=1 on a filesystem that supports symlinks." >&2
   exit 1
 }
 
@@ -103,7 +103,7 @@ create_symlink_or_explain() {
     return 0
   fi
   echo "[sync-installed] unsupported link-mode: symlink capability is unavailable for $dest." >&2
-  echo "[sync-installed] Rerun with AGENTIC_DEV_LINK_INSTALLED_COPIES=0 to use copy-mode; copy-mode requires rsync." >&2
+  echo "[sync-installed] Rerun with REPO_HARNESS_LINK_INSTALLED_COPIES=0 to use copy-mode; copy-mode requires rsync." >&2
   exit 1
 }
 

@@ -3,7 +3,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { realpathSync, statSync } from 'fs';
 import { resolve } from 'path';
 import { registeredRepoHarnessRoots } from '../../effects/repo-registry';
-import { assertNoLegacyRepoScopeMcpConfig, loadMcpLocalConfig } from './auth';
+import { loadMcpLocalConfig } from './auth';
 import { buildMcpServerInstructions } from './instructions';
 import { getMcpPolicy, parseMcpProfile, sensitiveAllowedRootReason } from './policy';
 import { isRepoHarnessAdopted, resolveMcpRepoRoot } from './repo';
@@ -58,7 +58,6 @@ function uniqueRoots(rawRoots: string[]): string[] {
 
 export function createMcpToolContext(opts: McpServerOptions): McpToolContext {
   const repoRoot = resolveMcpRepoRoot(opts.repo ?? '.');
-  assertNoLegacyRepoScopeMcpConfig(repoRoot);
   const config = loadMcpLocalConfig();
   const requestedProfile = opts.profile ?? config?.profile ?? 'planner';
   const profile = parseMcpProfile(requestedProfile === 'reader' ? 'planner' : requestedProfile);

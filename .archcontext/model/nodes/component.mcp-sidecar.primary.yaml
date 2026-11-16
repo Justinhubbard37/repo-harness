@@ -9,7 +9,7 @@
   "summary": "Builds one MCP server per context and dispatches every tool call to the exact profile tool block.",
   "responsibilities": [
     "Build the server instructions and the closed tool inventory for the selected profile.",
-    "Load the user-level config once per server context and refuse a legacy repo-scope config.",
+    "Load the user-level config once per server context and refuse a retired key.",
     "Route each tool call to the workflow, state, publication readiness or reader tool block."
   ],
   "source": {
@@ -49,11 +49,6 @@
                 "id": "sink.mcp-sidecar.startup-config",
                 "path": "src/cli/mcp/auth.ts",
                 "symbol": "loadMcpLocalConfig"
-              },
-              {
-                "id": "sink.mcp-sidecar.legacy-refusal",
-                "path": "src/cli/mcp/auth.ts",
-                "symbol": "assertNoLegacyRepoScopeMcpConfig"
               }
             ]
           }

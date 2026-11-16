@@ -360,8 +360,8 @@ function isNpxCacheSource(sourceRoot: string): boolean {
 
 function commandEnv(sourceRoot: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined {
   if (!isNpxCacheSource(sourceRoot)) return env;
-  if (env?.AGENTIC_DEV_LINK_INSTALLED_COPIES !== undefined) return env;
-  return { ...(env ?? process.env), AGENTIC_DEV_LINK_INSTALLED_COPIES: "0" };
+  if (env?.REPO_HARNESS_LINK_INSTALLED_COPIES !== undefined) return env;
+  return { ...(env ?? process.env), REPO_HARNESS_LINK_INSTALLED_COPIES: "0" };
 }
 
 function packageVersion(sourceRoot: string): string | null {

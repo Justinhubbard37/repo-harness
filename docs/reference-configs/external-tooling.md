@@ -437,10 +437,10 @@ feature dependencies such as `jq` and `gh` remain separately operator-owned
 and are not installed by this contract; the required merge-gate path does not
 depend on `jq`.
 
-Installed-copy sync has two explicit modes. `AGENTIC_DEV_LINK_INSTALLED_COPIES=1`
+Installed-copy sync has two explicit modes. `REPO_HARNESS_LINK_INSTALLED_COPIES=1`
 uses symlinks and does not require `rsync`; if symlink creation fails, the
 script reports unsupported link-mode and tells the caller to use copy-mode.
-`AGENTIC_DEV_LINK_INSTALLED_COPIES=0` uses copy-mode and requires `rsync`; if
+`REPO_HARNESS_LINK_INSTALLED_COPIES=0` uses copy-mode and requires `rsync`; if
 `rsync` is missing, the script reports unsupported copy-mode instead of a
 generic command failure.
 

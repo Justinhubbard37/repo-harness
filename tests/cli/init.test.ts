@@ -518,7 +518,7 @@ describe("init command", () => {
     const previous = {
       HOME: process.env.HOME,
       REPO_HARNESS_HOME: process.env.REPO_HARNESS_HOME,
-      AGENTIC_DEV_LINK_INSTALLED_COPIES: process.env.AGENTIC_DEV_LINK_INSTALLED_COPIES,
+      REPO_HARNESS_LINK_INSTALLED_COPIES: process.env.REPO_HARNESS_LINK_INSTALLED_COPIES,
     };
     try {
       mkdirSync(source, { recursive: true });
@@ -527,7 +527,7 @@ describe("init command", () => {
       setupFakeSource(source);
       process.env.HOME = home;
       process.env.REPO_HARNESS_HOME = harnessHome;
-      delete process.env.AGENTIC_DEV_LINK_INSTALLED_COPIES;
+      delete process.env.REPO_HARNESS_LINK_INSTALLED_COPIES;
 
       const result = runSelectedInit({
         repo,
@@ -711,8 +711,8 @@ describe("init command", () => {
         env: {
           ...process.env,
           HOME: home,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
-          AGENTIC_DEV_CODEGRAPH_ALLOW_GLOBAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_GLOBAL: "0",
         },
       });
 
@@ -753,7 +753,7 @@ describe("init command", () => {
           ...process.env,
           HOME: home,
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -792,7 +792,7 @@ describe("init command", () => {
           ...process.env,
           HOME: home,
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -831,7 +831,7 @@ describe("init command", () => {
           ...process.env,
           HOME: home,
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 

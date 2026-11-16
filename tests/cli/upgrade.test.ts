@@ -1592,7 +1592,7 @@ function nonRouterSkillSandbox(
     const copied = spawnSync('bash', [join(opts.packageRoot, 'scripts/sync-codex-installed-copies.sh'),
       '--stage-owned-copy', source, installed, 'command-facade'], {
       env: { ...process.env, HOME: opts.home, BUN_INSTALL: join(opts.home, '.bun'),
-        AGENTIC_DEV_SOURCE_ROOT: opts.packageRoot, AGENTIC_DEV_LINK_INSTALLED_COPIES: '0' }, encoding: 'utf8',
+        REPO_HARNESS_SOURCE_ROOT: opts.packageRoot, REPO_HARNESS_LINK_INSTALLED_COPIES: '0' }, encoding: 'utf8',
     });
     expect(copied.status, copied.stdout + copied.stderr).toBe(0);
     put(join(source, 'examples/new-resource.md'), 'new non-router resource\n');

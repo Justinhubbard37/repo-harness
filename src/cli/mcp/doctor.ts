@@ -1,10 +1,10 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'fs';
+import { existsSync, lstatSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { shellQuote } from '../../core/shell-quote';
 import { hostSkillRoot } from '../../effects/host-skill-roots';
 import { readRegisteredRepoHarnessRepos } from '../../effects/repo-registry';
-import { assertNoLegacyRepoScopeMcpConfig, loadMcpLocalConfig, mcpLocalConfigPath, mcpStorageDir } from './auth';
+import { loadMcpLocalConfig, mcpLocalConfigPath, mcpStorageDir } from './auth';
 import { sensitiveAllowedRootReason } from './policy';
 import { resolveMcpRepoRoot } from './repo';
 import { repoHarnessPackageVersion } from './version';
@@ -17,8 +17,6 @@ export interface McpDoctorResult {
 
 export const RETIRED_CHATGPT_STATE_FINDING = 'retired_chatgpt_state';
 
-const RETIRED_CODEX_MCP_BLOCK = '[mcp_servers.repo_harness]';
-
 function displayMcpPath(path: string): string {
   const home = process.env.HOME;
   if (home && path === home) return '~';
@@ -27,7 +25,7 @@ function displayMcpPath(path: string): string {
 }
 
 /**
- * Files that the removed ChatGPT, HTTP, OAuth and Codex MCP surface wrote
+ * Files that the removed ChatGPT, HTTP and OAuth MCP surface wrote
  * (#1354). No reader is left, and nothing deletes them: the doctor names each
  * one that exists so the user can remove it by hand.
  */
@@ -55,16 +53,11 @@ function retiredChatgptState(repoRoot: string): { path: string; remove: string }
     if (stat === undefined) continue;
     found.push({ path, remove: `${stat.isDirectory() ? 'rm -r' : 'rm'} -- ${shellQuote(path)}` });
   }
-  const codexConfig = join(repoRoot, '.codex', 'config.toml');
-  if (existsSync(codexConfig) && readFileSync(codexConfig, 'utf-8').includes(RETIRED_CODEX_MCP_BLOCK)) {
-    found.push({ path: codexConfig, remove: `delete the ${RETIRED_CODEX_MCP_BLOCK} block from ${codexConfig}` });
-  }
   return found;
 }
 
 export function runMcpDoctor(opts: { repo?: string; json?: boolean }): McpDoctorResult {
   const repoRoot = resolveMcpRepoRoot(opts.repo ?? '.');
-  assertNoLegacyRepoScopeMcpConfig(repoRoot);
   const localConfig = loadMcpLocalConfig();
   const registeredRepoCount = readRegisteredRepoHarnessRepos({ adoptedOnly: true }).length;
   const configuredAllowedRoots = localConfig?.permissions?.allowedRoots ?? [];

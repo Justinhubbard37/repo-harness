@@ -101,33 +101,6 @@ describe('mcp doctor and local config', () => {
     });
   });
 
-  test('MCP command entrypoints fail closed on legacy repo-scope config', () => {
-    withTmpRepo((repoRoot, userHome) => {
-      const legacyConfig = join(repoRoot, '.repo-harness', 'mcp.local.json');
-      mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
-      writeFileSync(legacyConfig, `${JSON.stringify({ version: 3, scope: 'repo', repo: repoRoot, profile: 'planner' })}\n`);
-
-      for (const action of [
-        () => runMcpDoctor({ repo: repoRoot, json: true }),
-        () => createMcpToolContext({ repo: repoRoot, profile: 'planner', codeGraphAdapter: createCodeGraphCliAdapter() }),
-      ]) {
-        expect(action).toThrow('legacy repo-scope MCP config detected');
-      }
-      // No silent read-through and no cleanup: the legacy file stays untouched.
-      expect(existsSync(legacyConfig)).toBe(true);
-
-      const selectedEnv = pluginSelectionEnv(['mcp']);
-      const cli = spawnSync(
-        process.execPath,
-        [CLI, 'mcp', 'doctor', '--repo', repoRoot],
-        { encoding: 'utf-8', env: { ...selectedEnv, REPO_HARNESS_HOME: userHome } },
-      );
-      rmSync(selectedEnv.HOME!, { recursive: true, force: true });
-      expect(cli.status).toBe(2);
-      expect(cli.stderr).toContain('legacy repo-scope MCP config detected');
-    });
-  });
-
   test('the mcp selection gates serve and doctor and the MCP code load', () => {
     withTmpRepo((repoRoot, userHome) => {
       const probe = join(userHome, 'load-probe.ts');
@@ -287,7 +260,7 @@ describe('mcp doctor and local config', () => {
     }
   });
 
-  test('doctor names leftover ChatGPT state and a Codex repo_harness block, and removes nothing', () => {
+  test('doctor names leftover ChatGPT state and removes nothing', () => {
     withTmpRepo((tmpRoot, userHome) => {
       const hostHome = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-doctor-host-'));
       const previousHome = process.env.HOME;
@@ -300,30 +273,26 @@ describe('mcp doctor and local config', () => {
         const sessions = join(repoRoot, '.ai/harness/chatgpt/sessions');
         // The base installer linked the host skill into the package asset that #1354 deletes.
         const skill = join(hostHome, '.claude/skills/repo-harness-chatgpt');
-        const codexConfig = join(repoRoot, '.codex/config.toml');
         writeFileSync(oauthStore, '{}\n');
         mkdirSync(join(repoRoot, '.ai/harness/handoff'), { recursive: true });
         writeFileSync(handoff, '# plan\n');
         mkdirSync(sessions, { recursive: true });
         mkdirSync(join(hostHome, '.claude/skills'), { recursive: true });
         symlinkSync(join(tmpRoot, 'deleted-package/assets/skills/repo-harness-chatgpt'), skill);
-        mkdirSync(join(repoRoot, '.codex'), { recursive: true });
-        writeFileSync(codexConfig, '[mcp_servers.repo_harness]\ncommand = "repo-harness"\n');
 
         const doctor = JSON.parse(runMcpDoctor({ repo: repoRoot, json: true }).lines[0]);
         expect(doctor.findings).toEqual([{
           code: RETIRED_CHATGPT_STATE_FINDING,
-          paths: [oauthStore, handoff, sessions, skill, codexConfig],
+          paths: [oauthStore, handoff, sessions, skill],
           remove: [
             `rm -- '${oauthStore}'`,
             `rm -- '${tmpRoot}/my repo'\\''s/.ai/harness/handoff/chatgpt-plan.md'`,
             `rm -r -- '${tmpRoot}/my repo'\\''s/.ai/harness/chatgpt/sessions'`,
             `rm -- '${skill}'`,
-            `delete the [mcp_servers.repo_harness] block from ${codexConfig}`,
           ],
         }]);
-        expect(runMcpDoctor({ repo: repoRoot }).lines.filter((line) => line.includes(RETIRED_CHATGPT_STATE_FINDING))).toHaveLength(5);
-        for (const path of [oauthStore, handoff, sessions, codexConfig]) expect(existsSync(path)).toBe(true);
+        expect(runMcpDoctor({ repo: repoRoot }).lines.filter((line) => line.includes(RETIRED_CHATGPT_STATE_FINDING))).toHaveLength(4);
+        for (const path of [oauthStore, handoff, sessions]) expect(existsSync(path)).toBe(true);
         expect(lstatSync(skill).isSymbolicLink()).toBe(true);
       } finally {
         if (previousHome === undefined) delete process.env.HOME;

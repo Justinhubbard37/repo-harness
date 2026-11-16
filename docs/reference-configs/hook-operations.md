@@ -92,7 +92,7 @@ in `src/cli/hook/` and its tests. Run packaged helpers with
 `FAILURE_LOG_FILE` that the edit guard writes.
 
 Init and upgrade preserve an old `.ai/hooks/lib/workflow-state.sh`, including
-edits. Doctor reports it as legacy. Change its callers to
+edits. No command reads, reports or removes it. Change its callers to
 `rh run <helper>`. Test the callers. Back up the old file before
 manual removal. Review local changes first.
 

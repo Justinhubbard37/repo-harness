@@ -592,26 +592,6 @@ function checkCapabilityRegistry(cwd: string): DoctorCheckResult {
   }
 }
 
-function checkLegacyWorkflowState(cwd: string): DoctorCheckResult {
-  const id = 'legacy-workflow-state';
-  const describe = 'Repository keeps no legacy operator library copy';
-  const repoRoot = resolveRepoRoot(cwd);
-  if (!repoRoot) return { id, describe, status: 'na', detail: 'not in a git repository' };
-  const legacy = path.join(repoRoot, '.ai/hooks/lib/workflow-state.sh');
-  try {
-    fs.lstatSync(legacy);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { id, describe, status: 'ok', detail: 'no legacy workflow-state.sh copy' };
-    }
-    return { id, describe, status: 'warn', detail: `cannot inspect ${legacy}: ${String(error)}` };
-  }
-  return {
-    id, describe, status: 'warn',
-    detail: `Legacy copy: ${legacy}. The package no longer ships an operator library. Change callers to rh run <helper>. Test callers, back up the copy, then remove it manually. Keep edited copies until their changes are reviewed. Init and upgrade preserve this file.`,
-  };
-}
-
 /** The ledger's plugins; without a ledger no install chose a selection, so the install default. */
 function judgedPlugins(installed: InstallState | null, env: NodeJS.ProcessEnv): readonly PluginId[] {
   return installed ? enabledPlugins(installed) : defaultPluginSelection('both', env).plugins;
@@ -681,7 +661,6 @@ export function runDoctor(ports: DoctorPorts, cwd: string = process.cwd(), targe
   checks.push(checkSecurityConfig(securityReport));
   checks.push(checkTypedHookRoutes(cwd));
   checks.push(checkCapabilityRegistry(cwd));
-  checks.push(checkLegacyWorkflowState(cwd));
   checks.push(notifyRelayDoctorCheck());
   checks.push(ports.attentionWatchCheck(cwd));
   for (const plugin of REGISTERED_CHECKS) {

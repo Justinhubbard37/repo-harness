@@ -114,7 +114,7 @@ function runConfigure(target: string, options: RunConfigureOptions = {}) {
         ...process.env,
         HOME: envRoot.home,
         PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-        AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+        REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
       },
     });
 

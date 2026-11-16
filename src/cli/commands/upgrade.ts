@@ -172,7 +172,7 @@ function refreshDirectory(
     } else {
       execFileSync('bash', [join(options.packageRoot, 'scripts', 'sync-codex-installed-copies.sh'),
         '--stage-owned-copy', item.sourcePath!, staging, item.sourceSurface!], {
-        env: { ...env, AGENTIC_DEV_SOURCE_ROOT: options.packageRoot }, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...env, REPO_HARNESS_SOURCE_ROOT: options.packageRoot }, stdio: ['ignore', 'pipe', 'pipe'],
       });
     }
     dependencies.afterStage?.(item, staging);

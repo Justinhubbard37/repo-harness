@@ -489,7 +489,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -554,7 +554,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       expect(textRes.status).toBe(0);
@@ -599,7 +599,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       expect(res.status).toBe(2);
@@ -618,7 +618,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       const rejectedSkills = JSON.parse(rejected.stdout).tools.obsidian_runtime_skills;
@@ -648,7 +648,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -678,7 +678,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -704,7 +704,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -738,7 +738,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
         },
       });
 
@@ -769,7 +769,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
         },
       });
 
@@ -825,7 +825,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -868,7 +868,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -910,7 +910,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -965,7 +965,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -1006,7 +1006,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(localBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(localBin, "codegraph"),
         },
       });
 
@@ -1080,7 +1080,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
         },
       });
 
@@ -1117,7 +1117,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
         },
       });
 
@@ -1165,7 +1165,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
         },
       });
 
@@ -1269,7 +1269,7 @@ describe("check-agent-tooling", () => {
             ...process.env,
             HOME: envRoot.home,
             PATH: envRoot.fakeBin,
-            AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+            REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
           },
         });
 
@@ -1336,7 +1336,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       expect(res.status).toBe(0);
@@ -1375,7 +1375,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       expect(incompleteRes.status).toBe(2);
@@ -1445,7 +1445,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       expect(res.status).toBe(2);
@@ -1484,7 +1484,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       expect(res.status).toBe(2);
@@ -1524,7 +1524,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -1596,7 +1596,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -1625,7 +1625,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
       expect(textRes.status).toBe(0);
@@ -1674,7 +1674,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -1731,7 +1731,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -1774,7 +1774,7 @@ describe("check-agent-tooling", () => {
         const res = spawnSync("bash", [SCRIPT, "--json", "--host", "claude", ...(entry.caller ? ["--architecture-selected"] : [])], {
           cwd: envRoot.root,
           encoding: "utf-8",
-          env: { ...process.env, HOME: envRoot.home, PATH: envRoot.fakeBin, AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph") },
+          env: { ...process.env, HOME: envRoot.home, PATH: envRoot.fakeBin, REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph") },
         });
 
         expect(res.status).toBe(0);
@@ -1818,7 +1818,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
         },
       });
 
@@ -1994,7 +1994,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: envRoot.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
         },
       });
 
@@ -2066,7 +2066,7 @@ test("does not borrow a parent CodeGraph index for a nested checkout", () => {
       const result = spawnSync("bash", [SCRIPT, "--json", "--host", "codex"], {
         cwd: nested, encoding: "utf8",
         env: { ...process.env, HOME: fixture.home, PATH: fixture.fakeBin,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(fixture.fakeBin, "codegraph") },
+          REPO_HARNESS_CODEGRAPH_LOCAL_BIN: join(fixture.fakeBin, "codegraph") },
       });
       expect(result.status).toBe(0);
       return JSON.parse(result.stdout).tools.codegraph.project_index;

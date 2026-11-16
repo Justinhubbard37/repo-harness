@@ -37,16 +37,6 @@ export function mcpLocalConfigPath(): string {
   return join(mcpStorageDir(), 'mcp.local.json');
 }
 
-/** Fail closed when a repo still carries the retired repo-scope MCP config. There is no read-through fallback. */
-export function assertNoLegacyRepoScopeMcpConfig(repoRoot: string): void {
-  const dir = join(repoRoot, '.repo-harness');
-  const config = join(dir, 'mcp.local.json');
-  if (!existsSync(config)) return;
-  throw new Error(
-    `legacy repo-scope MCP config detected at ${config}; repo scope is retired and MCP reads config only from ${mcpLocalConfigPath()}. Remove the repo-scope mcp.*.json files under ${dir}.`,
-  );
-}
-
 function retiredConfigKeys(raw: Record<string, unknown>): string[] {
   const keys: string[] = RETIRED_CONFIG_KEYS.filter((key) => Object.hasOwn(raw, key));
   const capabilities = raw.capabilities;

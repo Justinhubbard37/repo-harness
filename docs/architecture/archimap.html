@@ -391,7 +391,7 @@ table.matrix { border-collapse: separate; border-spacing: 4px; font-size: 13px; 
 <section>
 <h2 class="caption">5 · Interfaces and mounts</h2>
 <div class="board" style="height:1000px">
-  <div class="kicker">repo-harness · INTERFACES · d6162e4b</div>
+  <div class="kicker">repo-harness · INTERFACES · 2cdefaa4c</div>
   <div class="title">Interfaces and mounts</div>
   <div class="legend">One chip = one callable surface. The console mounts only loopback HTTP.</div>
 
@@ -408,6 +408,7 @@ table.matrix { border-collapse: separate; border-spacing: 4px; font-size: 13px; 
     <p class="foot" style="margin:12px 0 6px">With <span class="mono">--enable-reader</span>:</p>
     <p class="mono" style="font-size:12.5px;line-height:24px;margin:0">reader_status · open_workspace · list_allowed_roots · tree · read_text · get_repo_capabilities · repo_manifest · list_tree · stat_file · read_file · read_files · search_text · refresh_repo_index · write_file · apply_patch · move_path · delete_path</p>
     <p class="foot" style="margin:12px 0 0">stdio only. The writers are the two PRD tools and the guarded repo writes (write_file, apply_patch, move_path, delete_path). Policy checks each path.</p>
+    <p class="foot" style="margin:12px 0 0">MCP loads the user-level config and rejects retired keys before startup. Repo-scope config has no reader or startup check.</p>
   </div>
 
   <div class="panel" style="left:856px;top:184px;width:760px;height:752px">
@@ -818,10 +819,12 @@ table.matrix { border-collapse: separate; border-spacing: 4px; font-size: 13px; 
 {
   "schema": "archimap/v1",
   "project": "repo-harness",
-  "base": "d6162e4b",
+  "base": "2cdefaa4c5435e89cd1580a1970b6174f9b5b412",
   "generated": "2026-11-16",
+  "refreshedBoards": ["interfaces"],
   "sources": [
     ".archcontext/model",
+    ".archcontext/model/flows/flow.mcp-sidecar.stdio-session.yaml",
     "measure.ts archimap-measure/v1"
   ],
   "boards": [

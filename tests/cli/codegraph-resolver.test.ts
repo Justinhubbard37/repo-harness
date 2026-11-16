@@ -82,7 +82,7 @@ describe("ensure-codegraph", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+          REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
 
@@ -131,7 +131,7 @@ describe("ensure-codegraph", () => {
         const res = spawnSync("bash", [SCRIPT, "--check", "--json", "--repo", ROOT], {
           cwd: ROOT, encoding: "utf-8",
           env: { ...process.env, HOME: envRoot.home, PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-            NODE_OPTIONS: `--require=${preload}`, AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0" },
+            NODE_OPTIONS: `--require=${preload}`, REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: "0" },
         });
         expect(res.status).toBe(0);
         const probes = JSON.parse(res.stdout).codegraph.probes;

@@ -69,33 +69,12 @@ test('global setup preserves an explicit global disabled choice and rejects malf
   expect(ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env)).status).toBe('ok');
   expect(readFileSync(f.path, 'utf8')).toBe(disabled);
   expect(loadArchitectureProjectionPolicy(f.env).provider).toBe('disabled');
-  for (const invalid of ['{', 'null', '[]', JSON.stringify({ architecture: { projection_provider: null, projection_apply: 'manual' } }), JSON.stringify({ architecture: { projection_provider: 'archctx', projection_apply: null } }), '{"architecture":{}}', '{"architecture":{"projection_provider":"archctx","projection_apply":"manaul"}}', '{"architecture":{"projection_provider":"archctx","projection_apply":"manual","projection_version":"0.0.1"}}']) {
+  for (const invalid of ['{', 'null', '[]', JSON.stringify({ architecture: { projection_provider: null, projection_apply: 'manual' } }), JSON.stringify({ architecture: { projection_provider: 'archctx', projection_apply: null } }), JSON.stringify({ architecture: { projection_provider: 'archctx', projection_apply: 'automatic' } }), JSON.stringify({ architecture: { projection_provider: 'archctx', projection_apply: 'manual', projection_failure_gate: 'strict' } }), '{"architecture":{}}', '{"architecture":{"projection_provider":"archctx","projection_apply":"manaul"}}', '{"architecture":{"projection_provider":"archctx","projection_apply":"manual","projection_version":"0.0.1"}}']) {
     writeFileSync(f.path, invalid);
     expect(ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env)).status).toBe('failed');
     expect(() => readGlobalArchitectureConfiguration(f.env)).toThrow();
     expect(readFileSync(f.path, 'utf8')).toBe(invalid);
   }
-});
-
-test('update migrates retired automatic projection settings once and readers refuse them before migration', () => {
-  const f = globalFixture();
-  writeFileSync(f.path, JSON.stringify({ seats: { untouched: true }, architecture: {
-    projection_provider: 'archctx', projection_apply: 'automatic', projection_failure_gate: 'strict', projection_timeout_ms: 90000,
-  } }));
-  expect(() => readGlobalArchitectureConfiguration(f.env)).toThrow('run `rh update` to migrate');
-  const migrated = ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env));
-  expect(migrated).toMatchObject({ status: 'ok', detail: expect.stringContaining('migrated retired automatic projection settings') });
-  expect(JSON.parse(readFileSync(f.path, 'utf8'))).toEqual({ seats: { untouched: true }, architecture: {
-    projection_provider: 'archctx', projection_apply: 'manual', projection_timeout_ms: 90000,
-  } });
-  expect(loadArchitectureProjectionPolicy(f.env)).toMatchObject({ provider: 'archctx', applyMode: 'manual', timeoutMs: 90000 });
-  const settled = readFileSync(f.path, 'utf8');
-  expect(ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env)).detail).toContain('using ');
-  expect(readFileSync(f.path, 'utf8')).toBe(settled);
-
-  writeFileSync(f.path, JSON.stringify({ architecture: { projection_provider: 'disabled', projection_apply: 'disabled', projection_failure_gate: 'advisory' } }));
-  expect(ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env)).status).toBe('ok');
-  expect(JSON.parse(readFileSync(f.path, 'utf8')).architecture).toEqual({ projection_provider: 'disabled', projection_apply: 'disabled' });
 });
 
 test('adoption removes architecture settings and every other policy key outside the schema', () => {
