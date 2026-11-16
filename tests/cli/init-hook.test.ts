@@ -17,7 +17,7 @@ import { applyAdoptionPlan } from '../../src/effects/fs-transaction';
 import { readUpgradeFixture } from '../helpers/upgrade-fixtures';
 import { renderGlobalRulesBlock } from '../../src/cli/installer/global-context';
 import { legacySections } from '../../scripts/check-released-managed-values';
-import { CLI_PORTS } from '../../src/cli/index';
+import { buildProgram, CLI_PORTS } from '../../src/cli/index';
 import { initGitRepo } from '../helpers/repo-fixture';
 import { HC_MIN_VERSION } from '../../src/core/terminal/herdr-pin';
 
@@ -742,6 +742,37 @@ describe('init-hook command', () => {
       expect(check?.status).toBe('na');
       expect(check?.detail).toContain('not repo-harness adopted');
       expect(report.agent_actions.find((entry) => entry.id === 'repo.init-refresh')).toBeUndefined();
+    });
+  });
+
+  test('prints a remediation whose argv rh accepts for a partial Codex automation profile', () => {
+    withTempHome((home, repo) => {
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'AGENTS.md'), currentRulesBlock());
+
+      const report = runInitHook(CLI_PORTS.doctor, {
+        cwd: repo,
+        target: 'codex',
+        env: { ...process.env, HOME: home },
+        statusReport: baseStatusReport(),
+        doctorReport: baseDoctorReport(),
+        toolingReport: baseToolingReport({
+          codex_automation_profile: {
+            name: 'codex_automation_profile',
+            status: 'partial',
+            reason: 'Detected 2/3 required Codex automation skills; missing mermaid.',
+            install_command: 'rh update --target codex --with-external-skills',
+          },
+        }),
+      });
+
+      const action = report.agent_actions.find((entry) => entry.id === 'tooling.codex_automation_profile.repair');
+      expect(action?.command).toBe('rh update --target codex --with-external-skills');
+      // The printed argv must parse: #2798 reported an `rh init` string with flags init never had.
+      const argv = action!.command!.split(' ').slice(1);
+      const command = buildProgram().commands.find((entry) => entry.name() === argv[0]!);
+      expect(command).toBeDefined();
+      expect(command!.parseOptions(argv.slice(1)).unknown).toEqual([]);
     });
   });
 

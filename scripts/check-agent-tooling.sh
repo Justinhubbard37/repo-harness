@@ -924,6 +924,8 @@ function detectCodexAutomationProfile() {
     vendoring_policy: "do-not-vendor-skill-body",
     installed_skills: installedSkills,
     missing_skills: missingSkills,
+    // Waza and Mermaid mutate third-party skill roots, so only an explicit flag closes this gap.
+    install_command: `rh update --target ${hostMode} --with-external-skills`,
     skills,
   };
 }

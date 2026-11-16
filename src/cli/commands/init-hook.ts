@@ -616,13 +616,10 @@ function runtimeCapabilityChecks(
   return checks;
 }
 
-function commandForToolGap(toolName: string, tool: ToolingTool, target: InitHookTarget): string | undefined {
+function commandForToolGap(tool: ToolingTool, target: InitHookTarget): string | undefined {
   const status = (tool.status ?? '').toLowerCase();
   if (status === 'missing') {
     return normalizeToolCommand(tool.install_command, target);
-  }
-  if (toolName === 'codex_automation_profile') {
-    return 'rh init --target codex --no-cli --no-hooks --no-codegraph';
   }
   return normalizeToolCommand(
     tool.sync_command ?? tool.ensure_command ?? tool.mcp_install_command ?? tool.install_command ?? tool.upgrade_command,
@@ -708,7 +705,7 @@ function toolingChecks(
       }, [`tooling.${toolName}`]);
     }
     if (required && readinessStatus === 'needs_agent') {
-      const command = commandForToolGap(toolName, tool, target);
+      const command = commandForToolGap(tool, target);
       addAction(actions, {
         id: `tooling.${toolName}.repair`,
         status: 'needs_agent',
