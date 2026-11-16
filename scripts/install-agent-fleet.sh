@@ -227,11 +227,28 @@ function writeUserManagedReceipt(files) {
   fs.renameSync(temp, USER_MANAGED_RECEIPT_PATH);
 }
 
-function compareAndWrite(targetPath, content, acceptedHash) {
+function backupAgentFile(host, targetPath) {
+  const dir = path.join(HOME, ".repo-harness", "replaced-agents");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = path.join(dir, `${host}-${path.basename(targetPath)}.${stamp}-${process.pid}.bak`);
+  const mode = fs.statSync(targetPath).mode & 0o777;
+  fs.writeFileSync(backup, fs.readFileSync(targetPath), { flag: "wx", mode });
+  fs.chmodSync(backup, mode);
+  return backup;
+}
+
+function shellQuote(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function compareAndWrite(targetPath, content, acceptedHash, host) {
   let existing = null;
   try {
     existing = fs.readFileSync(targetPath, "utf8");
   } catch (_error) {
+    if (force && fs.existsSync(targetPath)) return "backup-failed";
     existing = null;
   }
 
@@ -243,16 +260,28 @@ function compareAndWrite(targetPath, content, acceptedHash) {
     return "installed";
   }
 
+  const owned = installState?.ownership_manifest.find((surface) =>
+    surface.path === targetPath && surface.type === "managed-file");
+  const current = owned && managedInstallSurfaceIsCurrent(owned);
+
   if (force) {
+    let backup;
+    if (!current) {
+      try {
+        backup = backupAgentFile(host, targetPath);
+      } catch (_error) {
+        return "backup-failed";
+      }
+    }
     fs.writeFileSync(targetPath, content);
-    return "installed";
+    return backup
+      ? `replaced (backup: ${backup}; restore: cp ${shellQuote(backup)} ${shellQuote(targetPath)})`
+      : "installed";
   }
 
   if (acceptedHash === sha256(existing)) return "user-managed";
 
-  const owned = installState?.ownership_manifest.find((surface) =>
-    surface.path === targetPath && surface.type === "managed-file");
-  if (owned && managedInstallSurfaceIsCurrent(owned)) {
+  if (current) {
     fs.writeFileSync(targetPath, content);
     return "installed";
   }
@@ -354,11 +383,12 @@ if (!receipt.ok) {
 }
 
 for (const target of targets) {
-  const status = compareAndWrite(target.path, target.content, receipt.hashes.get(target.path));
+  const status = compareAndWrite(target.path, target.content, receipt.hashes.get(target.path), target.host);
   results.push({ host: target.host, file: target.file, status });
 }
 
-if (force && fs.existsSync(USER_MANAGED_RECEIPT_PATH)) {
+const failed = results.some((entry) => entry.status === "drift" || entry.status === "backup-failed");
+if (force && !failed && fs.existsSync(USER_MANAGED_RECEIPT_PATH)) {
   fs.rmSync(USER_MANAGED_RECEIPT_PATH, { force: true });
 }
 
@@ -366,5 +396,5 @@ for (const entry of results) {
   console.log(`[fleet] ${entry.host}/${entry.file}: ${entry.status}`);
 }
 
-process.exit(results.some((entry) => entry.status === "drift") ? 1 : 0);
+process.exit(failed ? 1 : 0);
 NODE_EOF
