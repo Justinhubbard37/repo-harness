@@ -218,7 +218,7 @@ sequenceDiagram
 3. **新包验证自己的 runtime。** 父进程安装新包，并核对请求版本和候选包身份。随后立即通过候选包的绝对入口交接。依赖和 daemon 检查都在候选进程中执行，先于 host 写入（`runGlobalRuntimeSetup`、`runCandidateRuntimeReconciliation`）。旧进程不能用已加载的 renderer 或 Node 合约验证新包。候选入口仍核对父事务 token、包根、版本和包摘要。父进程持有锁和事务，并在候选验证失败时恢复原 CLI 和 host 状态。PR #628 的遗留检查同样在新包中运行。
 4. **archctx 只通过包内 CLI 和精确版本运行。** `ARCHCTX_REQUIRED_VERSION` 是唯一的能力检查（`src/core/architecture/projection.ts:14`、`:55`；PR #617）。Node 运行时按三级顺序选择：`REPO_HARNESS_NODE_BIN`、PATH、受信任候选扫描。每一级都检查 `ARCHCONTEXT_NODE_RANGE`，全部失败时 fail closed（`archctx-provider.ts:103-110`）。
 5. **daemon 维护不回滚已验证的包。** 候选进程把 daemon 检查失败记为 `skipped`。候选通过 stderr 传回维护说明，父进程把说明加入 update 输出。protocol-1 receipt 的格式不变。`verifyInstalledManagedRuntime` 仍把 daemon 失败判为失败。
-6. **诊断命令不改任何东西。** `doctor` 和 `init-hook`（`setup check`）只读（文件头 `doctor.ts:1-7`、`init-hook.ts:1-8`）。修复动作只出现在 `update`、`install`、`upgrade` 这类显式命令里。
+6. **诊断命令不改任何东西。** `doctor` 和 `setup check` 只读（文件头 `doctor.ts:1-7`、`setup-check.ts:1-8`）。修复动作只出现在 `update`、`install`、`upgrade` 这类显式命令里。
 7. **apply 自己接受 major change。** `architecture-projection apply` 在同一次调用里接受 ArchContext 报告的 major change。人的关口是 PR review。丢失响应时读回已提交的 apply，不重复 apply（`projection-apply.ts:24-30`；PR #617）。
 8. **发布前先确认版本不存在。** `check-npm-release.sh` 先跑 `check:helpers`，再查询 npm。版本已存在时拒绝发布（`check-npm-release.sh:24-29`）。
 
@@ -240,7 +240,7 @@ sequenceDiagram
 | 组件 | footprint 摘要 | 文件 / 行 | 职责 |
 | --- | --- | --- | --- |
 | `component.global-runtime-reconciliation.primary`（Global Runtime Reconciler） | `commands/global-runtime.ts`、`src/cli/runtime/**`、`protected-helper-platform.ts`、`skill-tree-integrity.ts`、`commands/upgrade.ts`、`src/core/upgrade/**`、`check-managed-runtime.ts`、`sync-codex-installed-copies.sh`、`install.sh`、`install.ps1` | 11 / 4516 | 有序 setup、依赖回读、候选交接、遗留表面清理 |
-| `component.global-runtime-reconciliation.cli-root`（CLI Root and Diagnostics） | `src/cli/index.ts`、`tty-prompt.ts`、`commands/{validators,doctor,init-hook}.ts` | 5 / 2540 | 命令树、update 事务、选项校验、只读诊断 |
+| `component.global-runtime-reconciliation.cli-root`（CLI Root and Diagnostics） | `src/cli/index.ts`、`tty-prompt.ts`、`commands/{validators,doctor,setup-check}.ts` | 5 / 2540 | 命令树、update 事务、选项校验、只读诊断 |
 | `component.global-runtime-reconciliation.archctx-closure`（ArchContext Closure） | `src/effects/architecture/**`、`core/architecture/projection.ts`、`commands/architecture-{projection,configuration}.ts`、`src/effects/configuration/**`、`node-candidates.ts`、`axr5-archctx-clean-room.ts` | 10 / 1434 | 包内 archctx、Node 选择、投影 apply、模型读取、全局配置 |
 | `component.global-runtime-reconciliation.release-packaging`（Release Packaging） | `package.json`、`bun.lock`、`tsconfig.json`、`src/{core,effects}/release/**`、4 个发布脚本 | 9 / 2137（2026-10-16） | 发布门禁、tarball 冒烟、runtime 证据回执 |
 
@@ -342,7 +342,7 @@ the old Pi package sync script remain absent.
 
 ### 插件端口由组合根传入（2026-11-02，#1398）
 
-- `doctor`、`init-hook` 和 `setup check` 通过必填的 `DoctorPorts` 接收插件端口；`retention` 使用 `RetentionPorts`。端口类型在使用它的 core 文件里。Global runtime 直接调用 core 的 Herdr skill installer。Doctor 直接调用 notify relay check；`attentionWatchCheck` 仍由组合根传入。
+- `doctor` 和 `setup check` 通过必填的 `DoctorPorts` 接收插件端口；`retention` 使用 `RetentionPorts`。端口类型在使用它的 core 文件里。Global runtime 直接调用 core 的 Herdr skill installer。Doctor 直接调用 notify relay check；`attentionWatchCheck` 仍由组合根传入。
 - `src/cli/index.ts` 的 `CLI_PORTS` 传入 attention watch check、MCP 日志路径和 task inbox 路径。CodeGraph 通过 `registerArchitecturePorts` 注册。测试和 setup check 子进程使用同一个 `CLI_PORTS`。
 - 端口是有名字的槽，不是列表。检查和步骤的顺序因此不变。没有默认值，缺少端口是编译错误。
 - `retention --apply` 的集合只来自 `RETENTION_CLASSES`。插件路径只进入 `--json` 的 `roots` 列表。

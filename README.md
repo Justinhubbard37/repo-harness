@@ -189,7 +189,7 @@ sequenceDiagram
 | Goal | Command |
 | --- | --- |
 | Install / reconcile the global runtime | `rh install` · `rh update` |
-| Read-only health check | `rh update --check` · `rh setup check` |
+| Read-only health check | `rh setup check` |
 | Adopt a repository | `rh init --dry-run` → `rh init` |
 | Run a workflow helper | `rh run <helper>` |
 | Board for a parent issue | `rh board --parent <n> --json` |

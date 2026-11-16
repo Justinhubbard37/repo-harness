@@ -11,3 +11,5 @@ responsibilities:
 source:
   include:
     - src/cli/commands/setup-*.ts
+  exclude:
+    - src/cli/commands/setup-check.ts

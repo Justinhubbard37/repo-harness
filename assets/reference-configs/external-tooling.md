@@ -84,7 +84,7 @@ Repo-local workflow refresh stays on `rh init`; `setup check
 `rh upgrade` checks retired files in the current Git repository and
 home. It writes nothing by default. `--json` lists each item with ownership and
 proof. `--scope project|global|all` limits the check. Check exits 1 when it finds
-leftovers. `setup check`, `update --check`, and a successful `update` print one
+leftovers. `setup check` and a successful `update` print one
 count and the upgrade command. Update does not run cleanup.
 
 `upgrade --apply` also refreshes old owned copies of still-shipped skills from

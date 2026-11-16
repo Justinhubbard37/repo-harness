@@ -20,7 +20,7 @@ source:
     - src/cli/tty-prompt.ts
     - src/cli/commands/validators.ts
     - src/cli/commands/doctor.ts
-    - src/cli/commands/init-hook.ts
+    - src/cli/commands/setup-check.ts
     - src/cli/commands/upgrade.ts
     - src/cli/commands/architecture-projection.ts
     - src/cli/commands/architecture-configuration.ts
@@ -31,7 +31,7 @@ source:
     - src/cli/commands/candidate-reconciliation.ts
     - src/cli/commands/doctor.ts
     - src/cli/commands/global-runtime.ts
-    - src/cli/commands/init-hook.ts
+    - src/cli/commands/setup-check.ts
     - src/cli/commands/upgrade.ts
     - src/cli/commands/validators.ts
     - src/cli/index.ts

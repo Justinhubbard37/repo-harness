@@ -26,7 +26,7 @@ import { writeAllSync } from './runtime/write-all-sync';
 import { runInit } from './commands/init';
 import { CLI_VERSION, formatStatus, runStatus } from './commands/status';
 import { formatDoctor, runDoctor, type DoctorPorts } from './commands/doctor';
-import { buildInitHookCommand, buildSetupCommand, formatInitHook, runInitHook } from './commands/init-hook';
+import { buildSetupCommand } from './commands/setup-check';
 import { formatMigratePlan, runMigrate } from './commands/migrate';
 import { buildReviewCommand } from './commands/review';
 import { buildUpgradeCommand } from './commands/upgrade';
@@ -859,9 +859,6 @@ export function buildProgram(): Command {
     .option('--target <target>', `Host target for adapters and runtime skills: ${TARGET_HELP}`, 'both')
     .option('--version <version>', 'Install a specific repo-harness package version')
     .option('--channel <channel>', 'Install package channel: latest|next')
-    .option('--check', 'Run the read-only setup check without refreshing runtime')
-    .option('--check-updates', 'Include network-backed version update advisories in setup check output')
-    .option('--no-runtime-refresh', 'Skip runtime refresh and run the read-only setup check only')
     .option('--no-cli', 'Skip installing the repo-harness CLI globally')
     .option('--no-sync-skill', 'Skip refreshing repo-harness skill aliases under host skill roots')
     .option('--no-hooks', 'Skip global hook adapter installation')
@@ -877,9 +874,6 @@ export function buildProgram(): Command {
       target: string;
       version?: string;
       channel?: string;
-      check?: boolean;
-      checkUpdates?: boolean;
-      runtimeRefresh?: boolean;
       cli?: boolean;
       syncSkill?: boolean;
       hooks?: string | false;
@@ -900,14 +894,6 @@ export function buildProgram(): Command {
       if (rawOpts.reportLanguage !== undefined && !REPORT_LANGUAGE_FLAG_VALUES.includes(rawOpts.reportLanguage as ReportLanguageFlag)) {
         console.error(`rh update: invalid --report-language (expected: ${REPORT_LANGUAGE_FLAG_VALUES.join(', ')})`);
         process.exit(2);
-      }
-      if (rawOpts.check === true || rawOpts.runtimeRefresh === false) {
-        const report = runInitHook(CLI_PORTS.doctor, {
-          target,
-          checkUpdates: rawOpts.checkUpdates === true,
-        });
-        console.log(formatInitHook(report, rawOpts.json === true));
-        process.exit(report.status === 'blocked' ? 1 : 0);
       }
       const installSpec = rawOpts.version
         ? `repo-harness@${rawOpts.version}`
@@ -977,7 +963,6 @@ export function buildProgram(): Command {
       process.exit(report.summary.fail > 0 ? 1 : 0);
     });
 
-  program.addCommand(buildInitHookCommand(CLI_PORTS.doctor));
   const loadReviewRunner = async () => (await import('../effects/review-runner/task-review-runner')).taskReviewRunner;
   const review = buildReviewCommand(loadReviewRunner);
   for (const name of ['round', 'status', 'close', 'cancel']) {

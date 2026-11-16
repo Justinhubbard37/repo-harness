@@ -78,5 +78,5 @@ extensions:
   lspProfile: typescript-lsp
   verification:
     - bun test tests/cli/global-runtime-init.test.ts tests/cli/global-runtime.test.ts
-    - bun run test:files tests/unit/candidate-bound-global-runtime-reconciliation.test.ts tests/unit/global-architecture-projection.test.ts tests/herdr-runtime-pin.test.ts tests/cli/doctor.test.ts tests/cli/init-hook.test.ts tests/cli/upgrade.test.ts tests/runtime-evidence-receipt.test.ts --timeout 60000 --max-concurrency 1
+    - bun run test:files tests/unit/candidate-bound-global-runtime-reconciliation.test.ts tests/unit/global-architecture-projection.test.ts tests/herdr-runtime-pin.test.ts tests/cli/doctor.test.ts tests/cli/setup-check.test.ts tests/cli/upgrade.test.ts tests/runtime-evidence-receipt.test.ts --timeout 60000 --max-concurrency 1
     - bun run check:release

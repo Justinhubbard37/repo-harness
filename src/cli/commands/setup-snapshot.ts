@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { skillProjectionSourceRoot, type DoctorPorts } from './doctor';
-import { buildSetupCheck, type SetupCheckBuild } from './init-hook';
+import { buildSetupCheck, type SetupCheckBuild } from './setup-check';
 import { HOOK_EVENT_TELEMETRY_PATH, HOOK_EVENT_TELEMETRY_PROTOCOL } from '../hook/event-telemetry';
 import { ROUTES } from '../hook/route-registry';
 import { resolveRepoRoot } from '../hook/runtime';

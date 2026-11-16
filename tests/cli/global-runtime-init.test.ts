@@ -2463,36 +2463,18 @@ exit 0
     expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
   }, 30_000);
 
-  test('CLI update --check is read-only setup readiness output', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-cli-update-check-'));
-    const home = join(tmp, 'home');
-    const repo = join(tmp, 'repo');
-    const fakeBin = join(tmp, 'bin');
-    try {
-      mkdirSync(home, { recursive: true });
-      mkdirSync(repo, { recursive: true });
-      mkdirSync(fakeBin, { recursive: true });
-      writeFakeHc(fakeBin);
-
-      const res = spawnSync('bun', [CLI, 'update', '--check', '--target', 'codex', '--json'], {
-        cwd: repo,
+  test('CLI update rejects the retired --check and --no-runtime-refresh options', () => {
+    for (const retired of ['--check', '--no-runtime-refresh', '--check-updates']) {
+      const res = spawnSync('bun', [CLI, 'update', retired], {
+        cwd: ROOT,
         encoding: 'utf-8',
-        env: { ...sanitizedChildEnv(), HOME: home, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
-
-      const s = res.status;
-      expect([0, 1]).toContain(s!);
-      const report = JSON.parse(res.stdout);
-      expect(report.version).toBe(1);
-      expect(report.target).toBe('codex');
-      expect(existsSync(join(home, '.repo-harness'))).toBe(false);
-      expect(existsSync(join(repo, '.ai'))).toBe(false);
-      expect(existsSync(join(repo, 'tasks'))).toBe(false);
-      expect(existsSync(join(repo, 'plans'))).toBe(false);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
+      expect(res.status).not.toBe(0);
+      expect(res.stderr).toContain(`unknown option '${retired}'`);
+      // The parser rejects the option before the action runs, so no step starts.
+      expect(res.stdout).toBe('');
     }
-  }, 15000);
+  }, 30_000);
 
   test('CLI exposes update help for user-level refresh', () => {
     const res = spawnSync('bun', [CLI, 'update', '--help'], {
@@ -2503,8 +2485,8 @@ exit 0
     expect(res.stdout).toContain('Usage: rh update');
     expect(res.stdout).toContain('--version <version>');
     expect(res.stdout).toContain('--channel <channel>');
-    expect(res.stdout).toContain('--check');
-    expect(res.stdout).toContain('--no-runtime-refresh');
+    expect(res.stdout).not.toContain('--check');
+    expect(res.stdout).not.toContain('--no-runtime-refresh');
     expect(res.stdout).toContain('--with-external-skills');
     expect(res.stdout).not.toContain('--with-reverse-skill');
     expect(res.stdout).toContain('--with-obsidian-skills');

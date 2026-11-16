@@ -9,7 +9,7 @@ import {
   formatInitHook,
   runInitHook,
   type ToolingReport,
-} from '../../src/cli/commands/init-hook';
+} from '../../src/cli/commands/setup-check';
 import { runDoctor, type DoctorReport } from '../../src/cli/commands/doctor';
 import type { StatusReport } from '../../src/cli/commands/status';
 import { planAdoption } from '../../src/effects/adoption/plan';
@@ -27,7 +27,7 @@ const RELEASED_SECTIONS = new Map(legacySections(readFileSync(join(ROOT, 'assets
 const CLI = join(ROOT, 'src/cli/index.ts');
 
 // Doctor readiness runs `hc --version`; a fake hc first on PATH keeps the developer's hc out of every test.
-const fakeHcBin = mkdtempSync(join(tmpdir(), 'repo-harness-init-hook-hc-'));
+const fakeHcBin = mkdtempSync(join(tmpdir(), 'repo-harness-setup-check-hc-'));
 const pathBeforeFakeHc = process.env.PATH;
 beforeAll(() => {
   seedGlobalPackageFixture();
@@ -45,7 +45,7 @@ function currentRulesBlock(): string {
 }
 
 function withTempHome(fn: (home: string, repo: string) => void): void {
-  const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-init-hook-'));
+  const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-setup-check-'));
   const home = join(tmp, 'home');
   const repo = join(tmp, 'repo');
   try {
@@ -140,7 +140,7 @@ function baseToolingReport(tools: ToolingReport['tools'] = {}): ToolingReport {
   };
 }
 
-describe('init-hook command', () => {
+describe('setup check command', () => {
   test('prints one leftover summary without listing or changing retired bytes', () => {
     withTempHome((home, repo) => {
       const target = join(home, '.repo-harness/hook-shim.sh');
@@ -919,15 +919,14 @@ describe('init-hook command', () => {
     });
   });
 
-  test('CLI exposes init-hook help', () => {
-    const res = spawnSync('bun', [CLI, 'init-hook', '--help'], {
+  test('CLI rejects the retired init-hook name', () => {
+    const res = spawnSync('bun', [CLI, 'init-hook'], {
       cwd: ROOT,
       encoding: 'utf-8',
     });
-    expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Usage: rh init-hook');
-    expect(res.stdout).toContain('--target <target>');
-    expect(res.stdout).toContain('--check-updates');
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain("unknown command 'init-hook'");
+    expect(res.stdout).toBe('');
   }, 30_000);
 
   test('CLI exposes setup check help', () => {

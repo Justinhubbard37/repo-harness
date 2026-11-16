@@ -222,7 +222,7 @@ version has no flag, so the first update reports the file; the next
 with unbalanced markers, a symlink, or a file that is not a regular file is
 also skipped with the next action. A file without rules is written only when
 the flag is given. The files are part of the install transaction backup.
-`rh update --check` reports `ok` only when the block matches the
+`rh setup check` reports `ok` only when the block matches the
 current template.
 
 ## State File
@@ -325,7 +325,7 @@ on `rh init`.
 rh update
 
 # Read-only repair guidance, no writes.
-rh update --check
+rh setup check
 
 # Preview and remove owned user configuration; preserve user edits and history.
 rh uninstall --dry-run
@@ -346,8 +346,7 @@ a runtime hook: it does not write user-level files, install updates, run `init`,
 or register adapters. It emits `agent_actions` entries carrying the reason, risk,
 target files, an optional command, and the verification surface, so the Agent
 executes each one deliberately. An unreadable state, a retired protocol
-included, gives the action `install-state.repair` with the typed error. `rh init-hook` remains a
-compatibility alias for the adapter-only install path.
+included, gives the action `install-state.repair` with the typed error.
 
 ## Codex Delegation Authority
 

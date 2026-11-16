@@ -66,7 +66,7 @@ PATH, install and update register the installed repo-harness directory with
 `pi install <package-directory>`. An existing user package entry is retained.
 Missing Pi skips this step. Preview with `rh install --dry-run --json`.
 The minimum Pi version is [MIN_PI_VERSION](../src/pi/compat.ts); there is no upper bound.
-`rh setup check` and `rh update --check` report the version,
+`rh setup check` reports the version,
 path resolver capability, package entry and skill projection.
 
 Catalog skills use `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/skills` and the
@@ -135,7 +135,7 @@ read
 
 ```bash
 rh update          # reconcile CLI, mandatory deps, profile tooling, and CodeGraph
-rh update --check  # read-only repair guidance, no writes
+rh setup check     # read-only repair guidance, no writes
 rh upgrade         # check retired leftovers; no writes
 rh upgrade --apply # back up and remove only proven owned leftovers
 rh upgrade decide --keep <path> # record an operator decision for a report-only project item
