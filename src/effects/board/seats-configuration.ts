@@ -74,7 +74,7 @@ const SEAT_RANGES: SeatsRangesV1['seats'] = {
   reviewer: { fleet: [], tools: ['net', 'read', 'shell'] },
 };
 
-/** Claude takes a fleet model family, Codex a fleet target model. Pi takes its DeepSeek model or a Codex model behind `magpie/codex/`, takes an effort, and takes fleet roles only on a Codex model. */
+/** Claude takes a fleet model family, Codex a fleet target model. Pi takes DeepSeek, GLM or a Codex model behind `magpie/codex/`, takes an effort, and takes fleet roles only on a Codex model. */
 const CODEX_MODELS = [...new Set([...Object.values(AGENT_TARGET_OVERRIDES).map(target => target.model),
   ...SEAT_IDS.flatMap(id => {
     const seat = DEFAULT_SEATS_CONFIG[id];
@@ -84,7 +84,7 @@ const CODEX_MODELS = [...new Set([...Object.values(AGENT_TARGET_OVERRIDES).map(t
 const RUNTIME_RANGES: Readonly<Record<SeatRuntime, Omit<SeatRuntimeRangeV1, 'id' | 'enabled'>>> = {
   claude: { models: Object.keys(MODEL_FAMILY_LABELS), effort: true, fleet: true },
   codex: { models: CODEX_MODELS, effort: true, fleet: true },
-  pi: { models: ['magpie/cursor/deepseek-v41-flash-1017', ...CODEX_MODELS.map(model => `${PI_CODEX_MODEL_PREFIX}${model}`)], effort: true, fleet: true },
+  pi: { models: ['magpie/cursor/deepseek-v41-flash-1017', 'zai/glm-5.3', ...CODEX_MODELS.map(model => `${PI_CODEX_MODEL_PREFIX}${model}`)], effort: true, fleet: true },
 };
 
 export function seatsRanges(enabledRuntimes: readonly string[]): SeatsRangesV1 {

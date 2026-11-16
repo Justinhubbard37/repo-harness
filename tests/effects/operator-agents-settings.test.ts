@@ -527,7 +527,7 @@ describe('seat settings contract without transport', () => {
     mkdirSync(join(home, '.repo-harness'));
     writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS, seats: { ...DEFAULT_SEATS_CONFIG, worker } }));
     const env = { HOME: home }, before = readSeatsSettings(env), route = seatsSettingsWriteRoute(env);
-    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, ...['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'].map(m => `magpie/codex/${m}`)]);
+    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, 'zai/glm-5.3', ...['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'].map(m => `magpie/codex/${m}`)]);
     const { revision, ...section } = before.config;
     const saved = await route.decode({ expected_revision: revision, seats: { ...section, advisor: { ...section.advisor, effort: 'medium' } } }, []).execute();
     expect(saved.status).toBe(200);
@@ -536,6 +536,8 @@ describe('seat settings contract without transport', () => {
       .toThrow('seats_settings_request_invalid');
     expect((await route.decode({ expected_revision: readSeatsSettings(env).config.revision, seats: { ...section, worker: { ...gpt, fleet: ['explorer'] } } }, []).execute()).status).toBe(200);
     expect(readSeatsSettings(env).config.worker).toMatchObject({ runtime: 'pi', model: gpt.model, effort: 'high', fleet: ['explorer'] });
+    expect((await route.decode({ expected_revision: readSeatsSettings(env).config.revision, seats: { ...section, reviewer: { ...section.reviewer!, runtime: 'pi', model: 'zai/glm-5.3' } } }, []).execute()).status).toBe(200);
+    expect(readSeatsSettings(env).config.reviewer).toMatchObject({ runtime: 'pi', model: 'zai/glm-5.3' });
     await expect(route.decode({ expected_revision: readSeatsSettings(env).config.revision, seats: { ...section, worker: { ...worker, model: 'magpie/other' } } }, []).execute())
       .rejects.toMatchObject({ status: 422, code: 'seat_model_invalid' });
   });
