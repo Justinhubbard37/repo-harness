@@ -234,23 +234,33 @@ does not retry. The message names the record URL, the resolved ids and the
 unresolved ids; inspect the PR before a new publish. On success the result
 lists the resolved ids in `resolved_threads`.
 
-It posts no APPROVE review and no REQUEST_CHANGES review. A gatekeeper
-seat without the `net` tool group has no network, so the session that runs
-the round publishes its receipt. A reviewer with the `net` tool group
-publishes its own round with this one command and no other GitHub write.
-The review brief states that limit. On every seat, Codex and Pi included,
-the one-write limit is a brief rule only. On a Codex seat the sandbox
-limits files only.
+It posts no APPROVE review and no REQUEST_CHANGES review. A review seat
+writes no file and no GitHub comment: the session that runs the round
+publishes its receipt with `rh review collect` (below). On every seat,
+Codex and Pi included, the read-only limit is a brief rule only. On a Codex
+seat the sandbox limits files only.
 
-A Pi seat without the edit and write tools cannot write a receipt file. It
-ends its reply with a `RECEIPT-JSON` marker and the receipt as one JSON
-object. After the pane status is `done`, the coordinator runs
+A read-only review seat of any runtime (Pi, Claude, Codex) cannot write a
+receipt file. Its packet states the round, `risk_tier`, `subject_sha` and
+the one `reviewer.harness` value of its runtime. The seat ends its reply
+with a `RECEIPT-JSON` marker and the receipt as one JSON object, and does
+not publish. After the pane status is `done`, the coordinator runs
 `rh review collect --seat <terminal> --pr <n> [--owner-record <url>] [--json]`.
-The command reads the newest session record of that seat's worktree under
-`~/.pi/agent/sessions`, takes the last `RECEIPT-JSON` block, validates it
-with the `review publish` validator and publishes it the same way. It
-fails closed when the record, the block, the JSON, the receipt or the PR
-head subject is missing or wrong, and it does not read pane text.
+The command reads the session records of the seat's worktree: Pi under
+`~/.pi/agent/sessions`, Claude Code under `~/.claude/projects` (or
+`CLAUDE_CONFIG_DIR`), and Codex rollout files under `~/.codex/sessions` (or
+`CODEX_HOME`) whose `session_meta` names that worktree. It binds a session
+to the seat by the packet that the session received: the seat label of the
+terminal, the PR number and the PR head now. File age is never evidence,
+because review seats and rounds of one PR share a worktree. A session whose
+packet names an earlier head is not a candidate. The seat label comes from
+`rh seats argv <seat> --repository-id <id> --pr <n>`, which the review launch
+uses; a terminal without it is refused. The command takes the last
+`RECEIPT-JSON` block, requires its `subject_sha` to equal the packet head,
+validates it with the `review publish` validator and publishes it the same
+way. It fails closed when the record, the block, the JSON, the receipt or
+the PR head subject is missing or wrong, or when two sessions hold a packet
+for the head, and it does not read pane text.
 
 `review publish` accepts rounds 1 to 5. Round 5 is the hard stop (§2.2),
 so every review round publishes its claim and record with this command.

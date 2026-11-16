@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planReview, type ReviewDecisionV1 } from '../src/core/board/review';
+import { parseReviewPacket, planReview, reviewPacket, type ReviewDecisionV1 } from '../src/core/board/review';
 import { executeReview, withReviewLock, type ReviewPorts } from '../src/effects/board/review';
 import { HerdrCoreError } from '../src/effects/terminal/herdr-core';
 import type { BoardPullRequestV1, BoardV1 } from '../src/core/board/board';
@@ -187,4 +187,20 @@ test('a second run under the held repository lock starts nothing', async () => {
   expect(await withReviewLock('1', async () => withReviewLock('1', async () => { ran += 1; return 'inner'; }, env), env)).toBeNull();
   expect(ran).toBe(0);
   expect(await withReviewLock('1', async () => 'ok', env)).toBe('ok');
+});
+
+test('the packet names the round, tier, head, harness and the RECEIPT-JSON hand-off, and parses back', () => {
+  const start = (comments: BoardCommentPageV1) => plan([pr(1)], comments)[0] as Extract<ReviewDecisionV1, { action: 'start' }>;
+  expect(start(page()).round).toBe(1);
+  // The earlier head has a round-1 row, so this head is round 2; a head that a row names keeps that row's round.
+  const second = start(page(record(OLD)));
+  expect(second.round).toBe(2);
+  const text = reviewPacket(second, second.seats[0]!, 'pi');
+  expect(text).toContain(`round 2, risk_tier "high", subject_sha ${SHA}, reviewer.harness "pi"`);
+  expect(text).toContain('End your last reply with the line RECEIPT-JSON');
+  expect(parseReviewPacket(text)).toEqual({ pr: 1, head_sha: SHA, seat: 'gatekeeper' });
+  expect(parseReviewPacket(text.replace('as the gatekeeper of', 'as the gatekeeper-deep of'))?.seat).toBe('gatekeeper-deep');
+  expect(parseReviewPacket(text.replace('as the gatekeeper of', 'as the worker of'))).toBeNull();
+  // A claim that a publish left without its record still counts for the round.
+  expect(start(page(comment(`repo-harness acceptance claim\nRound: 2\nSubject: ${OLD}`))).round).toBe(3);
 });

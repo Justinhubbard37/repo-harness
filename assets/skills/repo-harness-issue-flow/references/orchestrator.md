@@ -302,8 +302,8 @@ in the task. A `none` route waits, or it changes through the seats
 configuration: the owner sets the seat order and each fallback there, and
 the route line then names the first eligible seat. When the gatekeeper
 account is exhausted and a `gatekeeper-fallback` seat is configured, the
-route line names the fallback seat, and `rh seats argv gatekeeper`
-launches it. Never start a seat with an argv that
+route line names the fallback seat, and `rh seats argv gatekeeper
+--repository-id <id> --pr <n>` launches it. Never start a seat with an argv that
 `rh seats argv` did not print.
 `rh board dispatch --parent <n> --space <id>` applies this step to every ready issue of the plan: it reads the `route:<class>` label of each issue (and `touches:credentials`), starts the worktree, posts the claim and opens the worker tab. `--dry-run` prints the decisions only. An issue without one `route:<class>` label is reported and not dispatched.
 `rh board review --parent <n> --space <id>` starts the gatekeeper seat for each ready, green High pull request that has no gatekeeper start marker for its head. When the board shows `claude_review: pending` (an open High or unknown-tier head that does not meet the High acceptance rule and has no Claude reviewer row), it also starts the reviewer seat; each seat has its own marker, so a seat that was not sent retries alone. A Medium head gets one seat of the other family than the board's `writer_family` (the `modelFamily` of the `Model:` line of the writer claim of the head branch): a non-Claude gatekeeper for a Claude writer, the Claude reviewer for any other known family. An unknown writer family (no such claim, no `Model:` line, an unmatched model, or linked issues that disagree) starts no seat and is skipped as `writer_family_unknown`; the orchestrator then starts by hand one reviewer seat of a model family known to differ from the writer's, and that review records its own `Model relation:`. `--pr <n>` reviews that pull request only. A pull request that links a plan-held issue is skipped as `plan_hold`. A head whose gatekeeper is about to start is skipped as `review_family_unavailable` when the effective gatekeeper (the seat of the `gatekeeper:` route line) cannot launch, has a model with no known family, is of the writer's family where it gives the different-family row, or is Claude where the head needs a non-Claude gatekeeper; the detail names the gap and the route line. `--dry-run` prints the decisions only. A High head is not accepted until it has `PASS` rows from two distinct claims, one of them different-family to the writer; a Medium head needs one claimed `PASS` row recorded different-family (`acceptor.md` §2.2).
@@ -415,7 +415,7 @@ host's PR events or check when the worker reports.
   A High PR keeps two reviewer seats in parallel.
   A coordinator may add `gatekeeper-deep` as an optional second Codex
   review row: a read-only Codex seat on a different model than
-  `gatekeeper`. Start it with `rh seats argv gatekeeper-deep --pr <n>`.
+  `gatekeeper`. Start it with `rh seats argv gatekeeper-deep --repository-id <id> --pr <n>`.
   Both Codex rows write the Agent line `codex (<model>)`. When the host
   observes no model, both write `codex (unobserved)`, share one claim and
   count once toward the High two-claim rule.
@@ -437,9 +437,8 @@ host's PR events or check when the worker reports.
   Record the result in one acceptance record comment on
   the PR, in the row shape of `templates.md`: round, role, subject,
   verdict and model relation.
-  The review brief lets a reviewer with the `net` tool group publish only
-  its own round with `rh review publish`. It forbids every
-  other GitHub write. Attention rule A19 names a review seat that is done
+  The review brief forbids every GitHub write: the coordinator publishes
+  a review row with `rh review collect`. Attention rule A19 names a review seat that is done
   or idle for more than 10 min while its PR has no record of its harness
   after that time: read its pane and publish its row. The record is
   per harness, not per seat: a `gatekeeper` record from the same harness

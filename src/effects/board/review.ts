@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { collectBoard, type BoardCollectInput, BoardCollectError, readRepositoryId, runGhText } from './collect';
-import { planReview, REVIEW_START_HEADER, REVIEW_START_STATUS_HEADER, type ReviewDecisionV1, type ReviewSeatStartV1 } from '../../core/board/review';
+import { planReview, reviewPacket, REVIEW_START_HEADER, REVIEW_START_STATUS_HEADER, type ReviewDecisionV1, type ReviewSeatStartV1 } from '../../core/board/review';
 import type { BoardCommentPageV1 } from '../../core/board/source';
 import type { SeatConfigV1, SeatId } from '../../core/board/seats-settings';
 import type { SeatRouteV1 } from '../../core/board/seat-routing';
@@ -75,13 +75,6 @@ function markerBody(decision: StartDecision, start: ReviewSeatStartV1): string {
   return [REVIEW_START_HEADER, `Subject: ${decision.head_sha}`, `Seat: ${start.seat}`, `PR: #${decision.pr}`, `Reading: ${reading}`].join('\n');
 }
 
-function packet(decision: StartDecision, start: ReviewSeatStartV1): string {
-  const scope = start.delta_from === null
-    ? 'Review the whole diff.'
-    : `This is a delta review. Review the hunks that changed since ${start.delta_from} and the sibling cases of each earlier finding.`;
-  return `Task: review PR #${decision.pr} at head ${decision.head_sha} (tier ${decision.tier}), as the ${start.seat} of repo-harness-issue-flow. The worktree is at that head. ${scope} Read the PR body, the issue and the recorded evidence first: gh pr view ${decision.pr} --comments. You are read-only: print your acceptance receipt block (repo-harness-review-publish-receipt protocol 2, subject_sha ${decision.head_sha}; confirmed_fixed lists the node ids of the earlier-round review publish threads whose fix you confirmed at this head, or []) in this pane and report to the orchestrator.`;
-}
-
 /** Failures that stop `tab.new` before it sends a request. Any other failure may follow a created tab. */
 const NOT_SENT: ReadonlySet<string> = new Set(['missing', 'nested', 'invalid_labels', 'invalid_address']);
 
@@ -113,7 +106,7 @@ export async function executeReview(decisions: readonly ReviewDecisionV1[], cont
       }
       const markerUrl = ports.comment(decision.pr, markerBody(decision, start));
       try {
-        ports.openTab({ ...(launch.tab === null ? {} : { name: launch.tab }), space: context.space, folder: worktree.path, argv: launch.argv, task: packet(decision, start) });
+        ports.openTab({ ...(launch.tab === null ? {} : { name: launch.tab }), space: context.space, folder: worktree.path, argv: launch.argv, task: reviewPacket(decision, start, launch.runtime) });
       } catch (error) {
         if (!(error instanceof HerdrCoreError) || NOT_SENT.has(error.reason)) {
           ports.comment(decision.pr, `${REVIEW_START_STATUS_HEADER}\nClaim: ${markerUrl}\nStatus: released`);

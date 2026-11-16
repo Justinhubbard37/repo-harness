@@ -86,8 +86,8 @@ export function buildReviewCommand<Session, Endpoint>(loadRunner: () => Promise<
     .option('--owner-record <url>', 'Owner decision comment URL on the PR or an issue it closes; required for a round above 5')
     .option('--repo <path>', 'Owner repository worktree', process.cwd()).option('--json', 'Print compact JSON')
     .action(publishAction('publish', opts => publishReview({ repoRoot: opts.repo, prNumber: Number(opts.pr), receiptPath: opts.receipt, ownerRecord: opts.ownerRecord })));
-  command.command('collect').description('Publish the last RECEIPT-JSON block of a Pi review seat session record through the same path as publish')
-    .requiredOption('--seat <terminal>', 'The Pi review seat hc terminal; its newest session record under ~/.pi/agent/sessions is read')
+  command.command('collect').description('Publish the last RECEIPT-JSON block of a review seat session record (Pi, Claude Code or Codex) through the same path as publish')
+    .requiredOption('--seat <terminal>', 'The review seat hc terminal; its session record is the one whose packet names the seat label, this PR and the PR head')
     .requiredOption('--pr <number>', 'Pull request number')
     .option('--owner-record <url>', 'Owner decision comment URL on the PR or an issue it closes; required for a round above 5')
     .option('--repo <path>', 'Owner repository worktree', process.cwd()).option('--json', 'Print compact JSON')

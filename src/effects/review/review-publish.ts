@@ -375,6 +375,15 @@ function unknownOutcome(message: string, posted: readonly string[], cause?: unkn
   });
 }
 
+/** The head SHA of the PR now, read through the same gh runner and checks as `publishReceipt`. */
+export function readPrHeadSha(input: ReviewPublishInput): string {
+  try {
+    return prHead(input.ghRunner ?? createGhRunner(input.repoRoot, input.ghBin), input.prNumber).headSha.toLowerCase();
+  } catch (error) {
+    throw new ReviewPublishError('review_publish_provider_unavailable', errorMessage(error), 1);
+  }
+}
+
 export function publishReview(input: ReviewPublishInput & { readonly receiptPath: string }): ReviewPublishResult {
   return publishReceipt(input, readReceipt(input.receiptPath));
 }

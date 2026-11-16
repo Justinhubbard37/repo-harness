@@ -1,7 +1,7 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { taskReviewRunner } from '../../src/effects/review-runner/task-review-runner';
@@ -592,7 +592,9 @@ test('the optional PR selection is all-or-none and admission identity alone is n
     .toEqual({ repository: 'example/repo-harness', provider_repository_id: '1001', pr_number: 42, expected_base_sha: 'b'.repeat(40) });
 });
 
-function seatFixture(texts: readonly string[] | null, options: { agentDir?: string; symlinkCwd?: boolean } = {}) {
+const seatPacket = (seat = 'gatekeeper', head = PUBLISH_HEAD) => `Task: review PR #${PUBLISH_PR} at head ${head} (tier high, round 1), as the ${seat} of repo-harness-issue-flow. Review.`;
+
+function seatFixture(texts: readonly string[] | null, options: { agentDir?: string; symlinkCwd?: boolean; seat?: string; head?: string } = {}) {
   const fixture = publishFixture();
   const home = join(fixture.root, 'home');
   const real = join(fixture.root, 'seat-real');
@@ -604,14 +606,15 @@ function seatFixture(texts: readonly string[] | null, options: { agentDir?: stri
   const directory = join(agentDir, 'sessions', '--' + realCwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-') + '--');
   if (texts !== null) {
     mkdirSync(directory, { recursive: true });
-    const lines = texts.map((text) => JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text }] } }));
+    const lines = [JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: seatPacket(options.seat, options.head) }] } }),
+      ...texts.map((text) => JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text }] } }))];
     writeFileSync(join(directory, 'a.jsonl'), lines.join('\n') + '\n');
   }
   return { ...fixture, home, cwd, directory };
 }
 
-async function runCollect(fixture: ReturnType<typeof seatFixture>, agentDir?: string) {
-  const hc = spyOn(herdrCore, 'hcGet').mockReturnValue({ cwd: fixture.cwd } as never);
+async function runCollect(fixture: ReturnType<typeof seatFixture>, agentDir?: string, seat = 'gatekeeper') {
+  const hc = spyOn(herdrCore, 'hcGet').mockReturnValue({ cwd: fixture.cwd, labels: { 'repo-harness.seat': seat } } as never);
   const previous = process.env.REPO_HARNESS_GH_BIN;
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.REPO_HARNESS_GH_BIN = fixture.gh.bin;
@@ -643,15 +646,70 @@ test('collect fails closed on a missing record, block, bad JSON, invalid receipt
     ['top-level array', ['RECEIPT-JSON\n' + JSON.stringify([publishReceipt()])], 'review_receipt_invalid', 'decodes to a repo-harness-review-publish-receipt object'],
     ['invalid receipt', ['RECEIPT-JSON\n' + JSON.stringify(publishReceipt({ protocol: 1 }))], 'review_receipt_invalid', ''],
     ['stale subject', [receiptBlock(publishReceipt({ subject_sha: 'b'.repeat(40) }))], 'review_subject_stale', ''],
+    ['receipt for another head than its packet', [receiptBlock(publishReceipt({ subject_sha: 'b'.repeat(40) }))], 'review_receipt_invalid', 'not the packet head'],
   ];
   for (const [label, texts, code, message] of cases) {
-    const fixture = seatFixture(texts);
+    const fixture = seatFixture(texts, label === 'stale subject' ? { head: 'b'.repeat(40) } : {});
     const result = await runCollect(fixture);
     expect(result.status, label).toBe(2);
     expect(JSON.parse(result.stdout), label).toMatchObject({ ok: false, error: code, posted: [] });
     expect(JSON.parse(result.stdout).message, label).toContain(message);
     expect(fixture.gh.calls().some((args) => args.includes('POST')), label).toBe(false);
   }
+});
+
+test('collect binds a session by seat, PR and the PR head, across Pi, Claude and Codex records', async () => {
+  const line = (role: string, text: string) => JSON.stringify({ message: { role, content: role === 'user' ? text : [{ type: 'text', text }] } }) + '\n';
+  const OLD_HEAD = 'b'.repeat(40);
+  const session = (seat: string, head: string, receiptHead = head) => line('user', seatPacket(seat, head)) + line('assistant', receiptBlock(publishReceipt({ subject_sha: receiptHead })));
+  const newer = (path: string) => { const future = new Date(Date.now() + 60_000); utimesSync(path, future, future); };
+
+  // Two Pi gatekeeper seats and an earlier round share one worktree; the other seat's and the earlier round's sessions are newer.
+  const pi = seatFixture([receiptBlock(publishReceipt())]);
+  for (const [name, text] of [['deep.jsonl', session('gatekeeper-deep', PUBLISH_HEAD)], ['round0.jsonl', session('gatekeeper', OLD_HEAD)]] as const) {
+    writeFileSync(join(pi.directory, name), text);
+    newer(join(pi.directory, name));
+  }
+  // An aborted attempt at the same head (no receipt) is no candidate and causes no ambiguity.
+  writeFileSync(join(pi.directory, 'aborted.jsonl'), line('user', seatPacket('gatekeeper', PUBLISH_HEAD)) + line('assistant', 'I stopped early.'));
+  const own = await runCollect(pi);
+  expect(own.status, own.stderr).toBe(0);
+  expect(JSON.parse(own.stdout)).toMatchObject({ ok: true, head_sha: PUBLISH_HEAD });
+  const deep = await runCollect(pi, undefined, 'gatekeeper-deep');
+  expect(deep.status, deep.stderr).toBe(0);
+
+  // Claude Code: string user content under CLAUDE_CONFIG_DIR/projects, with a hook entry before the packet.
+  const claude = seatFixture(null);
+  const configDir = join(claude.root, 'claude-config');
+  const projectDir = join(configDir, 'projects', realpathSync(claude.cwd).replace(/[^A-Za-z0-9]/g, '-'));
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(join(projectDir, 's.jsonl'), line('user', '<system-reminder>x</system-reminder>') + session('reviewer', PUBLISH_HEAD));
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  try {
+    const result = await runCollect(claude, undefined, 'reviewer');
+    expect(result.status, result.stderr).toBe(0);
+  } finally { delete process.env.CLAUDE_CONFIG_DIR; }
+
+  // Codex: a rollout under CODEX_HOME/sessions/<date> whose session_meta names the cwd; other cwds are skipped.
+  const codex = seatFixture(null);
+  const codexHome = join(codex.root, 'codex-home');
+  const day = join(codexHome, 'sessions', '2026', '11', '16');
+  mkdirSync(day, { recursive: true });
+  const item = (role: string, kind: string, text: string) => JSON.stringify({ type: 'response_item', payload: { type: 'message', role, content: [{ type: kind, text }] } }) + '\n';
+  const meta = (cwd: string) => JSON.stringify({ type: 'session_meta', payload: { cwd, base_instructions: { text: 'x'.repeat(100_000) } } }) + '\n';
+  writeFileSync(join(day, 'rollout-a.jsonl'), meta(realpathSync(codex.cwd)) + item('user', 'input_text', '# AGENTS.md') + item('user', 'input_text', seatPacket()) + item('assistant', 'output_text', receiptBlock(publishReceipt())));
+  writeFileSync(join(day, 'rollout-b.jsonl'), meta(tmpdir()) + item('user', 'input_text', seatPacket()));
+  process.env.CODEX_HOME = codexHome;
+  try {
+    const result = await runCollect(codex);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, head_sha: PUBLISH_HEAD });
+    // A second session for the same seat and head is ambiguous.
+    writeFileSync(join(day, 'rollout-c.jsonl'), meta(realpathSync(codex.cwd)) + item('user', 'input_text', seatPacket()) + item('assistant', 'output_text', receiptBlock(publishReceipt())));
+    const ambiguous = await runCollect(codex);
+    expect(ambiguous.status).toBe(2);
+    expect(JSON.parse(ambiguous.stdout).message).toContain('2 sessions');
+  } finally { delete process.env.CODEX_HOME; }
 });
 
 test('collect finds the session directory from the realpath of the seat cwd and the Pi agent dir', async () => {

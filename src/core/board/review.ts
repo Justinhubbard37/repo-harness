@@ -1,6 +1,7 @@
 import { ACCEPTANCE_RECORD_HEADER, type BoardV1 } from './board';
 import { planRefusal, requiredCheckDetail } from './merge';
 import type { SeatRouteV1 } from './seat-routing';
+import { isReviewSeat, SEAT_IDS, type SeatId } from './seats-settings';
 import { modelFamily } from '../review/model-family';
 import { claimStatusTarget, newestProtocolComment, parseAcceptanceRecord, parseClaimStatus, protocolComments, type BoardCommentPageV1, type BoardCommentV1 } from './source';
 
@@ -32,7 +33,7 @@ export interface ReviewSeatStartV1 {
 }
 
 export type ReviewDecisionV1 =
-  | { readonly pr: number; readonly action: 'start'; readonly head_ref: string; readonly head_sha: string; readonly tier: 'medium' | 'high'; readonly seats: readonly ReviewSeatStartV1[] }
+  | { readonly pr: number; readonly action: 'start'; readonly head_ref: string; readonly head_sha: string; readonly tier: 'medium' | 'high'; readonly round: number; readonly seats: readonly ReviewSeatStartV1[] }
   | { readonly pr: number; readonly action: 'skip'; readonly reason: ReviewSkipReason; readonly detail: string };
 
 export interface ReviewInputV1 {
@@ -78,6 +79,40 @@ function deltaBase(page: BoardCommentPageV1, head: string, seat: ReviewSeat): st
   return newest === null ? null : field(newest, 'Subject');
 }
 
+/**
+ * The round of a head: the round of an acceptance row or claim that already names it (a High head has two reviews of one round),
+ * else one past the newest round of any of them. A claim counts too, so a publish that stopped after its claim keeps its round.
+ */
+function roundOf(page: BoardCommentPageV1, head: string): number {
+  const rows = [
+    ...protocolComments(page, ACCEPTANCE_RECORD_HEADER).flatMap(record => parseAcceptanceRecord(record) ?? []).map(row => ({ round: row.round, subject: row.subject_sha })),
+    ...protocolComments(page, 'repo-harness acceptance claim').map(claim => ({ round: Number(field(claim, 'Round')), subject: field(claim, 'Subject') })).filter(row => Number.isSafeInteger(row.round) && row.round > 0),
+  ];
+  return rows.find(row => row.subject === head)?.round ?? Math.max(0, ...rows.map(row => row.round)) + 1;
+}
+
+export interface ReviewPacketBinding { readonly pr: number; readonly head_sha: string; readonly seat: SeatId }
+
+/** The packet's first sentence: the one text that binds a seat session to its PR, head and seat. `parseReviewPacket` reads it back. */
+const PACKET_HEAD = /Task: review PR #([1-9][0-9]*) at head ([0-9a-f]{40}|[0-9a-f]{64}) \(tier (?:medium|high), round [1-9][0-9]*\), as the ([a-z]+(?:-[a-z]+)*) of repo-harness-issue-flow\./u;
+
+export function parseReviewPacket(text: string): ReviewPacketBinding | null {
+  const match = PACKET_HEAD.exec(text);
+  const seat = SEAT_IDS.find(id => id === match?.[3]);
+  return match === null || seat === undefined || !isReviewSeat(seat) ? null : { pr: Number(match[1]), head_sha: match[2]!, seat };
+}
+
+/**
+ * The task text of a review seat. It states each value of the receipt that the seat cannot know, and the hand-off: a read-only seat
+ * cannot write a file or publish, so it ends its reply with the receipt and the orchestrator publishes it with `rh review collect`.
+ */
+export function reviewPacket(decision: Extract<ReviewDecisionV1, { action: 'start' }>, start: ReviewSeatStartV1, harness: 'claude' | 'codex' | 'pi'): string {
+  const scope = start.delta_from === null
+    ? 'Review the whole diff.'
+    : `This is a delta review. Review the hunks that changed since ${start.delta_from} and the sibling cases of each earlier finding.`;
+  return `Task: review PR #${decision.pr} at head ${decision.head_sha} (tier ${decision.tier}, round ${decision.round}), as the ${start.seat} of repo-harness-issue-flow. The worktree is at that head. ${scope} Read the PR body, the issue and the recorded evidence first: gh pr view ${decision.pr} --comments. You are read-only. Receipt values (repo-harness-review-publish-receipt protocol 2): round ${decision.round}, risk_tier "${decision.tier}", subject_sha ${decision.head_sha}, reviewer.harness "${harness}" (exactly this value); confirmed_fixed lists the node ids of the earlier-round review publish threads whose fix you confirmed at this head, or []. Do not publish. End your last reply with the line RECEIPT-JSON and then the receipt as one JSON object; the orchestrator publishes it with rh review collect.`;
+}
+
 export function planReview(input: ReviewInputV1): readonly ReviewDecisionV1[] {
   const { board } = input;
   return board.pull_requests.map((pr): ReviewDecisionV1 => {
@@ -107,6 +142,6 @@ export function planReview(input: ReviewInputV1): readonly ReviewDecisionV1[] {
     const givesDifferentFamily = tier === 'medium' || pr.claude_review === 'not_required';
     const gap = seats.some(entry => entry.seat === 'gatekeeper') ? gatekeeperFamilyGap(input.gatekeeper, pr.writer_family, givesDifferentFamily, needsNonClaude) : null;
     if (gap !== null) return skip('review_family_unavailable', `${gap}; ${input.gatekeeper.line}`);
-    return { pr: pr.number, action: 'start', head_ref: pr.head_ref, head_sha: pr.head_sha, tier, seats };
+    return { pr: pr.number, action: 'start', head_ref: pr.head_ref, head_sha: pr.head_sha, tier, round: roundOf(page, pr.head_sha), seats };
   });
 }
