@@ -105,6 +105,33 @@ on required values, `catch {}` or `catch (e) { return`, a new flag or
 option, files outside the issue's list, and changed or removed assertions.
 Each hit needs a line in the issue, or it goes.
 
+### 3.1 Architecture loop
+
+This loop applies when `rh architecture-projection status --json` reports
+`modelAuthority.source` `archcontext` and `modelAuthority.ready` `true`.
+Otherwise skip it.
+
+1. **Before the first edit:** `rh arch prepare --task "<issue title>: <Goal section>" --json`.
+   Read `posture`, `constraints` and `resources` from the answer. On
+   posture `intervention` or `proof-required`, stop coding and post a
+   `boundary question` with the posture and `recommendedTargetState`.
+2. **After each group of edits that changes a module boundary or adds a
+   file:** `rh arch checkpoint --changed-path <path> --json`, one
+   `--changed-path` for each changed path. Read `items` and
+   `actionsRequired`. An empty `items` with `coverage` `partial` or
+   `unknown` is not proof of no debt. Say so in the PR body.
+3. **Before you open or update the PR:** `rh arch complete --head-sha <head> --json`.
+   Put each item of the answer in the PR body section `Architecture slice`,
+   or fix it. On a `stale-context` finding, run step 1 again.
+
+This section names commands only. Practice text, matching rules and
+checker logic stay in ArchContext. A model change follows the
+`repo-harness-architecture` skill.
+
+The loop is advice, not a gate. When a command exits non-zero for a setup
+reason (`AC_MODEL_ADOPTION_REQUIRED`, `AC_CODE_FACTS_UNAVAILABLE`,
+`AC_CODE_FACTS_NOT_READY`), report it in the PR body and continue.
+
 ## 4. When the boundary is wrong
 
 Sometimes the issue cannot be done inside its boundary. Typical causes: a
