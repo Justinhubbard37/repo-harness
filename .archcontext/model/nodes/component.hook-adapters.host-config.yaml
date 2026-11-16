@@ -1,0 +1,11 @@
+schemaVersion: archcontext.node/v2
+id: component.hook-adapters.host-config
+kind: component
+name: Host Config Write Gate
+status: active
+parent: capability.runtime-harness.hook-adapters
+layer: core
+summary: The one component that owns every write to a host file outside ~/.repo-harness/. Callers request a change through the write gate and never write the file themselves.
+responsibilities:
+  - Decide each host file change as data: the target path, the new content and the ownership record that covers it.
+  - Keep the ownership records for host files in one place, so install state, configuration restore and the agent fleet user-managed list share one write boundary.

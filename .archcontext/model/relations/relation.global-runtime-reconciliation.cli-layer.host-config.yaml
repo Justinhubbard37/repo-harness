@@ -1,0 +1,6 @@
+schemaVersion: archcontext.relation/v1
+id: relation.global-runtime-reconciliation.cli-layer.host-config
+kind: calls
+source: component.global-runtime-reconciliation.cli-layer
+target: component.hook-adapters.host-config
+intent: "Request a host file change through the write gate"

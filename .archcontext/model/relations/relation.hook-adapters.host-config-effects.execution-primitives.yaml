@@ -1,0 +1,6 @@
+schemaVersion: archcontext.relation/v1
+id: relation.hook-adapters.host-config-effects.execution-primitives
+kind: calls
+source: component.hook-adapters.host-config-effects
+target: capability.workflow-engine.execution-primitives
+intent: "Take the runtime transaction lock before it applies a host file change"

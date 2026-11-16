@@ -1,0 +1,6 @@
+schemaVersion: archcontext.relation/v1
+id: relation.contract-assets.agent-fleet-installer.host-config
+kind: calls
+source: component.contract-assets.agent-fleet-installer
+target: component.hook-adapters.host-config
+intent: "Request a host file change through the write gate"

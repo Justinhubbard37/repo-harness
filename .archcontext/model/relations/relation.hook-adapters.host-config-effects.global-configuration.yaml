@@ -1,0 +1,6 @@
+schemaVersion: archcontext.relation/v1
+id: relation.hook-adapters.host-config-effects.global-configuration
+kind: calls
+source: component.hook-adapters.host-config-effects
+target: component.global-runtime-reconciliation.global-configuration
+intent: "Read the global configuration store paths"

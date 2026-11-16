@@ -1,0 +1,6 @@
+schemaVersion: archcontext.relation/v1
+id: relation.hook-adapters.host-installer.host-config
+kind: calls
+source: component.hook-adapters.host-installer
+target: component.hook-adapters.host-config
+intent: "Request a host file change through the write gate"

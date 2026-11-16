@@ -1,0 +1,10 @@
+schemaVersion: archcontext.node/v2
+id: component.hook-adapters.host-config-effects
+kind: component
+name: Host Config Write Gate (effects)
+status: active
+parent: capability.runtime-harness.hook-adapters
+layer: effects
+summary: The effects-layer files of Host Config Write Gate. Responsibilities stay with the core node.
+responsibilities:
+  - Apply the gate's file changes under the runtime transaction lock and read the global configuration store paths.
