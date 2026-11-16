@@ -25,7 +25,7 @@ test('restores original config, preserves siblings and archives, dry run is byte
  put(home,'.codex/config.toml','default_mode_request_user_input = false\nmodel = "user"\n');
  writeOwnedConfiguration(join(home,'.codex/config.toml'),'default_mode_request_user_input = true\nmodel = "user"\n',home);
  put(home,'.claude/settings.json',JSON.stringify({theme:'dark',hooks:{...buildManagedHooks('claude'),UserPromptSubmit:[{hooks:[{type:'command',command:'user-hook'}]}]}}));
- put(home,'.repo-harness/config.json',JSON.stringify({brainRoot:join(home,'vault'),refactor_recommendations:{enabled:true},architecture:{projection_provider:'archctx',projection_apply:'manual'},custom:42}));
+ put(home,'.repo-harness/config.json',JSON.stringify({refactor_recommendations:{enabled:true},architecture:{projection_provider:'archctx',projection_apply:'manual'},custom:42}));
  put(home,'vault/archive.md','keep'); put(home,'.repo-harness/history/log','keep');
  const before=tree(home);
  const preview=runUserUninstall({target:'both',dryRun:true,env});
@@ -51,10 +51,10 @@ test('fresh adapter-only uninstall is idempotent',()=>fixture((home,env)=>{
  expect(existsSync(join(home,'.codex/hooks.json'))).toBe(false);
  const after=tree(home);expect(runUserUninstall({target:'both',env}).exitCode).toBe(0);expect(tree(home)).toBe(after);
 }));
-test('target codex retains Claude and shared brain configuration',()=>fixture((home,env)=>{
+test('target codex retains Claude and shared profile configuration',()=>fixture((home,env)=>{
  writeOwnedConfiguration(join(home,'.codex/config.toml'),'default_mode_request_user_input = true\n',home);
  put(home,'.claude/settings.json',JSON.stringify({hooks:buildManagedHooks('claude')}));
- put(home,'.repo-harness/config.json','{"brainRoot":"/archive"}');
+ put(home,'.repo-harness/config.json','{"security":{"mode":"strict"}}');
  const claude=readFileSync(join(home,'.claude/settings.json'),'utf8');
  expect(runUserUninstall({target:'codex',env}).exitCode).toBe(0);
  expect(readFileSync(join(home,'.claude/settings.json'),'utf8')).toBe(claude);expect(existsSync(join(home,'.repo-harness/config.json'))).toBe(true);

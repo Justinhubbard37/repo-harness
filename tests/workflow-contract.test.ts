@@ -103,7 +103,7 @@ describe("workflow contract manifest", () => {
     expect(contract.adoptionTemplates?.files?.spec.lines.join("\n")).toContain("{{repoName}}");
     expect(contract.artifacts.requiredFiles).toContain(".ai/harness/workflow-contract.json");
     expect(contract.artifacts.requiredFiles).not.toContain(".codex/hooks.json");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/harness/brain-manifest.json");
+    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/brain-manifest.json");
     expect(contract.artifacts.requiredFiles).toContain(".ai/context/capabilities.json");
     expect(contract.artifacts.requiredFiles).toContain(".ai/context/capability-source-map.json");
     expect(contract.artifacts.requiredFiles).not.toContain("scripts/capability-resolver.ts");

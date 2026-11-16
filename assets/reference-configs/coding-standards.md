@@ -1,13 +1,6 @@
 # Coding Standards Reference
 
-> Externalized: full reference lives in default brain.
-
-## Default Brain
-
-- File vault: `brain/repo-harness/references/coding-standards-reference.md`
-
 ## Repo Role
 
-Project-specific coding constraints stay in root agent files, workflow policy,
-tests, and task contracts. General coding standards belong in the external
-reference.
+Project coding constraints live in the root agent files, the workflow policy,
+the tests and the PR contract. Root `AGENTS.md` and `CLAUDE.md` are the authority.

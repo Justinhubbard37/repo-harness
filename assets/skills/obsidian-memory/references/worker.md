@@ -4,23 +4,17 @@ Worker reference. Execute only the Bot-assigned recall or write scope.
 
 ## Vault resolution (fail-closed, and the vault itself is optional)
 
-1. Use an explicit `REPO_HARNESS_BRAIN_ROOT` override when set. Otherwise read `brainRoot` from `~/.repo-harness/config.json`.
-2. Not configured, or the path does not exist → **stop and say so**. Do not scan the disk to guess a vault, and do not create a vault root on the fly.
-3. The project sub-vault is `<brainRoot>/<project-slug>/`; `<project-slug>` is the repo directory name or a name the user gives.
+1. Use the vault root that the user names in this task. No repo-harness command stores or resolves a vault root, so there is no fallback to read.
+2. No vault root, or the path does not exist → **stop and say so**. Do not scan the disk to guess a vault, do not run a default-root discovery, and do not create a vault root on the fly.
+3. The project sub-vault is `<vault root>/<project-slug>/`; `<project-slug>` is the repo directory name or a name the user gives.
 
-**Having no brainRoot configured is a legitimate steady state, not a defect awaiting repair.** Unconfigured simply means this machine does not use the vault layer: the in-repo artifacts remain a complete, authoritative memory surface, and at closeout the conclusions go into the existing slots such as `tasks/lessons.md` and `docs/researches/`. Do not create a vault just so this skill can run. Only when the user explicitly wants the vault layer enabled, point them at `rh install --brain-root <path>` or `rh update --brain-root <path>`.
-
-The brain CLI does not enforce this skill boundary. `configuredBrainRoot()` uses
-`REPO_HARNESS_BRAIN_ROOT`, then user config, then `defaultBrainRootChoice()`.
-The default is iCloud `brain` when iCloud is available, otherwise `~/Documents/brain`.
-`brain sync` and other write paths can create directories. Do not call them to
-guess or create a missing vault for this skill.
+**Having no vault is a legitimate steady state, not a defect awaiting repair.** A machine without a vault simply does not use the vault layer: the in-repo artifacts remain a complete, authoritative memory surface, and at closeout the conclusions go into the existing slots such as `tasks/lessons.md` and `docs/researches/`. Do not create a vault just so this skill can run.
 
 ## Phase init · create the project sub-vault
 
 Run this only when the sub-vault does not exist or the user explicitly asks:
 
-1. Create `<brainRoot>/<project-slug>/` containing `index.md` plus, as needed, `decisions/`, `patterns/`, `notes/`, `references/`, `runbooks/` (align with the vault's existing categories; do not invent a new taxonomy).
+1. Create `<vault root>/<project-slug>/` containing `index.md` plus, as needed, `decisions/`, `patterns/`, `notes/`, `references/`, `runbooks/` (align with the vault's existing categories; do not invent a new taxonomy).
 2. `index.md` records a one-line project background, long-lived preferences, a pointer to current progress, and links to each subdirectory; wiki-link it into the vault root `index.md`.
 3. **Hard dependency on the official Obsidian skills**: any action that creates or modifies a `.md` file inside the vault must also invoke the official `obsidian-markdown` skill (the authority for frontmatter, wiki-links, callouts, and other formatting); use the official `obsidian-cli` skill for search, open, and task operations against a running vault. This skill only owns judgment and indexing (what to write, when to write it, how to organize it); it does not define a Markdown dialect of its own. If either official skill is missing, report fail-closed instead of degrading to hand-written formatting.
 
@@ -41,4 +35,4 @@ Run this only when the sub-vault does not exist or the user explicitly asks:
 
 ## Directory ownership boundary
 
-Inside a repo-harness-managed repository, the `brain_path` declared in `.ai/harness/brain-manifest.json` is a **machine projection** of `rh brain sync`; hand-written content there is overwritten by the next sync. This skill never writes a path the manifest declares; memory notes land in subdirectories the manifest does not own, such as `notes/` and `decisions/`. Externalizing documents like `docs/reference-configs/` goes through the existing `brain promote`/`sync` channel; this skill does not duplicate that transport.
+This skill owns every path it writes. It writes only inside the project sub-vault it created, and it never rewrites a note that another writer owns. Memory notes land in the topic subdirectories such as `notes/` and `decisions/`. A repo-owned document stays in the repo: cite its repo path instead of copying it into the vault.

@@ -1,16 +1,11 @@
 # Release Process & Deployment Reference
 
-> Externalized: full runbook lives in default brain.
-
-## Default Brain
-
-- File vault: `brain/repo-harness/runbooks/runbook-agentic-release-deploy.md`
+> Repo-harness-managed release rules and the owner release gate.
 
 ## Repo Role
 
 This repo keeps deployment contract surfaces under `deploy/` and private runtime
-state under ignored `_ops/`. Detailed release patterns, Cloudflare examples, and
-rollback playbooks belong in the external runbook.
+state under ignored `_ops/`.
 
 Release prep is one PR. Put the CHANGELOG section, the version bumps and the
 release checklist in that PR. The changelog check treats every `## [x.y.z]`

@@ -38,7 +38,7 @@ describe("create-project-dirs runtime smoke", () => {
       expect(existsSync(join(cwd, "specs"))).toBe(false);
       expect(existsSync(join(cwd, ".ops"))).toBe(false);
       // rh init is the only writer of the seed files.
-      for (const seed of ["deploy/README.md", "docs/architecture/index.md", "docs/researches/README.md", "docs/spec.md", ".ai/context/context-map.json", ".ai/context/capabilities.json", ".ai/harness/brain-manifest.json"]) {
+      for (const seed of ["deploy/README.md", "docs/architecture/index.md", "docs/researches/README.md", "docs/spec.md", ".ai/context/context-map.json", ".ai/context/capabilities.json"]) {
         expect(existsSync(join(cwd, seed))).toBe(false);
       }
       expect(existsSync(join(cwd, "deploy/env/.gitkeep"))).toBe(true);

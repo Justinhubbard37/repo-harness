@@ -33,13 +33,13 @@ repo-harness installation.
 `rh uninstall --dry-run` previews user-level cleanup without writing
 configuration, locks or receipts. `rh uninstall` applies it; `--json`
 returns `status`, `exitCode`, `dryRun` and per-path actions. `--target codex|claude`
-limits host cleanup; shared brain/profile surfaces are retired on `--target both`
+limits host cleanup; shared profile surfaces are retired on `--target both`
 (the default). Install and uninstall accept only `--location global`.
 `--location local` is rejected before configuration reads or writes.
 
 Cleanup removes tagged hook commands and global working-rule blocks, unchanged
 profile-owned skills/rules/agents/links, proven CodeGraph registrations, and the
-product's brain/helper configuration fields. Sibling hooks, configuration keys,
+product's helper configuration fields. Sibling hooks, configuration keys,
 user-edited surfaces and vault contents remain. Newly recorded Codex request-input
 and CodeGraph configuration changes restore their original values when the current
 fragment still matches the installation receipt. The private
@@ -1373,52 +1373,6 @@ prefixes become explicit `<dir>/**` selectors, while file prefixes remain exact.
 The exported `extensions.contractFiles`, `lspProfile`, and `verification` fields
 round-trip through the canonical node/v2 reader without deriving missing
 semantics. The retired `archcontext-boundaries-v1` format is rejected.
-
-## Manual Brain Vault Export
-
-Long-lived external knowledge may be exported to a brain file vault only through
-an explicit operator command:
-
-```text
-brain/<project>/*
-```
-
-For this repo, use:
-
-```text
-brain/repo-harness/*
-```
-
-The legacy repo-harness-skill and project-initializer paths have been fully
-removed; no tooling recognizes, syncs, or cleans them up. Do not use them as
-sync targets.
-
-Keep runtime contracts, hooks, scripts, checks, evidence, and migration state in
-the repo. The default brain stores reusable explanations, runbooks, decisions,
-and patterns only.
-
-Repo stubs that point to default brain pages are indexed in
-`.ai/harness/brain-manifest.json`. Valuable repo-authored docs can opt into
-one-way mirroring by adding a manifest entry with:
-
-```json
-{
-  "id": "project-decision-log",
-  "repo_path": "docs/decisions.md",
-  "brain_path": "brain/<project>/decisions/project-decision-log.md",
-  "sync": { "direction": "repo-to-brain" }
-}
-```
-
-Hooks and workflow verification do not read, write, or gate on external vault
-state. Operators can run these commands when they intentionally want to inspect
-or export registered entries:
-
-```bash
-rh brain status
-rh brain check
-rh brain sync
-```
 
 ## Refactor recommendations
 

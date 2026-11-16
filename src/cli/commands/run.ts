@@ -71,8 +71,6 @@ export const RUN_HELP_GROUPS = [
 
 // Retired helper ids fail with their replacement command. They never run it.
 const RETIRED_HELPERS: ReadonlyMap<string, string> = new Map([
-  ['check-brain-manifest', 'rh brain check'],
-  ['sync-brain-docs', 'rh brain sync'],
   ['run-bounded-verifier-command', 'rh run verification-plan execute'],
 ]);
 

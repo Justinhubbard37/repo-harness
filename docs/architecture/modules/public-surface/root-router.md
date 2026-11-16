@@ -186,8 +186,8 @@ with its own repo/runtime capabilities -> it reconciles the evidence and freezes
 the accepted thesis, falsifier, and execution boundary into the file-backed plan
 and contract. The captured contract, not a live planning provider, owns execution.
 
-For global bootstrap, the input source of truth is the selected host target and
-brain root, not the current directory. For repo-local adoption, the source of
+For global bootstrap, the input source of truth is the selected host target, not
+the current directory. For repo-local adoption, the source of
 truth is the target repo path, not the user's wording. The first repo-local type
 transformation is repo filesystem state into `mode`,
 `legacy_contract_version`, `drift_signals`, `required_decisions`, and

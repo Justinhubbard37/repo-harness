@@ -342,7 +342,7 @@ describe('agent settings routes', () => {
   });
 
   test('POST writes only the agents section, under HOME, with an audit under REPO_HARNESS_HOME', async () => {
-    const harness = await startHarness({ security: { mode: 'strict' }, brainRoot: '/srv/brain' });
+    const harness = await startHarness({ security: { mode: 'strict' }, seats: { untouched: true } });
     const before = await settings(harness);
     const response = await post(harness, {
       expected_revision: before.config.revision,
@@ -356,7 +356,7 @@ describe('agent settings routes', () => {
     });
     const stored = JSON.parse(readFileSync(harness.configPath, 'utf8'));
     expect(stored).toEqual({
-      security: { mode: 'strict' }, brainRoot: '/srv/brain',
+      security: { mode: 'strict' }, seats: { untouched: true },
       agents: { enabled: ['codex', 'grok'], uses: { docs: [], review: ['codex'] }, default_docs: null },
     });
     expect((await settings(harness)).config.revision).toBe(result.config_revision);

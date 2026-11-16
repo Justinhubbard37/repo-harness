@@ -236,9 +236,9 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       assertConfigurationPath(path, home);
       if (existsSync(path)) {
         const data = object(read(path));
-        if ('brainRoot' in data || 'protectedHelperRuntime' in data || 'architecture' in data || 'refactor_recommendations' in data) {
-          delete data.brainRoot; delete data.protectedHelperRuntime; delete data.architecture; delete data.refactor_recommendations;
-          change(path, Object.keys(data).length ? `${JSON.stringify(data, null, 2)}\n` : null, 'rh brain/helper/architecture configuration; data directories retained');
+        if ('protectedHelperRuntime' in data || 'architecture' in data || 'refactor_recommendations' in data) {
+          delete data.protectedHelperRuntime; delete data.architecture; delete data.refactor_recommendations;
+          change(path, Object.keys(data).length ? `${JSON.stringify(data, null, 2)}\n` : null, 'rh helper/architecture configuration; data directories retained');
         }
       }
     } catch (error) { unresolved(path, String((error as Error).message)); }

@@ -42,7 +42,7 @@ const toolFamilies = [
   ["package tools", ["NPM_CONFIG_USERCONFIG", "npm_config_userconfig", "NPM_CONFIG_GLOBALCONFIG", "npm_config_globalconfig", "NPM_CONFIG_CACHE", "npm_config_cache", "NPM_CONFIG_PREFIX", "npm_config_prefix", "PNPM_HOME", "YARN_CACHE_FOLDER", "CARGO_HOME", "RUSTUP_HOME"]],
   ["credentials", ["GNUPGHOME", "DOCKER_CONFIG", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AZURE_CONFIG_DIR", "KUBECONFIG"]],
   ["shell config", ["BASH_ENV", "ENV", "ZDOTDIR"]],
-  ["other tool state", ["ORACLE_HOME_DIR", "HERDR_CONFIG_PATH", "REPO_HARNESS_BRAIN_ROOT", "REPO_HARNESS_MCP_WORKTREE_ROOT"]],
+  ["other tool state", ["ORACLE_HOME_DIR", "HERDR_CONFIG_PATH", "REPO_HARNESS_MCP_WORKTREE_ROOT"]],
   ["registry", ["REPO_HARNESS_HOME"]],
   ["mixed-case roots", ["Bun_Install", "Codex_Home", "Xdg_Config_Home", "Git_Config_Global", "repo_harness_home"]],
 ] as const;

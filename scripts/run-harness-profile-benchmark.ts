@@ -803,7 +803,6 @@ export function isolatedHarnessEnvironment(hostRoot: string): NodeJS.ProcessEnv 
     ...process.env,
     HOME: hostRoot,
     CODEX_HOME: join(hostRoot, '.codex'),
-    REPO_HARNESS_BRAIN_ROOT: join(hostRoot, 'brain'),
     BUN_INSTALL: join(hostRoot, '.bun'),
     PATH: `${join(hostRoot, '.bun/bin')}:${process.env.PATH ?? ''}`,
   };

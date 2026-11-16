@@ -53,11 +53,11 @@ function globalFixture() {
 test('global setup seeds once and preserves unrelated global configuration', () => {
   const f = globalFixture();
   expect(existsSync(f.path)).toBe(false);
-  writeFileSync(f.path, JSON.stringify({ brainRoot: '/existing/vault', protectedHelperRuntime: { preserved: true } }));
+  writeFileSync(f.path, JSON.stringify({ seats: { untouched: true }, protectedHelperRuntime: { preserved: true } }));
   expect(ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env)).status).toBe('ok');
   expect(loadArchitectureProjectionPolicy(f.env)).toMatchObject({ provider: 'archctx', applyMode: 'manual' });
   const first = readFileSync(f.path, 'utf8');
-  expect(JSON.parse(first)).toMatchObject({ brainRoot: '/existing/vault', protectedHelperRuntime: { preserved: true } });
+  expect(JSON.parse(first)).toMatchObject({ seats: { untouched: true }, protectedHelperRuntime: { preserved: true } });
   expect(ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env)).status).toBe('ok');
   expect(readFileSync(f.path, 'utf8')).toBe(first);
 });
@@ -79,13 +79,13 @@ test('global setup preserves an explicit global disabled choice and rejects malf
 
 test('update migrates retired automatic projection settings once and readers refuse them before migration', () => {
   const f = globalFixture();
-  writeFileSync(f.path, JSON.stringify({ brainRoot: '/existing/vault', architecture: {
+  writeFileSync(f.path, JSON.stringify({ seats: { untouched: true }, architecture: {
     projection_provider: 'archctx', projection_apply: 'automatic', projection_failure_gate: 'strict', projection_timeout_ms: 90000,
   } }));
   expect(() => readGlobalArchitectureConfiguration(f.env)).toThrow('run `rh update` to migrate');
   const migrated = ensureGlobalArchitectureProjection(f.env, globalConfigurationWriter(f.env));
   expect(migrated).toMatchObject({ status: 'ok', detail: expect.stringContaining('migrated retired automatic projection settings') });
-  expect(JSON.parse(readFileSync(f.path, 'utf8'))).toEqual({ brainRoot: '/existing/vault', architecture: {
+  expect(JSON.parse(readFileSync(f.path, 'utf8'))).toEqual({ seats: { untouched: true }, architecture: {
     projection_provider: 'archctx', projection_apply: 'manual', projection_timeout_ms: 90000,
   } });
   expect(loadArchitectureProjectionPolicy(f.env)).toMatchObject({ provider: 'archctx', applyMode: 'manual', timeoutMs: 90000 });

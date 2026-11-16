@@ -1725,7 +1725,6 @@ export const WORKFLOW_POLICY_KEYS = {
   harness: { runs_dir: true },
   information_lifecycle: {
     retention: {},
-    external_knowledge: { manifest_file: true, project_path: true, sync_script: true },
   },
   documentation: { language: true },
   planning: { pending_orchestration_file: true },

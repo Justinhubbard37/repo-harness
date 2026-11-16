@@ -100,7 +100,6 @@ export interface CandidateReconciliationRequest {
   readonly external_skills: boolean;
   readonly obsidian_skills: boolean;
   readonly codegraph: boolean;
-  readonly brain_root?: string;
   readonly report_language?: ReportLanguageFlag;
 }
 
@@ -492,7 +491,7 @@ export function parseCandidateRequest(encoded: string, candidateVersion: string)
     'sync_skill', 'host_adapters', 'external_skills', 'obsidian_skills', 'codegraph',
   ];
   // Fields that earlier request shapes carried; the runtime no longer reads them.
-  const retiredFields = ['profile', 'reverse_skill'];
+  const retiredFields = ['profile', 'reverse_skill', 'brain_root'];
   if (
     request.protocol !== CANDIDATE_RECONCILIATION_PROTOCOL
     || requiredStrings.some((key) => typeof request[key] !== 'string' || !(request[key] as string).length)
@@ -502,7 +501,6 @@ export function parseCandidateRequest(encoded: string, candidateVersion: string)
     || !['codex', 'claude', 'both'].includes(String(request.target))
     || retiredFields.some((key) => key in request)
     || booleans.some((key) => typeof request[key] !== 'boolean')
-    || (request.brain_root !== undefined && typeof request.brain_root !== 'string')
     || (request.report_language !== undefined
       && !REPORT_LANGUAGE_FLAG_VALUES.includes(request.report_language as ReportLanguageFlag))
   ) {

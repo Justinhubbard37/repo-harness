@@ -112,20 +112,20 @@ describe("obsidian-memory: skill body pins the authority boundary", () => {
     expect(body).toContain("gets only a pointer in the vault, never a restatement");
   });
 
-  test("body keeps the vault layer optional for adopters without a brain root", () => {
+  test("body keeps the vault layer optional for an adopter without a vault", () => {
     const body = readSkill();
-    // A fresh adopter has no brainRoot. That must read as a supported steady
-    // state, not a defect the skill repairs by inventing a vault: repo-local
+    // A machine with no vault path set must read as a supported steady state,
+    // not a defect the skill repairs by inventing a vault: repo-local
     // artifacts alone are already a complete memory surface.
     expect(body).toContain("legitimate steady state");
   });
 
-  test("body keeps hands off manifest-owned vault paths", () => {
+  test("body names no repo-harness command that reads or writes the vault", () => {
     const body = readSkill();
-    // brain_path entries are machine projections of `rh brain sync`.
-    // Hand-writing memory there recreates the dual-authority drift this skill
-    // exists to remove, and the next sync silently overwrites it.
-    expect(body).toContain("brain-manifest.json");
+    // rh has no vault command and no vault configuration key (issue #2937), so
+    // the skill may not point at one: the resolved root comes from the task.
+    expect(body).not.toMatch(/`rh [a-z-]*brain/);
+    expect(body).not.toContain("brainRoot");
   });
 });
 

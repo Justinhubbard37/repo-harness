@@ -14,13 +14,6 @@
   "harness": {
     "runs_dir": ".ai/harness/runs"
   },
-  "information_lifecycle": {
-    "external_knowledge": {
-      "project_path": "brain/repo-harness/*",
-      "manifest_file": ".ai/harness/brain-manifest.json",
-      "sync_script": "rh brain sync"
-    }
-  },
   "documentation": {
     "language": "en"
   },

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { runGlobalRuntimeSetup, updateLeftoverSummary, updateRegisteredUpgradeSummary } from '../../src/cli/commands/global-runtime';
+import { runGlobalRuntimeSetup, removeBrainRootConfiguration, updateLeftoverSummary, updateRegisteredUpgradeSummary } from '../../src/cli/commands/global-runtime';
 import { runUserUninstall } from '../../src/cli/installer/uninstall';
 import { formatUpgradeSummaryLine, type UpgradeResult } from '../../src/cli/commands/upgrade';
 import type { LeftoverItem } from '../../src/effects/upgrade/legacy-inventory';
@@ -172,6 +172,69 @@ describe('global runtime setup command env base', () => {
       mkdirSync(source, { recursive: true });
       expect(runWithSeededHome(source, home)).toThrow(statePath);
     });
+  });
+});
+
+describe('retired brainRoot configuration key', () => {
+  // rh no longer has a vault surface (issue #2937). Update removes the key once and keeps every other byte.
+  test('removes only the brainRoot member and keeps the rest of the document byte-identical', () => {
+    const rows: Array<readonly [string, string, string]> = [
+      ['first member', '{\n    "brainRoot": "/v",\n    "security":   { "mode": "strict" },\n    "custom": [1, 2, 3]\n}\n', '{\n    "security":   { "mode": "strict" },\n    "custom": [1, 2, 3]\n}\n'],
+      ['last member', '{\n  "security": { "mode": "strict" },\n  "brainRoot": "/v"\n}\n', '{\n  "security": { "mode": "strict" }\n}\n'],
+      ['nested unique members', '{"brainRoot":"/v","custom":[{"a":1},{"a":2}],"text":"雪 { \\"a\\": 1 }"}\n', '{"custom":[{"a":1},{"a":2}],"text":"雪 { \\"a\\": 1 }"}\n'],
+      ['only member', '{\n  "brainRoot": "/v"\n}\n', '{}\n'],
+      // A Windows checkout converts LF to CRLF; the renderer keeps its line ending.
+      ['CRLF', '{\r\n  "brainRoot": "/v",\r\n  "a": 1\r\n}\r\n', '{\r\n  "a": 1\r\n}\r\n'],
+    ];
+    for (const [name, original, expected] of rows) {
+      const home = mkdtempSync(join(tmpdir(), 'repo-harness-brainroot-key-'));
+      try {
+        const env = { ...process.env, HOME: home };
+        mkdirSync(join(home, '.repo-harness'), { recursive: true });
+        const path = join(home, '.repo-harness', 'config.json');
+        writeFileSync(path, original);
+        expect(removeBrainRootConfiguration(env), name).toBe(true);
+        expect(readFileSync(path, 'utf8'), name).toBe(expected);
+        // The next run finds no key, so the file stays as it is.
+        expect(removeBrainRootConfiguration(env), name).toBe(false);
+        expect(readFileSync(path, 'utf8'), name).toBe(expected);
+      } finally { rmSync(home, { recursive: true, force: true }); }
+    }
+  });
+
+  test.each([
+    ['duplicate scalar', Buffer.from('{"brainRoot":"/v","custom":1,"custom":2}'), 'duplicate member names'],
+    ['duplicate object', Buffer.from('{"brainRoot":"/v","custom":{"a":1},"custom":{"b":2}}'), 'duplicate member names'],
+    ['duplicate retired key', Buffer.from('{"brainRoot":"/v","brainRoot":"/w"}'), 'duplicate member names'],
+    ['nested duplicate', Buffer.from('{"brainRoot":"/v","custom":{"a":1,"a":2}}'), 'duplicate member names'],
+    ['array-nested escaped duplicate', Buffer.from('{"brainRoot":"/v","custom":[{"a":1,"\\u0061":2}]}'), 'duplicate member names'],
+    ['invalid UTF-8', Buffer.concat([Buffer.from('{"brainRoot":"/v","custom":"'), Buffer.from([0xff]), Buffer.from('"}')]), 'invalid UTF-8'],
+  ])('refuses %s without changing any configuration bytes', (_name, original, reason) => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-brainroot-invalid-'));
+    try {
+      const env = { ...process.env, HOME: home };
+      mkdirSync(join(home, '.repo-harness'), { recursive: true });
+      const path = join(home, '.repo-harness', 'config.json');
+      writeFileSync(path, original);
+      expect(() => removeBrainRootConfiguration(env)).toThrow(reason);
+      expect(readFileSync(path)).toEqual(original);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('leaves a configuration without the key untouched and fails closed on invalid JSON', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-brainroot-absent-'));
+    try {
+      const env = { ...process.env, HOME: home };
+      mkdirSync(join(home, '.repo-harness'), { recursive: true });
+      const path = join(home, '.repo-harness', 'config.json');
+      const text = '{ "security": { "mode": "strict" } }\n';
+      writeFileSync(path, text);
+      expect(removeBrainRootConfiguration(env)).toBe(false);
+      expect(readFileSync(path, 'utf8')).toBe(text);
+      writeFileSync(path, '{invalid');
+      expect(() => removeBrainRootConfiguration(env)).toThrow('not a valid JSON object');
+      expect(readFileSync(path, 'utf8')).toBe('{invalid');
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
 

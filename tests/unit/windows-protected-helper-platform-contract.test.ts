@@ -337,11 +337,11 @@ describe('Windows protected-helper platform contract', () => {
     const configPath = join(configDir, 'config.json');
     try {
       mkdirSync(configDir, { recursive: true });
-      writeFileSync(configPath, `${JSON.stringify({ brainRoot: 'D:\\brain' })}\n`);
+      writeFileSync(configPath, `${JSON.stringify({ seats: { untouched: true } })}\n`);
 
       expect(writeWindowsProtectedHelperContract(CONTRACT, home).changed).toBe(true);
       const persisted = JSON.parse(readFileSync(configPath, 'utf-8'));
-      expect(persisted.brainRoot).toBe('D:\\brain');
+      expect(persisted.seats).toEqual({ untouched: true });
       expect(persisted.protectedHelperRuntime).toEqual(CONTRACT);
       expect(writeWindowsProtectedHelperContract(CONTRACT, home).changed).toBe(false);
     } finally {

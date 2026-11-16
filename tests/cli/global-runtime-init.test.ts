@@ -723,7 +723,7 @@ describe('install command global runtime bootstrap', () => {
     }
   }, 30_000);
 
-  test('installs CLI, hooks, Waza, brain root, and CodeGraph without setup-plugins.sh', () => {
+  test('installs CLI, hooks, Waza, and CodeGraph without setup-plugins.sh', () => {
     registerArchitecturePlugin();
     const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-global-init-'));
     const source = join(tmp, 'node_modules', 'repo-harness');
@@ -767,7 +767,6 @@ describe('install command global runtime bootstrap', () => {
         plugins: FULL_PLUGINS,
         externalSkills: true,
         codegraph: true,
-        brainRoot: join(home, 'brain'),
         env: {
           ...sanitizedChildEnv(),
           HOME: home,
@@ -794,9 +793,8 @@ describe('install command global runtime bootstrap', () => {
       expect(existsSync(join(home, '.codex', 'skills', 'repo-harness-cross-review', 'SKILL.md'))).toBe(true);
       expect(existsSync(join(home, '.claude', 'skills', 'repo-harness-cross-review', 'SKILL.md'))).toBe(false);
       expect(readFileSync(bunxLog, 'utf-8')).not.toContain('feature-dev');
-      expect(JSON.parse(readFileSync(join(home, '.repo-harness', 'config.json'), 'utf-8')).brainRoot).toBe(
-        join(home, 'brain'),
-      );
+      // rh stores no vault configuration: the seats migration writes the file, and it carries no brainRoot.
+      expect(JSON.parse(readFileSync(join(home, '.repo-harness', 'config.json'), 'utf-8'))).not.toHaveProperty('brainRoot');
       expect(readFileSync(codegraphLog, 'utf-8')).toContain('codegraph install --target codex --location global --yes');
       // Regression guard: the Waza status probe inside check-agent-tooling.sh
       // resolves the `skills` binary from PATH and never re-routes through
@@ -1242,7 +1240,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: {
           ...sanitizedChildEnv(),
           HOME: home,
@@ -1296,7 +1293,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home },
       });
 
@@ -1335,7 +1331,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home },
       });
 
@@ -1381,7 +1376,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
@@ -1424,7 +1418,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home },
       });
 
@@ -1471,7 +1464,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
@@ -1512,7 +1504,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home },
       })).toThrow('required package "obsidian-markdown" is not in this catalog');
       expect(existsSync(join(home, '.agents', 'skills', 'obsidian-cli'))).toBe(false);
@@ -1545,7 +1536,6 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home },
       });
 
@@ -1735,7 +1725,6 @@ exit 0
         hostAdapters: false,
         externalSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
       const first = runInstall();
@@ -1791,7 +1780,6 @@ exit 0
         hostAdapters: false,
         externalSkills: true,
         codegraph: false,
-        brainRoot: join(home, 'brain'),
         env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
@@ -2147,7 +2135,7 @@ exit 0
     expect(res.stdout).toContain('--no-cli');
     expect(res.stdout).not.toContain('--with-reverse-skill');
     expect(res.stdout).toContain('--with-obsidian-skills');
-    expect(res.stdout).toContain('--brain-root <path>');
+    expect(res.stdout).not.toContain('--brain-root');
     expect(res.stdout).not.toContain('--with-optional');
     expect(res.stdout).not.toContain('--project-type');
     expect(res.stdout).not.toContain('setup-plugins');

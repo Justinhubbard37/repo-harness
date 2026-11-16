@@ -149,13 +149,12 @@ test('installer rollback refuses a competing configuration writer before it can 
   const home = mkdtempSync(join(tmpdir(), 'configuration-rollback-lock-'));
   const env = { ...process.env, HOME: home, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
   const path = join(home, '.repo-harness/config.json');
-  const brain = join(home, 'brain-new');
-  const modulePath = join(import.meta.dir, '../../src/cli/commands/brain-root.ts');
-  const code = `import {configureBrainRoot} from ${JSON.stringify(modulePath)}; try { configureBrainRoot(${JSON.stringify(brain)}, process.env); } catch (error) { console.error(error.code); process.exit(75); }`;
+  const modulePath = join(import.meta.dir, '../../src/effects/configuration/global-configuration.ts');
+  const code = `import {mutateGlobalConfiguration} from ${JSON.stringify(modulePath)}; try { mutateGlobalConfiguration(process.env, (config) => ({ config: { ...config, security: { mode: 'relaxed' } }, value: undefined })); } catch (error) { console.error(error.code); process.exit(75); }`;
   const { beginInstallHostTransaction, rollbackInstallHostTransaction } = await import('../../src/cli/installer/install-profile');
   try {
     mkdirSync(join(home, '.repo-harness'));
-    const original = JSON.stringify({ brainRoot: join(home, 'brain-old'), security: { mode: 'strict' } });
+    const original = JSON.stringify({ security: { mode: 'strict' } });
     writeFileSync(path, original);
     const lock = acquireRuntimeTransactionLock(globalRuntimeScope(env));
     try {
@@ -168,12 +167,11 @@ test('installer rollback refuses a competing configuration writer before it can 
       lock.assertOwned();
       rollbackInstallHostTransaction(transaction);
       expect(readFileSync(path, 'utf8')).toBe(original);
-      expect(existsSync(brain)).toBe(false);
     } finally { lock.release(); }
     const child = Bun.spawn([process.execPath, '-e', code], { env, stdout: 'pipe', stderr: 'pipe' });
     const stderr = await new Response(child.stderr).text();
     expect(await child.exited, stderr).toBe(0);
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ brainRoot: brain, security: { mode: 'strict' } });
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ security: { mode: 'relaxed' } });
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -186,25 +184,25 @@ test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('failed co
   let transaction: ReturnType<typeof beginInstallHostTransaction> | undefined;
   try {
     mkdirSync(join(home, '.repo-harness'));
-    const original = JSON.stringify({ brainRoot: join(home, 'original'), security: { mode: 'strict' } });
+    const original = JSON.stringify({ security: { mode: 'strict' } });
     writeFileSync(path, original);
     transaction = beginInstallHostTransaction([path], env);
-    writeFileSync(path, JSON.stringify({ brainRoot: join(home, 'during-install') }));
+    writeFileSync(path, JSON.stringify({ security: { mode: 'during-install' } }));
     chmodSync(transaction.backup_root, 0o500);
     try {
       expect(() => commitInstallHostTransaction(transaction!)).toThrow();
     } finally { if (existsSync(transaction.backup_root)) chmodSync(transaction.backup_root, 0o700); }
-    const modulePath = join(import.meta.dir, '../../src/cli/commands/brain-root.ts');
-    const child = Bun.spawn([process.execPath, '-e', `import {configureBrainRoot} from ${JSON.stringify(modulePath)}; try { configureBrainRoot(${JSON.stringify(join(home, 'competing'))}, process.env); } catch (error) { console.error(error.code); process.exit(75); }`], { env, stdout: 'pipe', stderr: 'pipe' });
+    const modulePath = join(import.meta.dir, '../../src/effects/configuration/global-configuration.ts');
+    const child = Bun.spawn([process.execPath, '-e', `import {mutateGlobalConfiguration} from ${JSON.stringify(modulePath)}; try { mutateGlobalConfiguration(process.env, (config) => ({ config: { ...config, security: { mode: 'competing' } }, value: undefined })); } catch (error) { console.error(error.code); process.exit(75); }`], { env, stdout: 'pipe', stderr: 'pipe' });
     const stderr = await new Response(child.stderr).text();
     expect(await child.exited).toBe(75);
     expect(stderr).toContain('busy');
     rollbackInstallHostTransaction(transaction);
     transaction = undefined;
     expect(readFileSync(path, 'utf8')).toBe(original);
-    const { configureBrainRoot } = await import('../../src/cli/commands/brain-root');
-    configureBrainRoot(join(home, 'after-rollback'), env);
-    expect(JSON.parse(readFileSync(path, 'utf8')).brainRoot).toBe(join(home, 'after-rollback'));
+    const { mutateGlobalConfiguration } = await import('../../src/effects/configuration/global-configuration');
+    mutateGlobalConfiguration(env, (config) => ({ config: { ...config, security: { mode: 'after-rollback' } }, value: undefined }));
+    expect(JSON.parse(readFileSync(path, 'utf8')).security.mode).toBe('after-rollback');
   } finally {
     if (transaction && existsSync(transaction.backup_root)) {
       chmodSync(transaction.backup_root, 0o700);
@@ -215,7 +213,6 @@ test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('failed co
 });
 
 test('configuration writes preserve sibling sections and reject invalid input or foreign lock contexts', async () => {
-  const { configureBrainRoot } = await import('../../src/cli/commands/brain-root');
   const { ensureGlobalArchitectureProjection } = await import('../../src/cli/commands/architecture-configuration');
   const { applyAgentsSettings } = await import('../../src/effects/configuration/agents-configuration');
   const { globalConfigurationWriter, readGlobalConfiguration, mutateGlobalConfiguration } = await import('../../src/effects/configuration/global-configuration');
@@ -223,13 +220,12 @@ test('configuration writes preserve sibling sections and reject invalid input or
     const path = join(home, '.repo-harness/config.json');
     mkdirSync(join(home, '.repo-harness'));
     writeFileSync(path, JSON.stringify({ security: { mode: 'strict' } }));
-    configureBrainRoot(join(home, 'brain'), env);
     expect(ensureGlobalArchitectureProjection(env, globalConfigurationWriter(env)).status).toBe('ok');
     const before = readGlobalConfiguration(env);
     // A review use is a valid agents write; a new docs use is refused while no runtime has verified docs isolation.
     applyAgentsSettings({ expected_revision: before.revision, changes: [{ runtime: 'codex', enabled: true, uses: ['review'] }] }, ['codex'], env);
     const result = readGlobalConfiguration(env);
-    expect(result.config).toMatchObject({ security: { mode: 'strict' }, brainRoot: join(home, 'brain'), architecture: { projection_provider: 'archctx' }, agents: { enabled: ['codex'], uses: { review: ['codex'] } } });
+    expect(result.config).toMatchObject({ security: { mode: 'strict' }, architecture: { projection_provider: 'archctx' }, agents: { enabled: ['codex'], uses: { review: ['codex'] } } });
     expect(() => applyAgentsSettings({ expected_revision: before.revision, changes: [] }, ['codex'], env)).toThrow('changed after it was read');
     expect(readGlobalConfiguration(env).revision).toBe(result.revision);
     expect(() => mutateGlobalConfiguration(env, () => ({ config: {}, value: undefined }), {
@@ -237,15 +233,15 @@ test('configuration writes preserve sibling sections and reject invalid input or
     })).toThrow('does not own this scope');
     expect(readGlobalConfiguration(env).revision).toBe(result.revision);
     writeFileSync(path, '{invalid');
-    expect(() => configureBrainRoot(join(home, 'invalid-brain'), env)).toThrow('not a valid JSON object');
+    expect(() => mutateGlobalConfiguration(env, () => ({ config: {}, value: undefined }))).toThrow('not a valid JSON object');
     expect(readFileSync(path, 'utf8')).toBe('{invalid');
-    expect(existsSync(join(home, 'invalid-brain'))).toBe(false);
   });
 });
 
 
 test.skipIf(process.platform !== 'win32')('Windows explicit configuration targets share the account lock', async () => {
-  const { configureBrainRoot } = await import('../../src/cli/commands/brain-root');
+  const { mutateGlobalConfiguration } = await import('../../src/effects/configuration/global-configuration');
+  const write = (env: NodeJS.ProcessEnv, mode: string) => mutateGlobalConfiguration(env, (config) => ({ config: { ...config, security: { mode } }, value: undefined }));
   fixture((home) => {
     const firstHome = join(home, 'first');
     const secondHome = join(home, 'second');
@@ -254,13 +250,13 @@ test.skipIf(process.platform !== 'win32')('Windows explicit configuration target
     expect(globalRuntimeScope(first)).toEqual(globalRuntimeScope(second));
     const lock = acquireRuntimeTransactionLock(globalRuntimeScope(first));
     try {
-      expect(() => configureBrainRoot(join(secondHome, 'brain'), second)).toThrow('runtime transaction');
+      expect(() => write(second, 'locked')).toThrow('runtime transaction');
       expect(existsSync(join(firstHome, '.repo-harness/config.json'))).toBe(false);
       expect(existsSync(join(secondHome, '.repo-harness/config.json'))).toBe(false);
     } finally { lock.release(); }
-    const result = configureBrainRoot(join(secondHome, 'brain'), second);
+    const result = write(second, 'unlocked');
     expect(result.path).toBe(join(secondHome, '.repo-harness/config.json'));
-    expect(JSON.parse(readFileSync(result.path, 'utf8')).brainRoot).toBe(join(secondHome, 'brain'));
+    expect(JSON.parse(readFileSync(result.path, 'utf8')).security.mode).toBe('unlocked');
     expect(existsSync(join(firstHome, '.repo-harness/config.json'))).toBe(false);
   });
 });

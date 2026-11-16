@@ -23,13 +23,11 @@ plugin id. The installer maps the other surfaces through
 | `pi` | The Pi package registration and the Pi skill root (`~/.pi/agent/skills/`), for `--target both` only. |
 | `platform` | `windows-python-first`. |
 | `product` | `repo-harness-product`. |
-| `strategy-memory` | `obsidian-memory`, `repo-harness-strategy`, the explicit-only companions `obsidian-markdown` and `obsidian-cli`, and the brain root. |
+| `strategy-memory` | `obsidian-memory`, `repo-harness-strategy`, and the explicit-only companions `obsidian-markdown` and `obsidian-cli`. |
 
 Every hook route is core. `src/cli/hook/route-registry.ts` is the authority:
 Claude gets six routes and Codex gets five. Cross-review skills sync when the
-selection includes `cross-review` or `peer-runtime`. The brain root is
-configured when the selection includes `strategy-memory` or the command has
-`--brain-root`.
+selection includes `cross-review` or `peer-runtime`.
 
 A plugin is unavailable on this host in three cases:
 
@@ -199,8 +197,8 @@ successful install records the staging directories and host links in the
 install transaction. Later drift is managed drift, and a later transaction
 failure restores all affected surfaces. This option installs Skills only. It
 does not install or require the `obsidian` executable, the Obsidian desktop
-App, or an npm Obsidian runtime. `brainRoot` stays optional, and hooks, CI,
-workflow checks and releases do not read or write a vault.
+App, or an npm Obsidian runtime. Hooks, CI, workflow checks and releases do
+not read or write a vault.
 
 ## Global Working Rules
 

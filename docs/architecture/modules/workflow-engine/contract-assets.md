@@ -274,7 +274,7 @@ regressions verify these separate boundaries.
 | `component.contract-assets.capability-registry` | 148 / 6,981 | `.archcontext/**` 模型文件、纯注册表、resolver 与 config CLI、capability context 命令 | 无组件外调用；workflow-state 的 resolver 调用它 |
 | `component.contract-assets.template-projection`（可扩展） | 180 / 35,687 | standalone resolver 与 reference config 投影、`rh init` | primary、planning-helpers、workflow-state、execution-primitives、adoption、hook-adapters、global-runtime-reconciliation |
 | `component.contract-assets.contract-worktree-lifecycle` | 8 / 6,505 | worktree 生命周期、publication、merge gate、contract brief runner、归档 | workflow-state（worktree 拓扑锁）、execution-primitives（Git binary） |
-| `component.contract-assets.planning-helpers` | 21 / 4,034 | 计划、spec、sprint、triage 与 factor-lab helper，`run` 与 `brain` 命令，受保护 helper runner | execution-primitives（有界子进程） |
+| `component.contract-assets.planning-helpers` | 21 / 4,034 | 计划、spec、sprint、triage 与 factor-lab helper，`run` 命令，受保护 helper runner | execution-primitives（有界子进程） |
 
 template-projection 标记为可扩展。`assets/templates/helpers/` 现在只有 `capability-resolver.ts`，它是投影副本。`src/cli/commands/init.ts` 是一个组合根。按本次提案的归属，它导入 8 个其他 capability 的代码。现在不拆。
 
@@ -637,7 +637,7 @@ template-projection 标记为可扩展。`assets/templates/helpers/` 现在只�
 - **到 skill-surface-catalog 的回边。** template-projection → skill-surface-catalog 已声明（`init.ts` 读 host skill placements）。`scripts/check-skill-version.ts:15` 反向导入 `scripts/workflow-contract.ts`。按边数（5 对 3）只声明前者。
 
 - Run `bun scripts/capability-resolver.ts validate --format text` when capability data changes. The workflow helper remains a read-only diagnostic.
-- Keep durable knowledge in repo-authored research and lessons. Optional external brain exports require an operator-invoked manifest sync and never participate in workflow correctness.
+- Keep durable knowledge in repo-authored research and lessons. External knowledge exports are out of scope: rh has no vault command and no vault configuration, and workflow correctness never depends on a vault.
 
 ## 验证命令
 

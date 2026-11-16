@@ -599,17 +599,6 @@ export function planStandardAdoption(opts: StandardPlanOptions): { operations: A
     root_context_files: ["CLAUDE.md", "AGENTS.md", "docs/spec.md", ".ai/context/capabilities.json", ".ai/harness/policy.json"],
     discoverable_contexts: [],
   }), "Install canonical context map when absent", { ifMissing: true }));
-  operations.push(writeOperation(opts.repoRoot, ".ai/harness/brain-manifest.json", jsonContent(jsonFile(opts.repoRoot, ".ai/harness/brain-manifest.json") ?? {
-    version: 1,
-    project: basename(resolve(opts.repoRoot)),
-    mode: "repo-contract-external-knowledge",
-    default_brain_path: "brain/<project>/*",
-    rules: [
-      "repo-local contracts, hooks, scripts, checks, and evidence remain authoritative",
-      "default brain stores long-lived explanations, runbooks, decisions, references, and patterns",
-    ],
-    entries: [],
-  }), "Install canonical brain manifest when absent", { ifMissing: true }));
   for (const state of STATE_FILES) operations.push(writeOperation(opts.repoRoot, state.path, state.content, "Ensure canonical harness state artifact exists", { ifMissing: true }));
   for (const file of [
     { path: "docs/researches/README.md", content: researchReadmeContent() },

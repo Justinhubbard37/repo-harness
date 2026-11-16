@@ -269,7 +269,7 @@ sequenceDiagram
 | archctx-closure | `hook-adapters` | `writePrivateConfiguration`（`architecture-configuration.ts:15`） |
 | cli-root | 已有 capability | `buildProgram` 注册各命令（`src/cli/index.ts:804-869`）：hook-adapters、adoption、contract-assets、codegraph-readiness、pm-dispatch、mcp-sidecar、refactor-program、operator、delegated-runs |
 
-CLI 根的扇出是真实的组合根结构，所以如实建模。`index.ts` 另外注册约 13 个命令文件（state、sprint、fleet、publication、task-agent、herdr、review、chatgpt、strategy、docs、brain、run、migrate、tools）。集成步骤补上了这些命令的关系：workflow-state（state、sprint）、task-fleet、publication、task-agent-host（task-agent、herdr）、acceptance-review（review）、chatgpt-browser、strategy-reflection 与 root-router（docs）。brain 与 run 归 contract-assets，migrate 归 adoption，tools 归 codegraph-readiness。
+CLI 根的扇出是真实的组合根结构，所以如实建模。`index.ts` 另外注册约 13 个命令文件（state、sprint、fleet、publication、task-agent、herdr、review、chatgpt、strategy、docs、run、tools）。集成步骤补上了这些命令的关系：workflow-state（state、sprint）、task-fleet、publication、task-agent-host（task-agent、herdr）、acceptance-review（review）、chatgpt-browser、strategy-reflection 与 root-router（docs）。run 归 contract-assets，tools 归 codegraph-readiness。
 
 反向边（未声明为关系，记入 Backlog）：
 

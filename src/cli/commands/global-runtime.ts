@@ -11,6 +11,7 @@ import { DEFAULT_SEATS_CONFIG, INTRODUCED_ROUTING_DEFAULTS, ROUTING_CLASSES, Sea
 import { checkSeatRoutingModels, seatsRanges } from '../../effects/board/seats-configuration';
 import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { upsertManagedBlock } from "../../core/adoption/managed-block";
+import { renderJsonObjectUpdate } from "../../effects/adoption/standard-plan";
 import { assertConfigurationPath } from "../installer/configuration-ownership";
 import { ignoreBlockProof, runtimeStateIgnoreOperation, userExcludesFilePath } from "../../effects/adoption/gitignore-plan";
 import { sha256Hex } from "../../core/evidence/sha256";
@@ -21,7 +22,6 @@ import { syncWazaSharedRules, wazaStagingRulesAbsent } from "../installer/waza-r
 import { applyGlobalContextRefresh, GLOBAL_RULES_BEGIN, GLOBAL_RULES_END, globalContextPath, preflightGlobalContextRefresh, type GlobalContextRefreshPlan, type ReportLanguageFlag } from "../installer/global-context";
 import { CLI_NAME, namesRetiredCli, RETIRED_CLI_NAME } from "../../core/skill-surface/cli-name";
 import { shellQuote } from "../../core/shell-quote";
-import { configureBrainRoot, defaultBrainRootChoice, expandHomePath } from "./brain-root";
 import { syncCrossReviewSkills } from "./init";
 import { runInstall, type InstallTargetSpec } from "./install";
 import { compareVersions, readLatestPackageVersion } from "./doctor";
@@ -80,7 +80,6 @@ export interface GlobalRuntimeOptions {
   externalSkills?: boolean;
   obsidianSkills?: boolean;
   codegraph?: boolean;
-  brainRoot?: string;
   /** The plugin selection to project. Omitted, the recorded selection of the install state. */
   plugins?: readonly PluginId[];
   updateMode?: boolean;
@@ -831,7 +830,6 @@ function reconcileWithInstalledCandidate(
     external_skills: opts.externalSkills === true,
     obsidian_skills: opts.obsidianSkills === true,
     codegraph: opts.codegraph ?? true,
-    brain_root: opts.brainRoot,
     report_language: opts.reportLanguage,
   };
   const child = runProcess(
@@ -1505,26 +1503,6 @@ function installMermaidSkill(sourceRoot: string, target: InstallTargetSpec, piSe
   }
   return projectStagedSkills(mermaidSkills, target, piSelected, env, 'configure Mermaid skill');
 }
-function configureBrain(root: string | undefined, env?: NodeJS.ProcessEnv, runtimeLock?: RuntimeTransactionContext): GlobalRuntimeStep {
-  try {
-    const selected = root
-      ? resolve(expandHomePath(root, env))
-      : defaultBrainRootChoice({ env }).root;
-    const configured = configureBrainRoot(selected, env, runtimeLock);
-    return {
-      step: "configure brain root",
-      status: "ok",
-      detail: `${configured.root} (${configured.path})`,
-    };
-  } catch (error) {
-    return {
-      step: "configure brain root",
-      status: "failed",
-      stderr: String((error as Error).message ?? error),
-    };
-  }
-}
-
 export function configureProtectedHelperPlatform(
   cwd: string,
   bunExecutable: string,
@@ -1911,6 +1889,13 @@ export function migrateSeatsConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: 
   }, { runtimeLock }).value;
 }
 
+/** Update removes the retired `brainRoot` key once. That key is the only member it edits; every other byte stays. */
+export function removeBrainRootConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: RuntimeTransactionContext): boolean {
+  return mutateGlobalConfiguration(env, config => (Object.hasOwn(config, 'brainRoot')
+    ? { config: Object.fromEntries(Object.entries(config).filter(([key]) => key !== 'brainRoot')), value: true }
+    : { value: false }), { runtimeLock, render: renderJsonObjectUpdate }).value;
+}
+
 export function runGlobalRuntimeSetup(
   opts: GlobalRuntimeOptions = {},
 ): GlobalRuntimeResult {
@@ -1952,6 +1937,14 @@ export function runGlobalRuntimeSetup(
       steps.push({ step, status: migrated ? 'ok' : 'skipped', detail: migrated ? 'Wrote the complete seats section.' : 'No seats migration required.' });
     } catch (error) {
       steps.push({ step, status: 'failed', detail: error instanceof Error ? error.message : String(error) });
+      return finalizeRuntimeResult(steps);
+    }
+    const brainStep = 'remove the retired brainRoot configuration key';
+    try {
+      const removed = removeBrainRootConfiguration(env, opts.runtimeLock);
+      steps.push({ step: brainStep, status: removed ? 'ok' : 'skipped', detail: removed ? 'Removed brainRoot; every other configuration byte stays.' : 'No brainRoot key.' });
+    } catch (error) {
+      steps.push({ step: brainStep, status: 'failed', detail: error instanceof Error ? error.message : String(error) });
       return finalizeRuntimeResult(steps);
     }
   }
@@ -2083,9 +2076,6 @@ export function runGlobalRuntimeSetup(
   } else {
     steps.push({ step: "cross-review skills", status: "skipped", detail: "cross-review and peer-runtime plugins not selected" });
   }
-
-  if (opts.brainRoot || plugins.includes('strategy-memory')) steps.push(configureBrain(opts.brainRoot, env, opts.runtimeLock));
-  else steps.push({ step: "configure brain root", status: "skipped", detail: "strategy-memory plugin not selected" });
 
   // CodeGraph follows the architecture plugin; `codegraph` only allows it.
   if (!plugins.includes('architecture')) {

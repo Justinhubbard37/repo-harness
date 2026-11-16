@@ -8,9 +8,9 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, lstatSync, readFileSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
 import * as os from 'os';
-import { dirname, join, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { Command } from 'commander';
 import { shellQuote } from '../../core/shell-quote';
@@ -29,7 +29,6 @@ import { ReviewBaseUnresolvedError } from '../../effects/adoption/standard-plan'
 import type { AdoptionPlan } from '../../core/adoption/operations';
 import { isRepoHarnessSourceCheckout } from '../../effects/source-checkout';
 import { resolveRepoRoot } from '../hook/runtime';
-import { isUserLevelAdapter } from './migrate';
 import {
   GLOBAL_RULES_EDITED,
   GLOBAL_RULES_UNBALANCED,
@@ -161,6 +160,44 @@ function targetLabel(target: 'codex' | 'claude'): string {
 
 function homeDir(env?: NodeJS.ProcessEnv): string {
   return env?.HOME ?? process.env.HOME ?? os.homedir();
+}
+
+const LEGACY_ADAPTER_CANDIDATES = ['.codex/hooks.json', '.claude/settings.json'] as const;
+
+/** Only these errors mean that the path, or a directory on it, does not exist. */
+const MISSING_PATH_CODES = new Set(['ENOENT', 'ENOTDIR']);
+
+/** The real path, or null when the path does not exist. Every other error (EACCES, ELOOP, ...) throws. */
+function realPathOrMissing(filePath: string): string | null {
+  try {
+    return realpathSync(filePath);
+  } catch (error) {
+    if (MISSING_PATH_CODES.has((error as NodeJS.ErrnoException).code ?? '')) return null;
+    throw error;
+  }
+}
+
+/**
+ * The real identity of a file: its full real path (a final symlink is
+ * followed), else its name under the real parent directory, else null when
+ * the parent does not exist either, so no file is there to read.
+ */
+function fileIdentity(filePath: string): string | null {
+  const real = realPathOrMissing(filePath);
+  if (real !== null) return real;
+  const directory = realPathOrMissing(dirname(filePath));
+  return directory === null ? null : join(directory, basename(filePath));
+}
+
+/**
+ * True when the file is a user-level adapter (<home>/.claude/settings.json or
+ * <home>/.codex/hooks.json) by real identity: a repository rooted at $HOME, or
+ * a dotfiles repository whose file a home adapter links to. A path that
+ * cannot be resolved throws, so callers fail closed.
+ */
+function isUserLevelAdapter(filePath: string, home: string): boolean {
+  const identity = fileIdentity(filePath);
+  return identity !== null && LEGACY_ADAPTER_CANDIDATES.some((rel) => fileIdentity(join(home, rel)) === identity);
 }
 
 function verificationCommand(target: InitHookTarget, checkUpdates: boolean): string {
@@ -772,14 +809,14 @@ function legacyChecks(cwd: string, home: string, target: InitHookTarget, checkUp
   const checks: InitHookCheck[] = [];
   const present: string[] = [];
   const presentChecks: string[] = [];
-  // runMigrate refuses the whole repository when a candidate is, or cannot be resolved apart from, a user-level adapter.
-  let migrateRefuses = false;
+  // A candidate that a user-level adapter owns, or that cannot be resolved apart from one, is not a project adapter.
+  let userLevelAdapter = false;
   for (const entry of files) {
     let userLevel: boolean;
     try {
       userLevel = isUserLevelAdapter(entry.filePath, home);
     } catch (error) {
-      migrateRefuses = true;
+      userLevelAdapter = true;
       checks.push({ id: entry.id, title, status: 'needs_agent', source: 'legacy', detail: `cannot resolve ${entry.filePath}: ${(error as Error).message}` });
       present.push(entry.filePath);
       presentChecks.push(entry.id);
@@ -787,7 +824,7 @@ function legacyChecks(cwd: string, home: string, target: InitHookTarget, checkUp
     }
     // A repository rooted at $HOME, or a dotfiles file behind a home adapter link, is the user-level adapter.
     if (userLevel) {
-      migrateRefuses = true;
+      userLevelAdapter = true;
       checks.push({ id: entry.id, title, status: 'na', source: 'legacy', detail: `user-level adapter, not a project adapter: ${entry.filePath}` });
       continue;
     }
@@ -809,12 +846,11 @@ function legacyChecks(cwd: string, home: string, target: InitHookTarget, checkUp
     addAction(actions, {
       id: 'legacy.project-adapters.review',
       status: 'needs_agent',
-      reason: migrateRefuses
-        ? 'Repo-local host adapter configs are retired. rh migrate refuses this repository because a candidate is, or cannot be resolved apart from, a user-level adapter; review the targets manually.'
-        : 'Repo-local host adapter configs are retired; user-level adapters should own runtime routing.',
+      reason: userLevelAdapter
+        ? 'Repo-local host adapter configs are retired. A candidate is, or cannot be resolved apart from, a user-level adapter; review the targets manually.'
+        : 'Repo-local host adapter configs are retired; user-level adapters should own runtime routing. Review each target, then remove its repo-harness hook commands by hand.',
       requires_agent: true,
-      risk: 'These files may contain user-owned historical config; review or migrate before removal.',
-      ...(migrateRefuses ? {} : { command: 'rh migrate --apply' }),
+      risk: 'These files may contain user-owned historical config; review or remove the repo-harness entries by hand.',
       targets: present,
       verification: verificationCommand(target, checkUpdates),
     }, presentChecks);

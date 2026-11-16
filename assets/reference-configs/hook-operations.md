@@ -1,7 +1,5 @@
 # Hook Operations Reference
 
-> Full troubleshooting runbook: `brain/repo-harness/runbooks/runbook-repo-harness-hook-troubleshooting.md`.
-
 ## Hook Authority Map
 
 There is one host-event runtime. The observable path is:

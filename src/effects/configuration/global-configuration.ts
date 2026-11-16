@@ -79,7 +79,12 @@ export function restoreGlobalConfiguration(path: string, bytes: Buffer | null, r
 export function mutateGlobalConfiguration<T>(
   env: NodeJS.ProcessEnv,
   mutate: (config: Record<string, unknown>) => { readonly config?: Record<string, unknown> | null; readonly value: T },
-  options: { readonly expectedRevision?: string; readonly runtimeLock?: RuntimeTransactionContext } = {},
+  options: {
+    readonly expectedRevision?: string;
+    readonly runtimeLock?: RuntimeTransactionContext;
+    /** Render the next document from the current text, so a caller that removes one member keeps every other byte. Default: `JSON.stringify(config, null, 2)`. */
+    readonly render?: (text: string, next: Record<string, unknown>) => string;
+  } = {},
 ): { readonly path: string; readonly revision: string; readonly changed: boolean; readonly value: T } {
   const scope = globalRuntimeScope(env);
   try {
@@ -90,13 +95,17 @@ export function mutateGlobalConfiguration<T>(
       assertWritableConfiguration(path);
       let document: ReturnType<typeof readGlobalConfiguration>;
       try { document = readGlobalConfiguration(env); }
-      catch { throw new GlobalConfigurationError('config_invalid', 'The repo-harness configuration file is not a valid JSON object.'); }
+      catch (error) {
+        if (error instanceof GlobalConfigurationError) throw error;
+        throw new GlobalConfigurationError('config_invalid', 'The repo-harness configuration file is not a valid JSON object.');
+      }
       if (options.expectedRevision !== undefined && options.expectedRevision !== document.revision) {
         throw new GlobalConfigurationError('revision_conflict', 'The configuration changed after it was read.');
       }
       const next = mutate(document.config);
       if (next.config === undefined) return { path, revision: document.revision, changed: false, value: next.value };
-      const bytes = next.config === null ? null : Buffer.from(`${JSON.stringify(next.config, null, 2)}\n`, 'utf8');
+      const bytes = next.config === null ? null
+        : Buffer.from(options.render ? options.render(document.text, next.config) : `${JSON.stringify(next.config, null, 2)}\n`, 'utf8');
       const revision = globalConfigurationRevision(bytes);
       if (revision === document.revision) return { path, revision, changed: false, value: next.value };
       replaceGlobalConfiguration(path, bytes, () => assertRuntimeTransactionContext(context, scope));
@@ -120,18 +129,38 @@ export function globalConfigurationWriter(env: NodeJS.ProcessEnv, runtimeLock?: 
     mutateGlobalConfiguration(env, mutate, { runtimeLock }).value;
 }
 
+/** JSON.parse owns syntax validation; scan its valid input for repeated names in each object. */
+function assertUniqueConfigurationMembers(text: string): void {
+  const objects: Set<string>[] = [];
+  for (const match of text.matchAll(/"(?:\\.|[^"\\])*"(\s*:)?|[{}]/g)) {
+    if (match[0] === '{') objects.push(new Set());
+    else if (match[0] === '}') objects.pop();
+    else if (match[1]) {
+      const key = JSON.parse(match[0].slice(0, -match[1].length)) as string;
+      const keys = objects.at(-1)!;
+      if (keys.has(key)) throw new GlobalConfigurationError('config_invalid', 'The repo-harness configuration file has duplicate member names. Nothing was changed.');
+      keys.add(key);
+    }
+  }
+}
+
 /** One host configuration document; typed consumers validate their own section. */
-export function readGlobalConfiguration(env: NodeJS.ProcessEnv = process.env): { path: string; config: Record<string, unknown>; revision: string } {
+export function readGlobalConfiguration(env: NodeJS.ProcessEnv = process.env): { path: string; config: Record<string, unknown>; revision: string; text: string } {
   const path = globalConfigurationPath(env);
   let bytes: Buffer | null = null;
+  let text = '{}';
   let value: unknown;
   try {
     bytes = readFileSync(path);
-    value = JSON.parse(bytes.toString('utf8'));
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw new GlobalConfigurationError('config_invalid', 'The repo-harness configuration file contains invalid UTF-8. Nothing was changed.'); }
+    value = JSON.parse(text);
+    assertUniqueConfigurationMembers(text);
   } catch (error) {
+    if (error instanceof GlobalConfigurationError) throw error;
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Invalid global configuration at ${path}: ${error instanceof Error ? error.message : String(error)}`);
     value = {};
   }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Global configuration must be an object: ${path}`);
-  return { path, config: value as Record<string, unknown>, revision: globalConfigurationRevision(bytes) };
+  return { path, config: value as Record<string, unknown>, revision: globalConfigurationRevision(bytes), text };
 }

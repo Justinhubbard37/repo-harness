@@ -27,7 +27,6 @@ import { runInit } from './commands/init';
 import { CLI_VERSION, formatStatus, runStatus } from './commands/status';
 import { formatDoctor, runDoctor, type DoctorPorts } from './commands/doctor';
 import { buildSetupCommand } from './commands/setup-check';
-import { formatMigratePlan, runMigrate } from './commands/migrate';
 import { buildReviewCommand } from './commands/review';
 import { buildUpgradeCommand } from './commands/upgrade';
 import { buildToolsCommand } from './commands/tools';
@@ -35,7 +34,6 @@ import { registerArchitecturePorts } from '../core/architecture/contracts';
 import { assertPluginCommandSelected, declareArchitectureSelection, pluginSelected, readRecordedSelection, recordedPlugins } from './installer/architecture-selection';
 import { buildHerdrCommand } from './commands/herdr';
 import { buildEventsCommand } from './commands/events';
-import { buildBrainCommand } from './commands/brain';
 import { buildCapabilityContextCommand } from './commands/capability-context';
 import { buildDocsCommand } from './commands/docs';
 import { buildMcpCommand } from './commands/mcp';
@@ -199,7 +197,6 @@ interface GlobalRuntimeCommandOptions {
   externalSkills?: boolean;
   withObsidianSkills?: boolean;
   codegraph?: boolean;
-  brainRoot?: string;
   reportLanguage?: string;
   json?: boolean;
   /** `--plugins a,b` gives a string; `--no-plugins` gives false; neither gives undefined. */
@@ -432,7 +429,6 @@ export function runCandidateRuntimeReconciliation(
     externalSkills: request.external_skills,
     obsidianSkills: request.obsidian_skills,
     codegraph: request.codegraph,
-    brainRoot: request.brain_root,
     reportLanguage: request.report_language,
     updateMode: true,
     mcpLocalConfigCheck,
@@ -668,7 +664,6 @@ async function runGlobalRuntimeBootstrap(
     externalSkills,
     obsidianSkills: rawOpts.withObsidianSkills === true,
     codegraph,
-    brainRoot: rawOpts.brainRoot,
     reportLanguage: rawOpts.reportLanguage === undefined ? undefined : parseReportLanguageFlag(rawOpts.reportLanguage),
   }, (transaction, result) => (
     applyInstallSelection(
@@ -716,7 +711,6 @@ export function buildProgram(): Command {
     .option('--no-external-skills', 'Skip mutable third-party Waza and Mermaid skill bootstrap')
     .option('--with-obsidian-skills', 'Explicitly install the pinned obsidian-markdown and obsidian-cli companion Skills')
     .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
-    .option('--brain-root <path>', 'Brain vault root to persist for rh brain commands')
     .option('--report-language <language>', `Reporting language for Global Working Rules that record none: ${REPORT_LANGUAGE_FLAG_VALUES.join('|')}`)
     .option('--json', 'Output JSON instead of human-readable text')
     .action(async (rawOpts: GlobalRuntimeCommandOptions & { location?: string; state?: boolean; rollback?: boolean }, cmd: Command) => {
@@ -867,7 +861,6 @@ export function buildProgram(): Command {
     .option('--no-external-skills', 'Do not refresh third-party Waza and Mermaid providers (default)')
     .option('--configure-codegraph', 'Refresh CodeGraph CLI/MCP (default during update)')
     .option('--no-codegraph', 'Skip refreshing the global CodeGraph CLI/MCP')
-    .option('--brain-root <path>', 'Brain vault root for manifest sync')
     .option('--report-language <language>', `Reporting language for Global Working Rules that record none: ${REPORT_LANGUAGE_FLAG_VALUES.join('|')}`)
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: {
@@ -882,7 +875,6 @@ export function buildProgram(): Command {
       externalSkills?: boolean;
       codegraph?: boolean;
       configureCodegraph?: boolean;
-      brainRoot?: string;
       reportLanguage?: string;
       json?: boolean;
     }) => {
@@ -910,7 +902,6 @@ export function buildProgram(): Command {
         externalSkills: rawOpts.externalSkills === false ? false : rawOpts.withExternalSkills === true ? true : undefined,
         obsidianSkills: rawOpts.withObsidianSkills === true,
         codegraph: rawOpts.codegraph === false ? false : rawOpts.configureCodegraph === true ? true : undefined,
-        brainRoot: rawOpts.brainRoot,
         reportLanguage: rawOpts.reportLanguage as ReportLanguageFlag | undefined,
       });
       if (result.exitCode === 0) {
@@ -975,17 +966,6 @@ export function buildProgram(): Command {
   program.addCommand(buildSetupCommand(CLI_PORTS.doctor));
   program.addCommand(buildUpgradeCommand());
 
-  program
-    .command('migrate')
-    .description('Migrate legacy project-level hook adapters to the global CLI (dry-run by default)')
-    .option('--apply', 'Commit changes (default is dry-run)')
-    .option('--json', 'Output JSON plan')
-    .action((rawOpts: { apply?: boolean; json?: boolean }) => {
-      const plan = runMigrate({ apply: rawOpts.apply === true });
-      console.log(formatMigratePlan(plan, rawOpts.json === true));
-      process.exit(0);
-    });
-
   const security = program
     .command('security')
     .description('Read-only security checks for local hook and editor task configs');
@@ -1010,7 +990,6 @@ export function buildProgram(): Command {
   program.addCommand(tools);
   program.addCommand(pluginCommand(buildHerdrCommand(), 'peer-runtime'));
   program.addCommand(pluginCommand(buildEventsCommand(), 'peer-runtime'));
-  program.addCommand(buildBrainCommand());
   program.addCommand(buildCapabilityContextCommand());
   program.addCommand(buildDocsCommand());
   const mcp = buildMcpCommand();

@@ -25,7 +25,6 @@ import {
 } from "../../src/cli/commands/init";
 import { globalRuntimeScope, withRuntimeTransactionLock } from "../../src/effects/locking/runtime-transaction-lock";
 import { beginInstallHostTransaction, rollbackInstallHostTransaction } from "../../src/cli/installer/install-profile";
-import { configuredBrainRoot } from "../../src/cli/commands/brain-root";
 import { listHelperFiles } from "../../src/effects/runtime/helper-runner";
 import { registerArchitecturePlugin } from '../../src/cli/index';
 import type { InitCommandOptions } from "../../src/cli/commands/init";
@@ -212,7 +211,7 @@ describe("init command", () => {
       makeGitRepo(repo);
       mkdirSync(dirname(configPath), { recursive: true });
       setupFakeSource(source);
-      writeFileSync(configPath, JSON.stringify({ brainRoot: "/existing/brain" }));
+      writeFileSync(configPath, JSON.stringify({ security: { mode: "strict" } }));
       const options = {
         repo, sourceRoot: source, codegraph: false, verify: false,
         env: { ...process.env, HOME: accountHome, REPO_HARNESS_HOME: join(accountHome, ".repo-harness") },
@@ -265,7 +264,7 @@ describe("init command", () => {
       makeGitRepo(repo);
       mkdirSync(dirname(configPath), { recursive: true });
       setupFakeSource(source);
-      const original = JSON.stringify({ brainRoot: "/existing/brain" });
+      const original = JSON.stringify({ security: { mode: "strict" } });
       writeFileSync(configPath, original);
       const env = { ...process.env, HOME: home, REPO_HARNESS_HOME: join(home, ".repo-harness") };
       const options = { repo, sourceRoot: source, env, codegraph: false, verify: false };
@@ -301,7 +300,7 @@ describe("init command", () => {
       setupFakeSource(source);
       expect(spawnSync("git", ["init", "-q"], { cwd: repo }).status).toBe(0);
       for (const [path, content] of [
-        [".repo-harness/config.json", JSON.stringify({ brainRoot: "/existing/brain" })],
+        [".repo-harness/config.json", JSON.stringify({ security: { mode: "strict" } })],
         [".claude/settings.json", "{}\n"],
         [".claude/CLAUDE.md", "user rules\n"],
         [".codex/AGENTS.md", "user rules\n"],
@@ -882,20 +881,6 @@ describe("init command", () => {
     }
   });
 
-  test("resolves brain roots from REPO_HARNESS_BRAIN_ROOT", () => {
-    const tmp = join(tmpdir(), `repo-harness-brain-root-${Date.now()}`);
-    try {
-      mkdirSync(tmp, { recursive: true });
-      const root = configuredBrainRoot({
-        ...process.env,
-        HOME: join(tmp, "home"),
-        REPO_HARNESS_BRAIN_ROOT: "~/custom-brain",
-      });
-      expect(root).toBe(join(tmp, "home", "custom-brain"));
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
 
 });
 
