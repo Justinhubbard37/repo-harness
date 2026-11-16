@@ -67,6 +67,7 @@ export const en = {
 
   'nav.architecture': 'Architecture',
   'nav.tests': 'Tests',
+  'nav.rules': 'Rules',
   'nav.system': 'System',
   'nav.group.work': 'Work',
   'nav.group.setup': 'Setup',
@@ -180,6 +181,7 @@ export const zh: Readonly<Record<keyof typeof en, string>> = {
 
   'nav.architecture': '架构',
   'nav.tests': '测试',
+  'nav.rules': '规则',
   'nav.system': '系统',
   'nav.group.work': '工作',
   'nav.group.setup': '接入',

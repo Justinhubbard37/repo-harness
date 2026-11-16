@@ -16,6 +16,7 @@ import {
   PlugsConnectedIcon,
   PuzzlePieceIcon,
   RobotIcon,
+  ScalesIcon,
   SidebarSimpleIcon,
   SunIcon,
   TerminalWindowIcon,
@@ -44,6 +45,7 @@ const NAV_ICON: Readonly<Record<NavWorkspace, ReactNode>> = {
   bots: <HeadCircuitIcon size={16} />,
   architecture: <TreeStructureIcon size={16} />,
   tests: <FlaskIcon size={16} />,
+  rules: <ScalesIcon size={16} />,
   system: <CpuIcon size={16} />,
   tools: <WrenchIcon size={16} />,
 };

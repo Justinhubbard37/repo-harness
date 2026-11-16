@@ -12,6 +12,7 @@ import * as setup from './setup';
 import * as cli from './cli';
 import * as home from './home';
 import * as tests from './tests';
+import * as rules from './rules';
 import * as system from './system';
 import * as worktrees from './worktrees';
 import * as skills from './skills';
@@ -46,6 +47,7 @@ const en = {
   ...cli.en,
   ...home.en,
   ...tests.en,
+  ...rules.en,
   ...system.en,
   ...worktrees.en,
   ...skills.en,
@@ -78,6 +80,7 @@ const zh: Readonly<Record<OperatorMessageKey, string>> = {
   ...cli.zh,
   ...home.zh,
   ...tests.zh,
+  ...rules.zh,
   ...system.zh,
   ...worktrees.zh,
   ...skills.zh,

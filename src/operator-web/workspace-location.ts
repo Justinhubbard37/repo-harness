@@ -20,6 +20,7 @@ export const WORKSPACES = [
   { id: 'bots', group: 'setup' },
   { id: 'architecture', group: 'observe' },
   { id: 'tests', group: 'observe' },
+  { id: 'rules', group: 'observe' },
   { id: 'system', group: 'observe' },
   { id: 'tools', group: 'observe' },
 ] as const;
@@ -109,6 +110,9 @@ function decodeItem(value: string): string | null {
   return decoded.length > 0 && decoded.length <= ITEM_ID_LIMIT && !/[\u0000-\u001f\u007f]/u.test(decoded) ? decoded : null;
 }
 
+/** `#rules/ledger` selects the Ledger segment of the Rules page; `#rules` is the Candidates segment. */
+export const RULES_LEDGER_ITEM = 'ledger';
+
 /** An empty or unknown fragment is the default page. A malformed parameter also falls to the default page. */
 export function parseWorkspaceLocation(hash: string): WorkspaceLocation {
   const [name, parameter, ...rest] = hash.replace(/^#/u, '').split('/');
@@ -127,6 +131,10 @@ export function parseWorkspaceLocation(hash: string): WorkspaceLocation {
     return place === null ? DEFAULT_LOCATION : boardLocation(place);
   }
   if (rest.length > 0) return DEFAULT_LOCATION;
+  if (name === 'rules') {
+    if (parameter === undefined) return { workspace: 'rules', module: null, item: null };
+    return parameter === RULES_LEDGER_ITEM ? { workspace: 'rules', module: null, item: RULES_LEDGER_ITEM } : DEFAULT_LOCATION;
+  }
   if (name === 'home' || name === 'repositories' || name === 'worktrees' || name === 'system' || name === 'agents' || name === 'skills' || name === 'hooks' || name === 'cli' || name === 'bots' || name === 'tests') {
     return parameter === undefined ? { workspace: name, module: null, item: null } : DEFAULT_LOCATION;
   }
@@ -146,6 +154,7 @@ export function workspaceHash({ workspace, module, item }: WorkspaceLocation): s
   if (workspace === 'board') return item === null ? '#board' : `#board/${item}`;
   if (workspace === 'architecture' && module !== null) return `#architecture/${module}`;
   if (workspace === 'tools' && item !== null) return `#tools/${item}`;
+  if (workspace === 'rules' && item !== null) return `#rules/${item}`;
   // Each segment is encoded on its own, so the path stays readable in the address bar.
   if (workspace === 'docs' && item !== null) return `#docs/${item.split('/').map(encodeURIComponent).join('/')}`;
   return `#${workspace}`;

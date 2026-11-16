@@ -216,7 +216,7 @@ describe('navigation', () => {
 
   test('1-SHELL-N1 every page in the shell routes by its hash with one repository switch; later pages have no entry or route', async () => {
     const pages = [['home', 'home'], ['board', 'board'], ['repositories', 'repositories'], ['worktrees', 'worktrees'], ['docs', 'docs'], ['agents', 'agents'], ['skills', 'skills'],
-      ['hooks', 'hooks'], ['cli', 'cli'], ['bots', 'bots'], ['architecture', 'architecture'], ['tests', 'tests'], ['system', 'system'], ['tools', 'tools']] as const;
+      ['hooks', 'hooks'], ['cli', 'cli'], ['bots', 'bots'], ['architecture', 'architecture'], ['tests', 'tests'], ['rules', 'rules'], ['system', 'system'], ['tools', 'tools']] as const;
     for (const [workspace, entry] of pages) {
       if (root) {
         await act(async () => root?.unmount());
@@ -231,7 +231,7 @@ describe('navigation', () => {
       expect(document.querySelector('.operator-header [data-repository-switch], .operator-header select, main [data-repository-switch]')).toBeNull();
     }
     expect(all('.workspace-nav a[data-workspace]').map(link => link.getAttribute('data-workspace')))
-      .toEqual(['home', 'board', 'repositories', 'worktrees', 'docs', 'agents', 'skills', 'hooks', 'cli', 'bots', 'architecture', 'tests', 'system', 'tools']);
+      .toEqual(['home', 'board', 'repositories', 'worktrees', 'docs', 'agents', 'skills', 'hooks', 'cli', 'bots', 'architecture', 'tests', 'rules', 'system', 'tools']);
     // The Settings page is gone, with no alias: its old fragments open the default page.
     for (const later of ['sessions', 'recent', 'settings', 'settings/seats']) {
       expect(parseWorkspaceLocation(`#${later}`)).toEqual(DEFAULT_LOCATION);
