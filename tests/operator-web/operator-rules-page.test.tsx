@@ -166,6 +166,7 @@ describe('rules page', () => {
   test('a dirty ledger warns and keeps the candidates', async () => {
     await mount('#rules', rulesRead({}, true));
     expect(document.querySelector('[data-rules-banner="dirty"]')!.textContent).toContain('The ledger has uncommitted changes');
+    expect(document.querySelector('[data-rules-banner="dirty"]')!.textContent).toContain('The page shows the working-tree version of tasks/lessons.md at collection time. HEAD is shown for reference. Commit or discard the change before you file a task.');
     expect(all('[data-rules-candidate]')).toHaveLength(10);
   });
 

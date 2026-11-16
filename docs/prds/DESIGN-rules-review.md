@@ -319,7 +319,7 @@ After a filed answer the drawer shows the issue link and "Filed as #{issue}. Pro
 | `rules.ledger.evidence.body` | {count} entries name only a consolidation commit in `Triggered by correction`. Candidates show, but filing a task waits until the entries name the real correction. | {count} 条记录的 `Triggered by correction` 只写了合并整理的提交。候选照常显示，改成真正的纠正来源之前不能建任务。 |
 | `rules.ledger.evidence.show` | Show {count} errors | 显示 {count} 处错误 |
 | `rules.ledger.dirty.title` | The ledger has uncommitted changes | 账本有未提交的改动 |
-| `rules.ledger.dirty.body` | The page shows the committed version of `tasks/lessons.md`. Commit or discard the change before you file a task. | 页面显示的是已提交的 `tasks/lessons.md`。先提交或丢弃改动，再建任务。 |
+| `rules.ledger.dirty.body` | The page shows the working-tree version of `tasks/lessons.md` at collection time. HEAD is shown for reference. Commit or discard the change before you file a task. | 页面显示采集时工作区里的 `tasks/lessons.md`。HEAD 仅供参考。先提交或丢弃改动，再建任务。 |
 
 ### Page unavailable (reasons of #2885)
 
