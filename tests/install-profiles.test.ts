@@ -49,6 +49,7 @@ import { buildManagedHooks } from '../src/cli/installer/managed-entries';
 import { runUserUninstall } from '../src/cli/installer/uninstall';
 import { copyUpgradeFixture } from './helpers/upgrade-fixtures';
 import { writeFakeHc } from './helpers/fake-hc';
+import { writeBunWrapper } from './helpers/repo-fixture';
 import { HC_MIN_VERSION } from '../src/core/terminal/herdr-pin';
 
 const ROOT = join(import.meta.dir, '..');
@@ -86,7 +87,7 @@ function withHome(run: (env: NodeJS.ProcessEnv) => void): void {
   const home = mkdtempSync(join(tmpdir(), 'repo-harness-profile-'));
   const tools = join(home, 'tool-bin');
   mkdirSync(tools);
-  symlinkSync(process.execPath, join(tools, 'bun'));
+  writeBunWrapper(join(tools, 'bun'));
   const env: NodeJS.ProcessEnv = {
     ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), XDG_STATE_HOME: join(home, '.local', 'state'),
     REPO_HARNESS_HOME: join(home, '.repo-harness'), PATH: `${tools}:/usr/bin:/bin`,

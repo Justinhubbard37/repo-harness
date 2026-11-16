@@ -5,6 +5,7 @@ import { dirname, join, relative } from "path";
 import { spawnSync } from "child_process";
 import { removeOwnedDanglingSkillLinks } from "../src/effects/skill-tree-integrity";
 import { PLUGIN_IDS } from "../src/core/skill-surface/plugin-manifest";
+import { writeBunWrapper } from "./helpers/repo-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 /**
@@ -341,7 +342,7 @@ describe("Codex installed copy sync", () => {
         seedSkillSurfaceRuntime(source);
         writeFileSync(join(source, "SKILL.md"), "---\nname: repo-harness\n---\n");
         mkdirSync(tools, { recursive: true });
-        symlinkSync(process.execPath, join(tools, "bun"));
+        writeBunWrapper(join(tools, "bun"));
         if (row.userRoot) {
           mkdirSync(join(piRoot, "user-skill"), { recursive: true });
           writeFileSync(join(piRoot, "user-skill", "SKILL.md"), "# user\n");

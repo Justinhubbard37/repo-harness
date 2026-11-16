@@ -8,6 +8,7 @@ import { MANAGED_AGENTS, WRITABLE_AGENTS } from '../src/effects/terminal/task-ro
 import { installProfileHostMutationPaths } from "../src/cli/installer/install-profile";
 
 import { recordInstallOwnership } from "./helpers/install-ownership";
+import { writeBunWrapper } from "./helpers/repo-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 const SCRIPT = join(ROOT, "scripts/install-agent-fleet.sh");
@@ -781,7 +782,7 @@ describe("install-agent-fleet", () => {
     try {
       const supportedBin = join(root, "supported-bin");
       mkdirSync(supportedBin);
-      symlinkSync(process.execPath, join(supportedBin, "bun"));
+      writeBunWrapper(join(supportedBin, "bun"));
       const result = runInstaller(home, FLEET_SOURCE_DIR, [], {
         REPO_HARNESS_BUN_BIN: join(root, "missing-runtime"),
         PATH: `${supportedBin}:${process.env.PATH}`,

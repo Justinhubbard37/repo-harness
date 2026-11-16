@@ -214,3 +214,12 @@ export function writeShellExecutableFixture(filePath: string, content: string): 
 }
 
 export { fixtureReviewResult, recordFixtureAcceptance } from './acceptance-fixture';
+
+/**
+ * Write `<path>` as a wrapper that execs the running Bun. A symlink to
+ * `process.execPath` would let a later write to `<path>` replace the real binary.
+ */
+export function writeBunWrapper(path: string): void {
+  writeFileSync(path, `#!/bin/sh\nexec '${process.execPath.replace(/'/g, `'\\''`)}' "$@"\n`);
+  chmodSync(path, 0o755);
+}

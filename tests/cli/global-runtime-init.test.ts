@@ -10,7 +10,7 @@ import { checkMcpLocalConfigFile } from '../../src/cli/mcp/local-config-check';
 import { migrateSeatsConfiguration, ownFreshWazaSharedRules, runGlobalRuntimeSetup, verifyInstalledManagedRuntime } from '../../src/cli/commands/global-runtime';
 import { DEFAULT_SEATS_CONFIG, decodeSeatsConfig } from '../../src/core/board/seats-settings';
 import { registerArchitecturePlugin, resolveOptionalRuntimeDeps, runCli, runTransactionalRuntimeRefresh } from '../../src/cli/index';
-import { copyPackageRuntimeFixture, writeShellExecutableFixture } from '../helpers/repo-fixture';
+import { copyPackageRuntimeFixture, writeBunWrapper, writeShellExecutableFixture } from '../helpers/repo-fixture';
 import { ARCHITECTURE_DOCS_RENDERER_VERSION } from 'archctx-contracts';
 import { dependencies, devDependencies } from '../../package.json';
 import { installStateFixturePath, recordInstallOwnership, recordPluginSelection, RETIRED_CLI_LINES, seedGlobalPackageFixture } from '../helpers/install-ownership';
@@ -684,7 +684,7 @@ describe('install command global runtime bootstrap', () => {
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
       mkdirSync(join(validatedBun, '..'), { recursive: true });
-      symlinkSync(process.execPath, validatedBun);
+      writeBunWrapper(validatedBun);
       writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.0.0; exit 0; fi\nexit 99\n');
       writeFakeHc(fakeBin);
       writeReadyOfficialCodexPluginCli(fakeBin, home);
