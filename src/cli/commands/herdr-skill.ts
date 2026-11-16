@@ -6,23 +6,12 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { hostSkillRoot, stagedSkillRoot, SKILL_HOSTS, type SkillHost } from "../../effects/host-skill-roots";
 import type { InstallTargetSpec } from "./install";
+import { HERDR_SKILL_MARKER as MARKER, ownedSkillIsIntact } from "../installer/herdr-skill-marker";
 
 const STEP = "configure required Herdr skill";
 const STALE_STAGE_AGE_MS = 10 * 60 * 1_000;
-const MARKER = ".repo-harness-owner.json";
 type Step = { step: string; status: "ok" | "failed"; detail: string };
 type BackupCleanup = (path: string) => void;
-
-function ownedSkillIsIntact(directory: string): boolean {
-  try {
-    const marker = JSON.parse(readFileSync(join(directory, MARKER), "utf8"));
-    return marker.owner === "repo-harness"
-      && marker.sha256 === sha256Prefixed(readFileSync(join(directory, "SKILL.md"), "utf8"))
-      && readdirSync(directory).sort().join(",") === `${MARKER},SKILL.md`;
-  } catch {
-    return false;
-  }
-}
 
 function pathEntryExists(path: string): boolean {
   try {

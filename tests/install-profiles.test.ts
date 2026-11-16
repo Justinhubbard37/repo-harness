@@ -1,6 +1,7 @@
 import { syncCrossReviewSkills } from '../src/cli/commands/init';
 import { architectureSelectionReport, assertPluginCommandSelected, readRecordedSelection } from '../src/cli/installer/architecture-selection';
 import { configureRequiredHerdrSkill } from '../src/cli/commands/herdr-skill';
+import { ownedSkillIsIntact } from '../src/cli/installer/herdr-skill-marker';
 import { describe, expect, test } from 'bun:test';
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
@@ -1069,12 +1070,85 @@ describe('install selection', () => {
       expect(run.status, `${row.name}\n${run.stdout}\n${run.stderr}`).toBe(0);
       expect(readdirSync(piRoot).sort(), row.name).toEqual(row.entries);
       expect(readFileSync(join(piRoot, 'herdr', 'SKILL.md'), 'utf-8'), row.name).toContain(row.pi ? 'new manual' : 'old manual');
-      // The strict reader accepts the state; the pre-existing Herdr copy stays unrecorded.
+      // The strict reader accepts the state. The earlier Herdr copy keeps rh's marker, so a pi selection records it too.
       const recorded = readInstallState(env)!.ownership_manifest.filter(surface => surface.path.startsWith(`${piRoot}/`));
       expect(recorded.map(surface => `${surface.owner}:${basename(surface.path)}`), row.name)
-        .toEqual(row.pi ? row.entries.filter(name => name !== 'herdr').map(name => `pi:${name}`) : []);
+        .toEqual(row.pi ? row.entries.map(name => `pi:${name}`) : []);
     });
   }, 60_000);
+
+  /** withHome plus a fake `hc` and an `rh` link. The Git excludes file stays in the scratch HOME. */
+  function withCoreHome(run: (env: NodeJS.ProcessEnv, rh: (...args: string[]) => SpawnSyncReturns<string>) => void): void {
+    withHome((base) => {
+      const bin = join(base.HOME!, 'tool-bin');
+      writeFakeHc(bin);
+      writePath(join(base.HOME!, '.bun', 'bin', 'rh'), '#!/bin/sh\n');
+      const env: NodeJS.ProcessEnv = { ...base, XDG_CONFIG_HOME: join(base.HOME!, '.config'), REPO_HARNESS_BUN_EXECUTABLE: join(bin, 'bun') };
+      run(env, (...args) => spawnSync(process.execPath, [CLI, ...args, '--json'], { cwd: env.HOME, env, encoding: 'utf-8' }));
+    });
+  }
+  const CORE_INSTALL = ['install', '--no-plugins', '--target', 'both', '--no-cli', '--no-codegraph', '--no-external-skills'];
+
+  test('install owns the marked Herdr skill copies under core, and uninstall removes them with the emptied skill roots', () => {
+    // `earlier copy`: an rh run before this install (a release that recorded no Herdr surface) left marked copies,
+    // in both host roots and in the staged root that the Herdr step refreshes when it exists.
+    for (const earlierCopy of [false, true]) withCoreHome((env, rh) => {
+      const home = env.HOME!;
+      if (earlierCopy) {
+        expect(configureRequiredHerdrSkill('both', env, undefined, false).status).toBe('ok');
+        cpSync(join(home, '.codex', 'skills', 'herdr'), join(home, '.agents', 'skills', 'herdr'), { recursive: true });
+      }
+      const install = rh(...CORE_INSTALL);
+      expect(install.status, `${install.stdout}\n${install.stderr}`).toBe(0);
+      const herdr = ['.agents', '.claude', '.codex'].filter(root => earlierCopy || root !== '.agents').map(root => join(home, root, 'skills', 'herdr'));
+      expect(readInstallState(env)!.ownership_manifest.filter(surface => surface.path.endsWith('/herdr')).map(({ owner, path, type }) => ({ owner, path, type })), `earlier copy: ${earlierCopy}`)
+        .toEqual(herdr.map(path => ({ owner: 'core', path, type: 'directory-copy' })));
+      const uninstall = rh('uninstall');
+      expect(uninstall.status, `${uninstall.stdout}\n${uninstall.stderr}`).toBe(0);
+      expect(JSON.parse(uninstall.stdout).lines.at(-1)).toBe('[uninstall] complete');
+      for (const root of ['.claude', '.codex']) expect(existsSync(join(home, root, 'skills')), `${root} earlier copy: ${earlierCopy}`).toBe(false);
+      expect(existsSync(join(home, '.agents', 'skills', 'herdr'))).toBe(false);
+    });
+  }, 120_000);
+
+  test('a user entry in a Herdr copy ends rh ownership, before or after the first receipt, and uninstall keeps it', () => {
+    const rows = [
+      { name: 'notes.md before the first install', afterReceipt: false, change: (dir: string) => writeFileSync(join(dir, 'notes.md'), '# my notes\n') },
+      { name: 'notes.md after the first install', afterReceipt: true, change: (dir: string) => writeFileSync(join(dir, 'notes.md'), '# my notes\n') },
+      { name: 'an empty directory after the first install', afterReceipt: true, change: (dir: string) => mkdirSync(join(dir, 'drafts')) },
+      { name: 'a marker directory with user data', afterReceipt: true, change: (dir: string) => { rmSync(join(dir, '.repo-harness-owner.json')); writePath(join(dir, '.repo-harness-owner.json', 'keep.txt'), 'mine\n'); } },
+    ];
+    for (const row of rows) withCoreHome((env, rh) => {
+      const user = join(env.HOME!, '.claude', 'skills', 'herdr');
+      if (row.afterReceipt) expect(rh(...CORE_INSTALL).status, row.name).toBe(0);
+      else expect(configureRequiredHerdrSkill('both', env, undefined, false).status).toBe('ok');
+      row.change(user);
+      const before = readdirSync(user, { recursive: true }).map(String).sort();
+      const install = rh(...CORE_INSTALL);
+      expect(install.status, `${row.name}\n${install.stdout}\n${install.stderr}`).toBe(0);
+      expect(readInstallState(env)!.ownership_manifest.map(surface => surface.path), row.name).not.toContain(user);
+      rh('uninstall');
+      expect(readdirSync(user, { recursive: true }).map(String).sort(), row.name).toEqual(before);
+    });
+  }, 240_000);
+
+  test('a later Herdr write keeps the receipt current, so uninstall removes the rewritten copies', () => withCoreHome((env, rh) => {
+    expect(rh(...CORE_INSTALL).status).toBe(0);
+    // An update path that skips the state write (rh update --no-cli with an unchanged selection) renders a new manual.
+    writeFileSync(join(env.HOME!, 'tool-bin', 'hc'), `#!/bin/sh\n[ "$1" = --version ] && { echo "hc ${HC_MIN_VERSION}"; exit 0; }\nprintf "%s\\n" "# hc manual (herdr-core)" "new manual" "\\\`\\$HC_TERMINAL_ID\\\` is your address."\n`, { mode: 0o755 });
+    expect(configureRequiredHerdrSkill('both', env, undefined, false).status).toBe('ok');
+    expect(readFileSync(join(env.HOME!, '.codex', 'skills', 'herdr', 'SKILL.md'), 'utf-8')).toContain('new manual');
+    const uninstall = rh('uninstall');
+    expect(JSON.parse(uninstall.stdout).lines.at(-1), uninstall.stdout).toBe('[uninstall] complete');
+    for (const root of ['.claude', '.codex']) expect(existsSync(join(env.HOME!, root, 'skills', 'herdr'))).toBe(false);
+  }), 120_000);
+
+  test('the Herdr ownership proof does not read a FIFO marker', () => withHome((env) => {
+    const dir = join(env.HOME!, 'herdr');
+    writePath(join(dir, 'SKILL.md'), '# herdr\n');
+    expect(spawnSync('mkfifo', [join(dir, '.repo-harness-owner.json')]).status).toBe(0);
+    expect(ownedSkillIsIntact(dir)).toBe(false);
+  }));
 
   test('a relative XDG_STATE_HOME fails before the install takes its runtime lock', () => withHome((env) => {
     const failed = spawnSync(process.execPath, [CLI, 'install', '--no-plugins', '--json'], { cwd: env.HOME, env: { ...env, XDG_STATE_HOME: 'state' }, encoding: 'utf-8' });
