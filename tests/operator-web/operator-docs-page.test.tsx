@@ -6,7 +6,8 @@ import { Window } from 'happy-dom';
 import { decodeDevActivitySnapshot } from '../../src/core/dev-activity/decode';
 import { unavailableRuntimeOverlay } from '../../src/core/operator/runtime-status';
 import { OperatorApp, type OperatorAppProps } from '../../src/operator-web/App';
-import { docsLink, MERMAID_CONFIG } from '../../src/operator-web/DocsMarkdown';
+import { DIAGRAM_LANGUAGE, DocsMarkdown, docsLink, MERMAID_CONFIG, type DiagramValidator } from '../../src/operator-web/DocsMarkdown';
+import { translate } from '../../src/operator-web/i18n';
 import { registryOf } from '../../src/operator-web/fixtures';
 
 const REGISTRY = registryOf(['repo-harness', 'repo-console']);
@@ -208,6 +209,39 @@ describe('docs page', () => {
     expect((window as unknown as { __mermaidRan?: boolean }).__mermaidRan).toBeUndefined();
     // An ordinary code block stays a code block.
     expect(prose.querySelector('pre code.language-ts')?.textContent).toContain('/docs/tree');
+  });
+
+  test('a diagram block shows its validation errors, or the missing capability, instead of an empty area', async () => {
+    const fence = (json: string) => `\`\`\`${DIAGRAM_LANGUAGE}\n${json}\n\`\`\``;
+    const unknownTag: DiagramValidator = async () => ({
+      state: 'invalid', issues: [{ element: '/entities/0', field: 'tag', fix: 'Use a tag of the template set.' }],
+    });
+    const seen: unknown[] = [];
+    const valid: DiagramValidator = async document => { seen.push(document); return { state: 'valid' }; };
+    const show = async (json: string, validate?: DiagramValidator) => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const diagramRoot = createRoot(container);
+      await act(async () => diagramRoot.render(
+        <DocsMarkdown text={fence(json)} path="docs/a.md" mode="light" onOpen={() => {}} validateDiagram={validate} t={(key, params) => translate('en', key, params)} />,
+      ));
+      await settle();
+      const note = container.querySelector<HTMLElement>('[data-diagram]')!;
+      const issues = Array.from(container.querySelectorAll('[data-diagram-issues] li')).map(item => item.textContent);
+      await act(async () => diagramRoot.unmount());
+      return { state: note.dataset.diagram, issues };
+    };
+    expect(await show('{"entities": [')).toMatchObject({ state: 'invalid', issues: [expect.stringContaining('Element block, field JSON')] });
+    expect(await show('{"entities":[{"tag":"Node","icon":"https://example.com/a.svg"}]}', valid))
+      .toEqual({ state: 'invalid', issues: ['Element /entities/0, field icon: Use the name of a local icon; a remote address is not allowed.'] });
+    expect(seen).toEqual([]);
+    expect(await show('{"entities":[{"tag":"Script"}]}', unknownTag))
+      .toEqual({ state: 'invalid', issues: ['Element /entities/0, field tag: Use a tag of the template set.'] });
+    expect((await show('{"entities":[]}', valid)).state).toBe('valid');
+    expect(seen).toEqual([{ entities: [] }]);
+    expect((await show('{"entities":[]}')).state).toBe('capability-missing');
+    // A deeply nested block neither overflows the stack nor hides the source.
+    expect((await show(`${'['.repeat(100000)}${']'.repeat(100000)}`, valid)).state).toBe('valid');
   });
 
   test('1-DOCS-F1 shows the server reason for a refused path and none of its content', async () => {

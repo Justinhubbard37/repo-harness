@@ -44,6 +44,55 @@ function naturalWidth(svg: string): number | undefined {
   return match ? Math.round(Number(match[1])) : undefined;
 }
 
+/** One validation error: the element, the field and the fix. */
+export interface DiagramIssue { readonly element: string; readonly field: string; readonly fix: string }
+/**
+ * The optional render capability owns the diagram grammar (tags, icons, schema); the
+ * core package holds no copy of it. Without the capability every block reports `capability_missing`.
+ */
+export type DiagramCheck =
+  | { readonly state: 'valid' }
+  | { readonly state: 'invalid'; readonly issues: readonly DiagramIssue[] }
+  | { readonly state: 'capability_missing' };
+export type DiagramValidator = (document: unknown) => Promise<DiagramCheck>;
+
+/** No render capability ships with the core package yet, so no validator exists to call. */
+export const validateDiagramWithCapability: DiagramValidator = async () => ({ state: 'capability_missing' });
+
+export const DIAGRAM_LANGUAGE = 'eraser-diagram';
+
+const REMOTE_ADDRESS = /^\s*(?:[a-z][a-z0-9+.-]*:|\/\/)/iu;
+
+/**
+ * Errors the core owns before the capability sees the block: a JSON syntax error, and a
+ * remote or scheme-bearing `icon` address (the only resource field; icons load from a local set).
+ */
+export function diagramSourceIssues(source: string): { readonly document: unknown; readonly issues: readonly DiagramIssue[] } {
+  let document: unknown;
+  try { document = JSON.parse(source); } catch (error) {
+    return { document: null, issues: [{ element: 'block', field: 'JSON', fix: `Fix the JSON syntax: ${error instanceof Error ? error.message : 'the text does not parse'}.` }] };
+  }
+  const issues: DiagramIssue[] = [];
+  // Iterative: a deeply nested block must not overflow the call stack. A pointer is built only for an issue.
+  interface Step { readonly value: unknown; readonly parent: Step | null; readonly key: string }
+  const pointerOf = (step: Step | null): string => {
+    const keys: string[] = [];
+    for (let at = step; at !== null && at.parent !== null; at = at.parent) keys.push(at.key);
+    return keys.length === 0 ? '/' : `/${keys.reverse().join('/')}`;
+  };
+  const stack: Step[] = [{ value: document, parent: null, key: '' }];
+  for (let step = stack.pop(); step !== undefined; step = stack.pop()) {
+    const { value } = step;
+    if (value === null || typeof value !== 'object') continue;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'icon' && typeof child === 'string' && REMOTE_ADDRESS.test(child)) {
+        issues.push({ element: pointerOf(step), field: 'icon', fix: 'Use the name of a local icon; a remote address is not allowed.' });
+      } else stack.push({ value: child, parent: step, key });
+    }
+  }
+  return { document, issues };
+}
+
 export type DocsLink =
   | { readonly kind: 'external'; readonly href: string }
   | { readonly kind: 'doc'; readonly path: string }
@@ -101,6 +150,33 @@ function codeText(node: Node): { readonly language: string | null; readonly text
   return { language, text };
 }
 
+function DiagramBlock({ source, validate, t }: {
+  readonly source: string; readonly validate: DiagramValidator; readonly t: OperatorTranslate;
+}) {
+  const [checked, setChecked] = useState<{ readonly source: string; readonly check: DiagramCheck } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const own = diagramSourceIssues(source);
+    const done = (check: DiagramCheck) => { if (live) setChecked({ source, check }); };
+    if (own.issues.length > 0) done({ state: 'invalid', issues: own.issues });
+    else validate(own.document).then(done, () => done({ state: 'capability_missing' }));
+    return () => { live = false; };
+  }, [source, validate]);
+  const check = checked?.source === source ? checked.check : null;
+  if (check === null) return <p className="docs-figure__note" data-diagram="checking">{t('docs.diagram.checking')}</p>;
+  if (check.state === 'valid') return <><p className="docs-figure__note" data-diagram="valid">{t('docs.diagram.valid')}</p><pre><code>{source}</code></pre></>;
+  if (check.state === 'capability_missing') return <><p className="docs-figure__note" data-diagram="capability-missing">{t('docs.diagram.capability_missing')}</p><pre><code>{source}</code></pre></>;
+  return (
+    <>
+      <p className="docs-figure__note" data-diagram="invalid">{t('docs.diagram.invalid')}</p>
+      <ul data-diagram-issues>
+        {check.issues.map((issue, index) => <li key={index}>{t('docs.diagram.issue', { element: issue.element, field: issue.field, fix: issue.fix })}</li>)}
+      </ul>
+      <pre><code>{source}</code></pre>
+    </>
+  );
+}
+
 function MermaidDiagram({ source, mode, render, t }: {
   readonly source: string; readonly mode: ThemeMode; readonly render: MermaidRenderer; readonly t: OperatorTranslate;
 }) {
@@ -135,10 +211,11 @@ export interface DocsMarkdownProps {
   readonly mode: ThemeMode;
   readonly onOpen: (next: WorkspaceLocation) => void;
   readonly renderMermaid?: MermaidRenderer;
+  readonly validateDiagram?: DiagramValidator;
   readonly t: OperatorTranslate;
 }
 
-export function DocsMarkdown({ text, path, mode, onOpen, renderMermaid = renderMermaidSvg, t }: DocsMarkdownProps) {
+export function DocsMarkdown({ text, path, mode, onOpen, renderMermaid = renderMermaidSvg, validateDiagram = validateDiagramWithCapability, t }: DocsMarkdownProps) {
   // Stable component types keep a drawn diagram mounted across the page's periodic re-renders.
   const components = useMemo((): Components => ({
     p: ({ node, ...props }) => <p {...props} {...line(node)} />,
@@ -160,6 +237,9 @@ export function DocsMarkdown({ text, path, mode, onOpen, renderMermaid = renderM
       if (code?.language === 'mermaid') {
         return <figure className="docs-figure" {...line(node)}><MermaidDiagram source={code.text} mode={mode} render={renderMermaid} t={t} /></figure>;
       }
+      if (code?.language === DIAGRAM_LANGUAGE) {
+        return <figure className="docs-figure" {...line(node)}><DiagramBlock source={code.text} validate={validateDiagram} t={t} /></figure>;
+      }
       return <div {...line(node)}><pre {...props}>{children}</pre></div>;
     },
     a: ({ href, children }) => linkTo(docsLink(href ?? '', path), children, onOpen),
@@ -169,7 +249,7 @@ export function DocsMarkdown({ text, path, mode, onOpen, renderMermaid = renderM
         <ImageIcon size={14} aria-hidden="true" />{alt ? t('docs.image.alt', { alt }) : t('docs.image')}
       </span>
     ),
-  }), [path, mode, onOpen, renderMermaid, t]);
+  }), [path, mode, onOpen, renderMermaid, validateDiagram, t]);
   return (
     <div className="docs-prose" data-docs-body>
       <Markdown remarkPlugins={[remarkGfm]} urlTransform={urlTransform} components={components}>{text}</Markdown>
