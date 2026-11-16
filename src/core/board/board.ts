@@ -42,7 +42,7 @@ import { pathHazardHits, pathHighHits } from './hazards';
  * It is a read model. GitHub and hc stay the authorities; the board keeps
  * their observation time and never writes back.
  */
-export const BOARD_PROTOCOL = 11 as const;
+export const BOARD_PROTOCOL = 12 as const;
 export const BOARD_KIND = 'repo-harness.board' as const;
 
 export type BoardTier = 'low' | 'medium' | 'high';
@@ -114,6 +114,14 @@ export type BoardAcceptanceV1 =
 export type BoardSecondReviewV1 = 'not_required' | 'pending' | 'recorded';
 
 /**
+ * The verdict of `BoardPullRequestV1.gatekeeper_review`, the relay order of the second review (#2910): the reviewer seat starts for this head
+ * only after the seat that is not the reviewer reviewed it. `pass`: a `PASS` row of the head that is not the reviewer's, and no unresolved `FAIL`
+ * row of the head that is not the reviewer's. `fail`: such a `FAIL` row. `none`: no `PASS` row of the head that is not the reviewer's. `unknown`: an
+ * older comment outside the read, or a record without a table row, can change either answer.
+ */
+export type BoardGatekeeperReviewV1 = 'pass' | 'fail' | 'none' | 'unknown';
+
+/**
  * The comment time of the newest acceptance record with a row of each review seat, any subject SHA; null when no record has one.
  * A row is the reviewer's when the family of its model is `BoardV1.reviewer_family`; any other known family is the gatekeeper's
  * (the gatekeeper, gatekeeper-fallback and gatekeeper-deep seats). A row with no known model belongs to no seat.
@@ -157,6 +165,8 @@ export interface BoardPullRequestV1 {
    * of the configured reviewer's model family (`BoardV1.reviewer_family`). `recorded`: such a row exists. `not_required` for any other pull request, and for a High head that meets the rule without such a row.
    */
   readonly second_review: BoardSecondReviewV1;
+  /** `gatekeeperReview`: the verdict of the rows of the head that are not the reviewer's, which opens the relay of the second review. */
+  readonly gatekeeper_review: BoardGatekeeperReviewV1;
   /**
    * The family of the `Runtime:` that the newest writer claim bound to the head branch names, the same on every linked issue (the parent
    * excluded); null when a linked issue has no such claim, a runtime names no family, or the issues disagree. It selects the Medium review
@@ -329,6 +339,8 @@ export interface BoardInputV1 {
 
 const SECOND_REVIEWS: ReadonlySet<unknown> = new Set<BoardSecondReviewV1>(['not_required', 'pending', 'recorded']);
 
+const GATEKEEPER_REVIEWS: ReadonlySet<unknown> = new Set<BoardGatekeeperReviewV1>(['pass', 'fail', 'none', 'unknown']);
+
 const SWITCH_VALUES: ReadonlySet<unknown> = new Set<BoardAcceptanceMergeV1>(['off', 'on', 'unknown']);
 
 /** The `branch` and `status_msg` checks of the board and the parent list decoders: an absent value is a refusal, and null is the explicit none. The error never repeats a refused message. */
@@ -383,6 +395,7 @@ export function decodeBoard(value: unknown): BoardV1 {
     const fail: unknown = pr.review_fail;
     if (fail !== null && !(isRecord(fail) && typeof fail.url === 'string' && isTime(fail.recorded_at))) throw new Error(`invalid board review_fail on PR #${pr.number}`);
     if (!SECOND_REVIEWS.has(pr.second_review)) throw new Error(`invalid board second_review on PR #${pr.number}`);
+    if (!GATEKEEPER_REVIEWS.has(pr.gatekeeper_review)) throw new Error(`invalid board gatekeeper_review on PR #${pr.number}`);
     if (!isReviewRecords(pr.review_records)) throw new Error(`invalid board review_records on PR #${pr.number}`);
     const observedAt: unknown = pr.merge_readiness_observed_at;
     if (pr.merge_readiness === null ? observedAt !== null : typeof observedAt !== 'string' || Number.isNaN(Date.parse(observedAt))) {
@@ -478,6 +491,27 @@ function reviewFail(read: BoardPullRequestReadV1): BoardPullRequestV1['review_fa
     .some(row => row.subject_sha === read.head_sha && row.verdict === 'FAIL' && !resolvedFail(record, row, dispositions)));
   const newest = failing.reduce<BoardCommentV1 | null>((latest, record) => (latest === null || record.created_at >= latest.created_at ? record : latest), null);
   return newest === null ? null : Object.freeze({ url: newest.url, recorded_at: newest.created_at });
+}
+
+/**
+ * The verdict of the rows of the head that are not the reviewer's (`BoardPullRequestV1.gatekeeper_review`). A row is the reviewer's when the
+ * family of its model is `reviewerFamily`; every other row of the head, a row with no known model included, counts here, so the relay opens
+ * for a head that any other seat reviewed. Only a `PASS` row opens the relay: a `FAIL` row that a disposition resolves stops failing the head,
+ * but a cleared failure is no review, so it sets no pass either. A `FAIL` row that no disposition resolves fails the head.
+ */
+function gatekeeperReview(read: BoardPullRequestReadV1, reviewerFamily: string | null): BoardGatekeeperReviewV1 {
+  if (read.comments.truncated) return 'unknown';
+  const dispositions = protocolComments(read.comments, ACCEPTANCE_DISPOSITION_HEADER).flatMap(comment => parseAcceptanceDisposition(comment) ?? []);
+  let verdict: BoardGatekeeperReviewV1 = 'none';
+  for (const record of protocolComments(read.comments, ACCEPTANCE_RECORD_HEADER)) {
+    const rows = parseAcceptanceRecord(record);
+    if (rows === null) return 'unknown';
+    for (const row of rows.filter(row => row.subject_sha === read.head_sha && (row.model === null || modelFamily(row.model) !== reviewerFamily))) {
+      if (row.verdict === 'PASS') verdict = 'pass';
+      else if (!resolvedFail(record, row, dispositions)) return 'fail';
+    }
+  }
+  return verdict;
 }
 
 /** The newest acceptance record of each review seat (`BoardPullRequestV1.review_records`). */
@@ -666,6 +700,7 @@ export function projectBoard(input: BoardInputV1): BoardV1 {
       merge_readiness_observed_at: readiness?.observed_at ?? null,
       tier,
       second_review: second,
+      gatekeeper_review: gatekeeperReview(read, input.reviewer_family),
       writer_family: writerFamily(read, closes, refs, input.parent),
       merge_hold: readMergeHold(read.comments, false),
     });

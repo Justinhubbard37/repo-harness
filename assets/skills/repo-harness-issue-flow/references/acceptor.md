@@ -62,9 +62,12 @@ The table rules govern how the row combines with the review.
 1. **Round 1** is the full tier review. Round 1 of a High PR has two
    reviews of one subject SHA, and both take the same round number: the
    gatekeeper and a second reviewer. At least one of the two is from a
-   model family different from the writer's (§1). They run in parallel,
-   and each is blind to the other's result. Each review has its own
-   `acceptance claim` and its own record row. `review publish` keys a
+   model family different from the writer's (§1). They run as a relay
+   (#2910): the gatekeeper reads first, and the second reviewer starts
+   only after the gatekeeper recorded `PASS` for that head. The reviewer
+   is then blind to the findings of that gatekeeper round, and it reads
+   the delta from the last head that the reviewer itself reviewed. Each
+   review has its own `acceptance claim` and its own record row. `review publish` keys a
    claim by round, subject and `Agent:` line, so two reviewers with an
    identical `Agent:` line on one round share one claim and count once.
    The board accepts a High head, or a head of unknown tier, only when it
@@ -89,6 +92,9 @@ The table rules govern how the row combines with the review.
    for the new head. A Medium head needs one delta check row under the
    Medium rule above. A High head needs the round-1 rule: two delta
    check rows from distinct claims, at least one different-family.
+   A reviewer `FAIL` sends the fix back to the gatekeeper first: the fix
+   is a new head, it starts the gatekeeper, and the reviewer runs again
+   only after the gatekeeper `PASS` of that head.
 2. **Round 2.** The reviewer or reviewers that raised a blocking finding
    read the fix delta (the hunks that changed after round 1) and the
    sibling cases of each of its findings. On a High or unknown-tier PR,

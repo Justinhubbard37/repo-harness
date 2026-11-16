@@ -37,7 +37,7 @@ const CI_PASSED = { name: CI, status: 'success' } as const;
 function pullRequest(number: number, head_ref: string, required_check: BoardPullRequestV1['required_check'], acceptance: BoardPullRequestV1['acceptance'], at: string): BoardPullRequestV1 {
   return {
     number, url: url('pull', number), state: 'open', is_draft: false, base_ref: 'main', base_sha: 'a'.repeat(40), head_ref, head_sha: 'b'.repeat(40),
-    head_committed_at: at, merged_at: null, closes: [], refs: [OFFICE_PARENT], files: [], required_check, acceptance, merge_readiness: null, merge_readiness_observed_at: null, tier: 'medium', second_review: 'not_required', writer_family: null, merge_hold: { status: 'none' },
+    head_committed_at: at, merged_at: null, closes: [], refs: [OFFICE_PARENT], files: [], required_check, acceptance, merge_readiness: null, merge_readiness_observed_at: null, tier: 'medium', second_review: 'not_required', gatekeeper_review: 'none', writer_family: null, merge_hold: { status: 'none' },
     review_fail: null, review_records: { status: 'observed', gatekeeper: null, reviewer: null }, open_questions: { status: 'observed', questions: [] },
   };
 }

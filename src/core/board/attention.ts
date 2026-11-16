@@ -291,11 +291,11 @@ function a9(context: Context): void {
   }
 }
 
-/** A10: an open High pull request whose head does not meet the High acceptance rule has no reviewer row for its head (`second_review: pending`). No merge gate holds it, so the board does. */
+/** A10: an open High pull request whose head does not meet the High acceptance rule has no reviewer row for its head (`second_review: pending`) and its gatekeeper passed it. No merge gate holds it, so the board does. Before the gatekeeper PASS the head waits for a start, not for attention (#2910). */
 function a10(context: Context): void {
-  for (const pr of openPullRequests(context.board).filter(entry => !entry.is_draft && entry.second_review === 'pending')) {
+  for (const pr of openPullRequests(context.board).filter(entry => !entry.is_draft && entry.second_review === 'pending' && entry.gatekeeper_review === 'pass')) {
     find(context, 'A10', { issues: itemsOf(context.board, pr), pull_requests: [pr.number] },
-      `#${pr.number} is ${pr.tier === null ? 'of unknown tier (counted as High)' : 'High tier'} and has no review of ${pr.head_sha.slice(0, 9)} from the reviewer seat (${context.board.reviewer_family === null ? 'family unknown' : `family ${context.board.reviewer_family}`}); start the reviewer seat`);
+      `#${pr.number} is ${pr.tier === null ? 'of unknown tier (counted as High)' : 'High tier'}, the gatekeeper passed ${pr.head_sha.slice(0, 9)}, and it has no review of that head from the reviewer seat (${context.board.reviewer_family === null ? 'family unknown' : `family ${context.board.reviewer_family}`}); start the reviewer seat`);
   }
 }
 

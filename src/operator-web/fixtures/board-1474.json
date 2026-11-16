@@ -1,5 +1,5 @@
 {
-  "protocol": 11,
+  "protocol": 12,
   "kind": "repo-harness.board",
   "observed_at": "2026-11-02T23:29:42.936Z",
   "repository": "Ancienttwo/repo-harness",
@@ -369,7 +369,8 @@
       "merge_hold": {
         "status": "none"
       },
-      "second_review": "not_required"
+      "second_review": "not_required",
+      "gatekeeper_review": "pass"
     },
     {
       "number": 1494,
@@ -491,7 +492,8 @@
       "merge_hold": {
         "status": "none"
       },
-      "second_review": "not_required"
+      "second_review": "not_required",
+      "gatekeeper_review": "none"
     },
     {
       "number": 1499,
@@ -592,7 +594,8 @@
       "merge_hold": {
         "status": "none"
       },
-      "second_review": "not_required"
+      "second_review": "not_required",
+      "gatekeeper_review": "none"
     }
   ],
   "path_owners": {

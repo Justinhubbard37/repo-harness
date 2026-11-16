@@ -347,8 +347,17 @@ test('High acceptance: PASS rows of the head from two distinct claims, one recor
   expect(board.pull_requests.map(pr => [pr.number, pr.tier, pr.second_review, pr.acceptance.status])).toEqual([
     [1491, 'high', 'pending', 'not_accepted'], [1494, null, 'pending', 'not_accepted'], [1499, 'high', 'recorded', 'not_accepted'],
   ]);
-  // A Claude writer claim no longer skips the second review: A10 reads the open, non-draft #1491.
+  // A Claude writer claim no longer skips the second review: A10 reads the open, non-draft #1491, whose gatekeeper passed the head.
   expect(evaluateBoardAttention(board).findings.filter(finding => finding.rule === 'A10').map(finding => finding.pull_requests)).toEqual([[1491]]);
+  // The gatekeeper verdict reads the rows of the head that are not the reviewer's: #1491 and #1494 each hold a Pi Codex PASS row, and #1499 holds only its Claude reviewer row.
+  expect(board.pull_requests.map(pr => [pr.number, pr.gatekeeper_review])).toEqual([[1491, 'pass'], [1494, 'pass'], [1499, 'none']]);
+  // A10 waits for the gatekeeper PASS (#2910): a pending second review of a head that no other seat reviewed, or that another seat failed, is no finding yet.
+  const relay = (gatekeeper_review: BoardPullRequestV1['gatekeeper_review']) => evaluateBoardAttention({
+    ...board,
+    pull_requests: board.pull_requests.map(pr => pr.number === 1491 ? { ...pr, second_review: 'pending', gatekeeper_review } : pr),
+  } as BoardV1).findings.filter(finding => finding.rule === 'A10').map(finding => finding.pull_requests);
+  const verdicts: BoardPullRequestV1['gatekeeper_review'][] = ['pass', 'none', 'fail', 'unknown'];
+  expect(verdicts.map(relay)).toEqual([[[1491]], [], [], []]);
   // A row: the reviewer, the claim line it cites, its relation (null drops the line), verdict, subject (default the head) and round.
   type Row = readonly [harness: 'claude' | 'codex' | 'pi', claimLine: string, relation?: ModelRelation | null, verdict?: 'PASS' | 'FAIL', sha?: string, round?: number, model?: string];
   const OLD = 'e'.repeat(40);
@@ -740,9 +749,10 @@ test('decoders refuse an unknown protocol or kind', () => {
   expect(() => decodeBoard({ protocol: 8, kind: 'repo-harness.board' })).toThrow('unsupported board protocol: 8');
   // A protocol-9 board has no review_records field.
   expect(() => decodeBoard({ protocol: 9, kind: 'repo-harness.board' })).toThrow('unsupported board protocol: 9');
-  // A protocol-10 board has claude_review and per-harness review_records, and no reviewer_family.
+  // A protocol-10 board has claude_review and per-harness review_records, and no reviewer_family; a protocol-11 board has no gatekeeper_review.
   expect(() => decodeBoard({ protocol: 10, kind: 'repo-harness.board' })).toThrow('unsupported board protocol: 10');
-  expect(() => decodeBoard({ protocol: 11, kind: 'fleet_board_snapshot' })).toThrow('unsupported board kind: fleet_board_snapshot');
+  expect(() => decodeBoard({ protocol: 11, kind: 'repo-harness.board' })).toThrow('unsupported board protocol: 11');
+  expect(() => decodeBoard({ protocol: 12, kind: 'fleet_board_snapshot' })).toThrow('unsupported board kind: fleet_board_snapshot');
   const block = (value: Json) => `repo-harness plan\n\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\`\n`;
   const valid = { protocol: 2, kind: 'repo-harness.plan', merge_order: [1475], holds: [], seat_limits: { worker: 3 } } as const;
   expect(decodePlanBlock(block(valid))).toEqual(valid);
@@ -765,7 +775,7 @@ test('decoders refuse a missing or invalid plan revision, merge policy or seat b
   for (const invalid of [plan(undefined), plan(0), plan(1.5), plan('1'), noPolicy, { ...recorded, acceptance_merge: 'maybe' }, board(undefined), board(''),
     item({ claim: undefined }), item({ claim: { status: 'active', url: 'u' } }), item({ open_questions: { status: 'observed' } }), pull({ open_questions: undefined }), pull({ review_fail: { url: 'u' } }),
     pull({ review_records: undefined }), pull({ review_records: { status: 'observed', gatekeeper: 'x', reviewer: null } }), pull({ review_records: { status: 'observed', claude: null, codex: null, pi: null } }),
-    pull({ second_review: undefined }), pull({ second_review: 'maybe' }), { ...recorded, reviewer_family: undefined }, { ...recorded, reviewer_family: '' }]) {
+    pull({ second_review: undefined }), pull({ second_review: 'maybe' }), pull({ gatekeeper_review: undefined }), pull({ gatekeeper_review: 'maybe' }), { ...recorded, reviewer_family: undefined }, { ...recorded, reviewer_family: '' }]) {
     expect(() => decodeBoard(invalid)).toThrow('invalid board');
   }
   for (const valid of [plan(null), plan(7), { ...recorded, acceptance_merge: 'unknown' }, { ...recorded, reviewer_family: null }, board(null), board('main')]) expect(decodeBoard(valid)).toEqual(valid);
@@ -1409,7 +1419,7 @@ test('acceptance disposition: a FAIL row is ignored only when every finding of i
   });
   const failAt = '2026-11-02T22:00:00Z';
   const failUrl = `${base}/pull/1499#issuecomment-${Date.parse(failAt)}`;
-  const projected = (dispositions: string[], mangleSecond = false) => {
+  const projected = (dispositions: string[], mangleSecond = false, laterPass = true) => {
     const read = replay({
       owners: (results) => { results.push({ path: boardWriter, matched: false, ambiguous: false, owningCapabilityId: null }); },
       parent: (data) => { issueNode(data, 1476).labels.nodes.push({ name: 'tier:medium' }); },
@@ -1424,8 +1434,10 @@ test('acceptance disposition: a FAIL row is ignored only when every finding of i
         // A bullet marker outside the record shape makes the finding list unreadable.
         pr1499.comments.nodes.push(comment(mangleSecond ? failRecord.replace('- P2 R1-2', '* P2 R1-2') : failRecord, failAt));
         const passClaimAt = '2026-11-02T22:20:00Z';
-        pr1499.comments.nodes.push(comment(renderAcceptanceClaim(receipt(head, 'PASS', 2)), passClaimAt));
-        pr1499.comments.nodes.push(comment(renderAcceptanceRecord(receipt(head, 'PASS', 2), `${base}/pull/1499#issuecomment-${Date.parse(passClaimAt)}`), '2026-11-02T22:30:00Z'));
+        if (laterPass) {
+          pr1499.comments.nodes.push(comment(renderAcceptanceClaim(receipt(head, 'PASS', 2)), passClaimAt));
+          pr1499.comments.nodes.push(comment(renderAcceptanceRecord(receipt(head, 'PASS', 2), `${base}/pull/1499#issuecomment-${Date.parse(passClaimAt)}`), '2026-11-02T22:30:00Z'));
+        }
         dispositions.forEach((body, index) => pr1499.comments.nodes.push(comment(body, `2026-11-02T22:4${index}:00Z`)));
       },
     });
@@ -1449,6 +1461,11 @@ test('acceptance disposition: a FAIL row is ignored only when every finding of i
     evaluateBoardAttention(board).findings.filter(finding => finding.rule === 'A15').map(finding => finding.message.replace(/\(.*\)$/u, ''))];
   expect(a15(projected([disposition('R1-1')]))).toEqual([failAt, ['#1499 has a FAIL record on 23627c4f5 for 89 min and no new head ']]);
   expect(a15(projected([disposition('R1-1, R1-2')]))).toEqual([null, []]);
+  // The relay (#2910) opens on a real `PASS` row only: a disposition clears a failure, it does not supply the review. #1499's records name no
+  // model, so every row of the head counts as a row that is not the reviewer's.
+  const verdict = (board: BoardV1) => board.pull_requests.find(entry => entry.number === 1499)!.gatekeeper_review;
+  expect([verdict(projected([])), verdict(projected([disposition('R1-1, R1-2')]))]).toEqual(['fail', 'pass']);
+  expect([verdict(projected([], false, false)), verdict(projected([disposition('R1-1, R1-2')], false, false))]).toEqual(['fail', 'none']);
 });
 
 test('a rendered record with multiline finding values parses to its finding IDs', () => {
@@ -1713,7 +1730,7 @@ test('watch window: idle sends at once, blocked waits, working sends at window e
   const questions = 'P1 A16: #1475 has a question to the coordinator with no answer for 286 min (https://github.com/Ancienttwo/repo-harness/issues/1475#issuecomment-6585298933); '
     + 'P1 A16: #1479 has a question to the coordinator with no answer for 282 min (https://github.com/Ancienttwo/repo-harness/issues/1479#issuecomment-6585387749); '
     + 'P1 A16: #1479 has a question to the coordinator with no answer for 273 min (https://github.com/Ancienttwo/repo-harness/issues/1479#issuecomment-6585624819); ';
-  const orchestrator = `[rh-attention] #1474 ${questions}P2 A7: the daily full run is failure (https://github.com/Ancienttwo/repo-harness/actions/runs/41358255043) and no CI repair issue is open; P2 A10: #1491 is of unknown tier (counted as High) and has no review of 20e2cbd21 from the reviewer seat (family anthropic); start the reviewer seat`;
+  const orchestrator = `[rh-attention] #1474 ${questions}P2 A7: the daily full run is failure (https://github.com/Ancienttwo/repo-harness/actions/runs/41358255043) and no CI repair issue is open; P2 A10: #1491 is of unknown tier (counted as High), the gatekeeper passed 20e2cbd21, and it has no review of that head from the reviewer seat (family anthropic); start the reviewer seat`;
   expect(hc.calls().filter(args => args[0] !== 'get')).toEqual([
     ['send', '--json', '--', 't3', orchestrator],
     ['send', '--json', '--', 't9', expect.stringMatching(/^\[rh-attention\] #1474 P2 R2: #1494 and #1499 both change .+ with no dependency edge$/u)],
