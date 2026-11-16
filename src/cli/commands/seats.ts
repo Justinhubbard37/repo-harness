@@ -2,8 +2,8 @@ import { Command } from 'commander';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { CLAUDE_BUILTIN_AGENT_TYPES, SeatPaneNameError, buildSeatLaunch, seatPaneName, seatTabName, type SeatLaunchV1 } from '../../core/board/seat-launch';
-import { LAUNCH_SEAT_IDS, SeatsConfigMigrationRequiredError, decodeSeatsConfig, isWorkerSeat, unavailablePiSeat, type LaunchSeatId, type SeatConfigV1, type SeatsConfigV1 } from '../../core/board/seats-settings';
-import { claudeReserved, effectiveGatekeeper, effectiveSeatConfig, seatAccount, seatAccountQuotas, seatState, type SeatRouteV1 } from '../../core/board/seat-routing';
+import { LAUNCH_SEAT_IDS, SeatsConfigMigrationRequiredError, decodeSeatsConfig, isReviewSeat, isWorkerSeat, unavailablePiSeat, type LaunchSeatId, type SeatConfigV1, type SeatsConfigV1 } from '../../core/board/seats-settings';
+import { claudeReserved, deepGatekeeperRepeatsGatekeeper, effectiveGatekeeper, effectiveSeatConfig, seatAccount, seatAccountQuotas, seatState, type SeatRouteV1 } from '../../core/board/seat-routing';
 import { classifyQuotaReading, type QuotaAccount, type QuotaReading } from '../../core/board/quota';
 import { readClaudeQuota, readCodexQuota } from '../../effects/board/quota';
 import { version as PACKAGE_VERSION } from '../../../package.json';
@@ -23,7 +23,7 @@ import { seatResetAction, seatResetIdentity, seatResetSteps, type SeatResetIdent
 const CLI_ENTRY = fileURLToPath(new URL('../index.ts', import.meta.url));
 
 class SeatsCommandError extends Error {
-  constructor(readonly code: 'seat_unknown' | 'seat_not_configured' | 'seat_quota_exhausted' | 'seat_quota_reserved' | 'seat_provider_unavailable' | 'owner_exception_invalid' | 'config_invalid' | 'label_value_invalid' | 'repository_id_required' | 'terminal_unknown' | 'seat_identity_missing' | 'seat_session_unknown' | 'seat_context_unknown', message: string) {
+  constructor(readonly code: 'seat_unknown' | 'seat_not_configured' | 'seat_quota_exhausted' | 'seat_quota_reserved' | 'seat_provider_unavailable' | 'seat_model_repeats_gatekeeper' | 'owner_exception_invalid' | 'config_invalid' | 'label_value_invalid' | 'repository_id_required' | 'terminal_unknown' | 'seat_identity_missing' | 'seat_session_unknown' | 'seat_context_unknown', message: string) {
     super(message);
   }
 }
@@ -78,11 +78,11 @@ function seatLabels(seat: LaunchSeatId, input: SeatLabelInput): HcLabels | undef
   for (const [name, value] of Object.entries({ repositoryId, ...dispatch })) {
     if (value !== undefined && !POSITIVE.test(value)) throw new SeatsCommandError('label_value_invalid', `--${name === 'repositoryId' ? 'repository-id' : name} must be a positive decimal integer.`);
   }
-  if ((seat === 'gatekeeper' || seat === 'reviewer') && (input.pr === undefined || input.issue !== undefined || release !== undefined)) {
+  if (isReviewSeat(seat) && (input.pr === undefined || input.issue !== undefined || release !== undefined)) {
     throw new SeatPaneNameError(`The ${seat} seat needs --pr and takes no --issue or --release.`);
   }
   if (repositoryId === undefined) {
-    if ((seat === 'gatekeeper' || seat === 'reviewer') && input.parent === undefined && qualifier === undefined) return undefined;
+    if (isReviewSeat(seat) && input.parent === undefined && qualifier === undefined) return undefined;
     if ([...Object.values(dispatch), release, qualifier].some(value => value !== undefined)) {
       throw new SeatsCommandError('repository_id_required', '--issue, --pr, --parent, --release and --qualifier need --repository-id.');
     }
@@ -156,9 +156,12 @@ async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configur
   readonly seat: SeatConfigV1; readonly modeKnown: boolean;
 }> {
   const readings: QuotaReading[] = [];
+  const done = new Set<QuotaAccount>();
   const read = async (account: QuotaAccount | null) => {
-    if (account === 'claude') readings.push(readClaudeQuota(env));
-    if (account === 'chatgpt') readings.push(await readCodexQuota(env, PACKAGE_VERSION));
+    if (account !== null && !done.has(account)) {
+      done.add(account);
+      readings.push(account === 'claude' ? readClaudeQuota(env) : await readCodexQuota(env, PACKAGE_VERSION));
+    }
     return seatAccountQuotas(readings.map(reading => classifyQuotaReading(reading, Date.now())), seats.routing);
   };
   const own = seatAccount(configured);
@@ -167,6 +170,12 @@ async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configur
   const fallback = seats['gatekeeper-fallback'];
   if (id === 'gatekeeper' && fallback !== null && own !== null && quota[own].state === 'exhausted' && seatAccount(fallback) !== own) {
     quota = await read(seatAccount(fallback));
+  }
+  // The duplicate-model check compares with the route that the gatekeeper launch selects, so it reads the accounts of that selection.
+  if (id === 'gatekeeper-deep') {
+    const gatekeeperAccount = seatAccount(seats.gatekeeper);
+    quota = await read(gatekeeperAccount);
+    if (gatekeeperAccount !== null && quota[gatekeeperAccount].state === 'exhausted' && fallback !== null) quota = await read(seatAccount(fallback));
   }
   const gatekeeper = id === 'gatekeeper' ? effectiveGatekeeper(seats, quota) : null;
   const launchedId = gatekeeper?.id === 'gatekeeper-fallback' ? 'gatekeeper-fallback' : id;
@@ -182,6 +191,9 @@ async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configur
   // The exception lifts only this refusal, so a launch without one has nothing to record.
   if (!reserved && ownerException !== undefined) {
     throw new SeatsCommandError('owner_exception_invalid', `The ${id} launch has no Claude quota reservation to lift. Launch it without --owner-exception.`);
+  }
+  if (id === 'gatekeeper-deep' && deepGatekeeperRepeatsGatekeeper(seats, quota)) {
+    throw new SeatsCommandError('seat_model_repeats_gatekeeper', 'The gatekeeper-deep seat runs the same model as the gatekeeper. Set a different model on the Seats page. See the quota routes.');
   }
   const seat = gatekeeper?.id === 'gatekeeper-fallback' ? gatekeeper.seat : effectiveSeatConfig(id, seats, quota)!;
   const unavailable = unavailablePiSeat(seat, seats.routing);
@@ -235,7 +247,7 @@ async function effectiveSeatLaunch(seat: string, labels: SeatLabelInput, env: No
   // The pane name needs the registry prefix, so it comes only with the seat labels.
   const name = labels.repositoryId === undefined ? null : seatPaneName({
     prefix: panePrefix(cwd, env), seat: id, issue: isWorkerSeat(id) ? labels.issue : undefined,
-    pr: id === 'gatekeeper' || id === 'reviewer' ? labels.pr : undefined, release: labels.release, qualifier: labels.qualifier,
+    pr: isReviewSeat(id) ? labels.pr : undefined, release: labels.release, qualifier: labels.qualifier,
   });
   const tab = labels.repositoryId === undefined ? null : seatTabName(id, labels.parent);
   const agentTypes = effective.runtime === 'claude' && effective.fleet.length > 0

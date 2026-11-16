@@ -164,7 +164,7 @@ describe('agents page seats section', () => {
     expect(request_id).toMatch(UUID);
     expect(expected_revision).toMatch(/^sha256:/u);
     expect(seats.advisor.fleet).toEqual(['deep-reasoner', 'explorer', 'gatekeeper']);
-    expect(Object.keys(seats)).toEqual(['orchestrator', 'advisor', 'worker', 'worker-deep', 'worker-important', 'worker-important-fast', 'worker-light', 'gatekeeper', 'gatekeeper-fallback', 'reviewer', 'routing']);
+    expect(Object.keys(seats)).toEqual(['orchestrator', 'advisor', 'worker', 'worker-deep', 'worker-important', 'worker-important-fast', 'worker-light', 'gatekeeper', 'gatekeeper-deep', 'gatekeeper-fallback', 'reviewer', 'routing']);
     expect(document.querySelector('[data-seats-saved]')?.textContent).toContain('Running panes do not change');
 
     await click(pane('orchestrator'));
@@ -229,7 +229,7 @@ describe('agents page seats section', () => {
 
   test('every seat has a card; a review seat shows only its read, shell and network groups and no fleet; modes stay unknown while quota is not read', async () => {
     await mount(seatsProps([]));
-    expect(all('[role="group"][aria-label="Seat"] button')).toHaveLength(10);
+    expect(all('[role="group"][aria-label="Seat"] button')).toHaveLength(11);
     await click(pick('gatekeeper'));
     expect(document.querySelector('[data-seat-card]')?.getAttribute('data-seat-card')).toBe('gatekeeper');
     expect(all('[data-seat-tools] [role="switch"]').map(node => node.getAttribute('aria-label'))).toEqual(['Allow Read code', 'Allow Shell', 'Allow Network']);

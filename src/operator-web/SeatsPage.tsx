@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Banner, Button, Empty, Loader, Switch, cn } from '@cloudflare/kumo';
 import { seatAccountQuotas, seatOnCredits } from '../core/board/seat-routing';
 import { buildSeatLaunch, type SeatLimitLevel } from '../core/board/seat-launch';
-import { CODEX_CREDIT_MODES, SEAT_IDS, SEAT_TOOLS, decodeSeatsSettingsRequest, seatTakesFleet, type OptionalSeatId, type RoutingClass, type SeatId, type SeatRuntime, type SeatsConfigV1, type SeatsSettingsV1 } from '../core/board/seats-settings';
+import { CODEX_CREDIT_MODES, SEAT_IDS, SEAT_TOOLS, decodeSeatsSettingsRequest, isReviewSeat, seatTakesFleet, type OptionalSeatId, type RoutingClass, type SeatId, type SeatRuntime, type SeatsConfigV1, type SeatsSettingsV1 } from '../core/board/seats-settings';
 import type { SetupSnapshotV2 } from '../core/setup/types';
 import type { OperatorTranslate } from './i18n';
 import type { QuotaSection } from './quota';
@@ -32,8 +32,8 @@ function launchOf(seat: SeatId): string {
   if (seat === 'orchestrator') return `herdr-app do tab.new --name "$(${ARGV.orchestrator} --json | jq -r .tab)" --space <id> --folder <repo> --argv "$(${ARGV.orchestrator})"`;
   if (seat === 'advisor') return `herdr-app do pane.split --direction right --pane <orchestrator-pane> --argv "$(${ARGV.advisor})"`;
   // The fallback launches as the effective gatekeeper, so its card shows the gatekeeper command.
-  const argv = seat === 'gatekeeper' || seat === 'gatekeeper-fallback' || seat === 'reviewer'
-    ? `rh seats argv ${seat === 'reviewer' ? seat : 'gatekeeper'} --repository-id <repository-id> --pr <n>`
+  const argv = isReviewSeat(seat)
+    ? `rh seats argv ${seat === 'gatekeeper-fallback' ? 'gatekeeper' : seat} --repository-id <repository-id> --pr <n>`
     : ARGV.worker.replace('argv worker', `argv ${seat}`);
   return `herdr-app do tab.new --name "$(${argv} --json | jq -r .tab)" --space <id> --folder <worktree> --argv "$(${argv})" --task <packet>`;
 }
@@ -161,7 +161,7 @@ function SeatCard({ seat, form, agents, settings, setup, locked, t }: {
   const runtime = ranges.runtimes.find(entry => entry.id === draft.runtime)!;
   const range = ranges.seats[seat];
   const recommended = seat !== 'worker' && defaults[seat]?.runtime === draft.runtime ? defaults[seat] : null;
-  const review = seat === 'gatekeeper' || seat === 'gatekeeper-fallback' || seat === 'reviewer';
+  const review = isReviewSeat(seat);
   const check = (on: boolean) => (on ? ' ✓' : '');
   const models = [
     { value: null, label: t('seats.model.hostDefault') },

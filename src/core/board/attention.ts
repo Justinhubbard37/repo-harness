@@ -4,7 +4,7 @@ import type { BoardItemV1, BoardPullRequestV1, BoardReviewHarness, BoardTerminal
 import { hcStatusClass, liveSeats, seatItem, seatPullRequest } from './desk';
 import { pathHazardHits, pathHighHits } from './hazards';
 import { compareHcVersions } from '../terminal/herdr-pin';
-import { WORKER_SEAT_IDS } from './seats-settings';
+import { SEAT_IDS, WORKER_SEAT_IDS, isReviewSeat } from './seats-settings';
 
 /**
  * Attention rules over one board. Each rule is a pure function of the board
@@ -42,7 +42,7 @@ export const R4_STALLED_MS = 4 * 60 * MINUTE;
 export const R6_READY_MIN = 2;
 const WORKER_SEATS = new Set<string>(WORKER_SEAT_IDS);
 /** The review seat ids of the seats config; the gatekeeper-fallback seat launches under the gatekeeper label (#2253). */
-const REVIEW_SEATS = new Set<string>(['gatekeeper', 'gatekeeper-fallback', 'reviewer']);
+const REVIEW_SEATS = new Set<string>(SEAT_IDS.filter(isReviewSeat));
 /** The hc agent name of each review runtime. */
 const AGENT_HARNESS: ReadonlyMap<string, BoardReviewHarness> = new Map([['claude-code', 'claude'], ['codex', 'codex'], ['pi', 'pi']]);
 const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure']);

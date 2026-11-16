@@ -57,7 +57,7 @@ test('update removes stored routing mode and hyper values once, keeps a null wor
       expect(() => migrateSeatsConfiguration({ HOME: home })).toThrow('seats_config_invalid');
       expect(readFileSync(path, 'utf8')).toBe(invalid);
     }
-    const { 'gatekeeper-fallback': _fallback, ...withoutFallback } = DEFAULT_SEATS_CONFIG;
+    const { 'gatekeeper-fallback': _fallback, 'gatekeeper-deep': _deep, ...withoutFallback } = DEFAULT_SEATS_CONFIG;
     expect(() => decodeSeatsConfig(withoutFallback)).toThrow(expect.objectContaining({ code: 'seats_config_migration_required' }));
     writeFileSync(path, JSON.stringify({ seats: withoutFallback }));
     expect(migrateSeatsConfiguration({ HOME: home })).toBe(true);

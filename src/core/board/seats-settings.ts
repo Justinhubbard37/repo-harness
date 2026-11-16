@@ -9,7 +9,7 @@ export type WorkerSeatId = typeof WORKER_SEAT_IDS[number];
 export const FRONTEND_SEAT_IDS = ['worker-important', 'worker-important-fast'] as const;
 export const ROUTING_CLASSES = ['important_deep', 'important_fast', 'simple_deep', 'simple_fast', 'frontend'] as const;
 export type RoutingClass = typeof ROUTING_CLASSES[number];
-export const SEAT_IDS = ['orchestrator', 'advisor', ...WORKER_SEAT_IDS, 'gatekeeper', 'gatekeeper-fallback', 'reviewer'] as const;
+export const SEAT_IDS = ['orchestrator', 'advisor', ...WORKER_SEAT_IDS, 'gatekeeper', 'gatekeeper-deep', 'gatekeeper-fallback', 'reviewer'] as const;
 export type SeatId = typeof SEAT_IDS[number];
 /** The gatekeeper-fallback seat launches only as the effective gatekeeper (#2253), under the gatekeeper label and brief. */
 export type LaunchSeatId = Exclude<SeatId, 'gatekeeper-fallback'>;
@@ -17,7 +17,7 @@ export const LAUNCH_SEAT_IDS = SEAT_IDS.filter((id): id is LaunchSeatId => id !=
 /** The seats that may be null in the section. */
 export type OptionalSeatId = 'worker-light' | 'gatekeeper-fallback';
 const isOptionalSeat = (id: SeatId): id is OptionalSeatId => id === 'worker-light' || id === 'gatekeeper-fallback';
-export const isReviewSeat = (id: SeatId): boolean => id === 'gatekeeper' || id === 'gatekeeper-fallback' || id === 'reviewer';
+export const isReviewSeat = (id: SeatId): boolean => id === 'gatekeeper' || id === 'gatekeeper-deep' || id === 'gatekeeper-fallback' || id === 'reviewer';
 export const isWorkerSeat = (seat: SeatId): seat is WorkerSeatId => WORKER_SEAT_IDS.includes(seat as WorkerSeatId);
 
 /** The runtimes that run in a Herdr pane. */
@@ -101,6 +101,7 @@ export const DEFAULT_SEATS_CONFIG: SeatsConfigV1 = Object.freeze({
   'worker-important-fast': Object.freeze({ runtime: 'claude', model: 'sonnet', effort: 'medium', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
   'worker-light': Object.freeze({ runtime: 'pi', model: 'magpie/cursor/deepseek-v41-flash-1017', effort: null, tools: WORKER_TOOLS, fleet: Object.freeze([]) }),
   gatekeeper: Object.freeze({ runtime: 'codex', model: 'gpt-6.1-terra', effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
+  'gatekeeper-deep': Object.freeze({ runtime: 'codex', model: 'gpt-6.1-sol', effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
   'gatekeeper-fallback': null,
   reviewer: Object.freeze({ runtime: 'claude', model: 'opus', effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
   routing: Object.freeze({

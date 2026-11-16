@@ -173,6 +173,33 @@ describe('seat quota routing', () => {
     expect(line(null, 97)).toBe('gatekeeper: none (chatgpt exhausted)');
     expect(line(DEFAULT_SEATS_CONFIG.reviewer, 97, 97)).toBe('gatekeeper: none (chatgpt exhausted; gatekeeper-fallback: claude exhausted, reserved for advisor and orchestrator)');
     expect(line(pi, 40)).toBe(line(null, 40));
+    const exhausted = { ...DEFAULT_SEATS_CONFIG };
+    const routes = formatSeatRoutes(exhausted, seatAccountQuotas([codex(97)], exhausted.routing)).split('\n');
+    expect(routes).toContain('gatekeeper-deep: none (chatgpt exhausted)');
+    const hyper = seatAccountQuotas([codex(10)], DEFAULT_SEATS_CONFIG.routing);
+    expect(hyper.chatgpt.mode).toBe('hyper');
+    expect(effectiveSeatConfig('gatekeeper-deep', DEFAULT_SEATS_CONFIG, hyper)).toEqual(DEFAULT_SEATS_CONFIG['gatekeeper-deep']);
+    expect(effectiveSeatConfig('gatekeeper', DEFAULT_SEATS_CONFIG, hyper).model).not.toBe(DEFAULT_SEATS_CONFIG['gatekeeper-deep'].model);
+    const same = { ...DEFAULT_SEATS_CONFIG, 'gatekeeper-deep': { ...DEFAULT_SEATS_CONFIG['gatekeeper-deep'], model: 'magpie/codex/gpt-6-astra' } };
+    expect(formatSeatRoutes(same, hyper).split('\n')).toContain('gatekeeper-deep: none (same model as gatekeeper)');
+  });
+
+  test('gatekeeper-deep repeats the route that the gatekeeper launch selects, after the default model and the Pi Codex prefix resolve', () => {
+    const codex = classifyQuotaReading(decodeCodexRateLimitsResult({ rateLimits: {
+      primary: { usedPercent: 60, windowDurationMins: 10080, resetsAt: (NOW + 84 * HOUR) / 1000 },
+    } }, new Date(NOW).toISOString()), NOW);
+    const repeats = (patch: Partial<Record<'gatekeeper' | 'gatekeeper-deep' | 'gatekeeper-fallback', SeatConfigV1>>, claudeUsed = 10) => {
+      const seats = { ...DEFAULT_SEATS_CONFIG, ...patch };
+      return formatSeatRoutes(seats, seatAccountQuotas([codex, claude({ seven_day: week(claudeUsed, 84) })], seats.routing))
+        .split('\n').includes('gatekeeper-deep: none (same model as gatekeeper)');
+    };
+    const sol = { ...DEFAULT_SEATS_CONFIG.gatekeeper, model: 'gpt-6.1-sol' };
+    const exhaustedClaude = { gatekeeper: DEFAULT_SEATS_CONFIG.reviewer };
+    expect(repeats({ ...exhaustedClaude, 'gatekeeper-fallback': sol }, 100)).toBe(true);
+    expect(repeats({ ...exhaustedClaude, 'gatekeeper-fallback': { ...sol, model: 'gpt-6.1-terra' } }, 100)).toBe(false);
+    expect(repeats({ gatekeeper: { ...sol, model: null }, 'gatekeeper-deep': { ...sol, model: null } })).toBe(true);
+    expect(repeats({ gatekeeper: { ...sol, model: 'gpt-6.1-terra' }, 'gatekeeper-deep': { ...sol, runtime: 'pi', model: 'magpie/codex/gpt-6.1-terra' } })).toBe(true);
+    expect(repeats({})).toBe(false);
   });
 
   test('the credit mode admits the seats it names on an exhausted ChatGPT account with credits at or above the floor', () => {
@@ -188,6 +215,7 @@ describe('seat quota routing', () => {
     expect(routes(codex(funded), 'off')).toContain('gatekeeper: none (chatgpt exhausted)');
     const review = routes(codex(funded), 'review');
     expect(review).toContain(gatekeeper);
+    expect(review).toContain('gatekeeper-deep: none (chatgpt exhausted)');
     expect(review).toContain('route important_deep: worker-important (claude opus medium; claude unknown)');
     expect(review).toContain('route simple_fast: none (chatgpt exhausted)');
     for (const line of [writer, gatekeeper]) expect(routes(codex(funded), 'all'), line).toContain(line);
@@ -421,7 +449,7 @@ describe('rh quota', () => {
     const lines = text.stdout.trim().split('\n');
     expect(lines.slice(0, 2).map(line => line.split(' | ')[0])).toEqual(['claude: exhausted', 'chatgpt: normal']);
     expect(lines.slice(2, 4)).toEqual(['claude mode: saving (5% left < 20%)', 'codex mode: hyper (99% left >= 50%)']);
-    expect(lines.slice(4).map(line => line.split(':')[0])).toEqual(['route important_deep', 'route important_fast', 'route simple_deep', 'route simple_fast', 'route frontend', 'explorer', 'gatekeeper', 'reviewer', 'advisor']);
+    expect(lines.slice(4).map(line => line.split(':')[0])).toEqual(['route important_deep', 'route important_fast', 'route simple_deep', 'route simple_fast', 'route frontend', 'explorer', 'gatekeeper', 'gatekeeper-deep', 'reviewer', 'advisor']);
   });
 
   test('the stored review credit mode routes the gatekeeper on credits and keeps the account line exhausted', () => {

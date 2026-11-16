@@ -321,8 +321,9 @@ model only at a tier-2 reset (`/clear`), where `seats reset` starts it again
 from its argv; see Seat reset in herdr-notify. Codex hyper mode applies
 when weekly remaining quota is at or above
 `routing.codex_hyper_at_or_above_remaining` (default 50). Quota modes are
-derived, never stored. Codex hyper seats use `gpt-6-astra` high. A Pi seat on `magpie/codex/`
-takes the same hyper model as `magpie/codex/gpt-6-astra` with that effort.
+derived, never stored. Codex hyper seats use `gpt-6-astra` high, except `gatekeeper-deep`, which
+keeps its configured model and effort. A Pi seat on `magpie/codex/` takes the
+same hyper model as `magpie/codex/gpt-6-astra` with that effort.
 
 Claude in saving mode or exhausted is reserved for the advisor and
 orchestrator; both use `opus` high. An important non-frontend route that
@@ -346,7 +347,8 @@ An exhausted account takes no new dispatch, review seats included, except
 under the stored credit mode `routing.codex_credit_mode` (`off`, `review` or
 `all`; default `off`). While the ChatGPT account is exhausted and reports
 credits at or above `routing.codex_credit_floor`, `review` admits the
-gatekeeper, the gatekeeper fallback and a ChatGPT-bound reviewer, and `all`
+gatekeeper, the gatekeeper fallback and a ChatGPT-bound reviewer (not
+`gatekeeper-deep`), and `all`
 admits every ChatGPT-bound seat. Those route and seat lines say `on credits`;
 name it in the dispatch note. Only the owner sets `codex_credit_mode`; a seat
 does not write it, and a joint decision does not cover it.
@@ -410,8 +412,14 @@ host's PR events or check when the worker reports.
   that meets the Low accept-seat skip gets no Codex, Herdr or OAR accept
   seat (`docs/reference-configs/agentic-development-flow.md`, Review by
   risk). Give each ready PR that needs review its own review seat at once.
-  A High PR keeps two reviewer seats in parallel. Send
-  each reviewer the review packet of `acceptor.md` §2.1. Each reviewer
+  A High PR keeps two reviewer seats in parallel.
+  A coordinator may add `gatekeeper-deep` as an optional second Codex
+  review row: a read-only Codex seat on a different model than
+  `gatekeeper`. Start it with `rh seats argv gatekeeper-deep --pr <n>`.
+  Both Codex rows write the Agent line `codex (<model>)`. When the host
+  observes no model, both write `codex (unobserved)`, share one claim and
+  count once toward the High two-claim rule.
+  Send each reviewer the review packet of `acceptor.md` §2.1. Each reviewer
   posts an `acceptance claim` before it reads. Who reviews each
   round, and how many claims a round has, follow `acceptor.md` §2.2.
   Findings take the severities of `acceptor.md` §3. A P3 does not block
@@ -433,7 +441,9 @@ host's PR events or check when the worker reports.
   its own round with `rh review publish`. It forbids every
   other GitHub write. Attention rule A19 names a review seat that is done
   or idle for more than 10 min while its PR has no record of its harness
-  after that time: read its pane and publish its row.
+  after that time: read its pane and publish its row. The record is
+  per harness, not per seat: a `gatekeeper` record from the same harness
+  hides A19 for a `gatekeeper-deep` pane that has no row of its own.
 - **Defensive code.** Reject compatibility branches, fallbacks and
   speculative guards that the issue did not ask for, even when the tests
   pass. Quote the boundary line. This is the most common reason to send a

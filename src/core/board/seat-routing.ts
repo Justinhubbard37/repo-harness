@@ -42,7 +42,7 @@ export function seatAccountQuotas(accounts: readonly QuotaAccountReport[], routi
 
 /** `null` is a Codex turn that is no seat, such as the operator cleanup investigation: only `all` covers it. */
 export const creditsCover = (id: SeatId | null, quota: SeatAccountQuotas): boolean =>
-  quota.chatgpt.credits === 'all' || quota.chatgpt.credits === 'review' && id !== null && isReviewSeat(id);
+  quota.chatgpt.credits === 'all' || quota.chatgpt.credits === 'review' && id !== null && isReviewSeat(id) && id !== 'gatekeeper-deep';
 
 export const claudeReserved = (quota: SeatAccountQuotas): boolean => quota.claude.mode === 'saving' || quota.claude.state === 'exhausted';
 
@@ -65,7 +65,8 @@ export function seatState(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuot
 export function effectiveSeatConfig<Id extends SeatId>(id: Id, seats: SeatsConfigV1, quota: SeatAccountQuotas): SeatsConfigV1[Id];
 export function effectiveSeatConfig(id: SeatId, seats: SeatsConfigV1, quota: SeatAccountQuotas): SeatConfigV1 | null {
   const seat = seats[id];
-  if (seat === null) return seat;
+  // gatekeeper-deep is the second review row on a fixed other model, so ChatGPT hyper does not remap it.
+  if (seat === null || id === 'gatekeeper-deep') return seat;
   if (seat.runtime === 'codex' && quota.chatgpt.mode === 'hyper') return { ...seat, ...CODEX_HYPER_MODEL };
   if (isPiCodexSeat(seat) && quota.chatgpt.mode === 'hyper') return { ...seat, model: `${PI_CODEX_MODEL_PREFIX}${CODEX_HYPER_MODEL.model}`, effort: CODEX_HYPER_MODEL.effort };
   const control = id === 'orchestrator' ? claudeReserved(quota) : id === 'advisor' && (claudeReserved(quota) || quota.claude.mode !== 'hyper');
@@ -166,6 +167,28 @@ export function effectiveGatekeeper(seats: SeatsConfigV1, quota: SeatAccountQuot
     line: `gatekeeper: gatekeeper-fallback (${launchText(fallback)}${accountSuffix('gatekeeper-fallback', fallback, quota)}; gatekeeper: ${cause})` };
 }
 
+/** The model a seat runs: a Pi seat on `magpie/codex/` runs the Codex model, and a null model is the host default of its runtime. */
+const runModel = (seat: SeatConfigV1): string =>
+  `${seat.runtime === 'pi' && !isPiCodexSeat(seat) ? 'pi' : seat.runtime === 'claude' ? 'claude' : 'codex'}:${seat.model?.replace(PI_CODEX_MODEL_PREFIX, '') ?? 'default'}`;
+
+/**
+ * True when the effective gatekeeper-deep runs the same model as the route that `effectiveGatekeeper` selects, which may be
+ * the gatekeeper-fallback: the second row would then repeat the first. The route line and the launch fail closed on it.
+ */
+export function deepGatekeeperRepeatsGatekeeper(seats: SeatsConfigV1, quota: SeatAccountQuotas): boolean {
+  const route = effectiveGatekeeper(seats, quota);
+  return route.id !== null && runModel(route.seat) === runModel(effectiveSeatConfig('gatekeeper-deep', seats, quota));
+}
+
+/** The route line of a review seat that has no fallback. */
+function reviewSeatLine(id: 'gatekeeper-deep' | 'reviewer', seats: SeatsConfigV1, quota: SeatAccountQuotas): string {
+  const seat = effectiveSeatConfig(id, seats, quota);
+  if (id === 'gatekeeper-deep' && deepGatekeeperRepeatsGatekeeper(seats, quota)) return 'gatekeeper-deep: none (same model as gatekeeper)';
+  return reviewSeatBlocked(id, seat, quota, seats.routing)
+    ? `${id}: none (${blockText(id, seat, quota, seats.routing)})`
+    : `${id}: ${id} (${launchText(seat)}${accountSuffix(id, seat, quota)})`;
+}
+
 /** The saving threshold reserves Claude; pace-based tight is only a display state. */
 export function formatSeatRoutes(seats: SeatsConfigV1, quota: SeatAccountQuotas): string {
   const reserved = claudeReserved(quota);
@@ -174,10 +197,7 @@ export function formatSeatRoutes(seats: SeatsConfigV1, quota: SeatAccountQuotas)
     ? `explorer: ${modelText(seats.routing.low_quota_explorer)} (claude ${quota.claude.state === 'exhausted' ? 'exhausted' : quota.claude.mode}; pass model ${seats.routing.low_quota_explorer.model} when you call the explorer)`
     : 'explorer: default');
   lines.push(effectiveGatekeeper(seats, quota).line);
-  const reviewer = effectiveSeatConfig('reviewer', seats, quota);
-  lines.push(reviewSeatBlocked('reviewer', reviewer, quota, seats.routing)
-    ? `reviewer: none (${blockText('reviewer', reviewer, quota, seats.routing)})`
-    : `reviewer: reviewer (${launchText(reviewer)}${accountSuffix('reviewer', reviewer, quota)})`);
+  lines.push(reviewSeatLine('gatekeeper-deep', seats, quota), reviewSeatLine('reviewer', seats, quota));
   const advisor = effectiveSeatConfig('advisor', seats, quota);
   const advisorBlock = unavailablePiSeat(advisor, seats.routing);
   lines.push(advisorBlock === null ? `advisor: advisor (${launchText(advisor)})` : `advisor: none (${advisorBlock})`);

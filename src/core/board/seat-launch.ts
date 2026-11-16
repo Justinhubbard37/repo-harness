@@ -2,7 +2,7 @@
 // the seat brief. Each limit names what the host does with it, so the output
 // never claims a limit that the host cannot apply.
 import { PANE_PREFIX } from '../terminal/pane-prefix';
-import { isWorkerSeat, seatTakesFleet, type LaunchSeatId, type SeatConfigV1, type SeatTool } from './seats-settings';
+import { isReviewSeat, isWorkerSeat, seatTakesFleet, type LaunchSeatId, type SeatConfigV1, type SeatTool } from './seats-settings';
 import { SEAT_EFFORT_ENV, SEAT_ENV, SEAT_MODEL_ENV, SEAT_REPOSITORY_ENV, isResetSeat } from './seat-reset';
 
 /** `seats`: the stored section. `defaults`: no section, so `DEFAULT_SEATS_CONFIG`. */
@@ -138,7 +138,7 @@ function roleParagraphs(seat: LaunchSeatId, config: SeatConfigV1, fleet: readonl
       evidence,
     ];
   }
-  if (seat === 'gatekeeper' || seat === 'reviewer') {
+  if (isReviewSeat(seat)) {
     // A reviewer with `net` publishes its own round (#1996); the brief is the only limit on every runtime.
     const limit = config.tools.includes('net')
       ? `Do not edit files, commit or push. ${REVIEW_PUBLISH_TEXT}`
@@ -166,7 +166,7 @@ const KEEP_YOURSELF = {
  */
 function brief(seat: LaunchSeatId, config: SeatConfigV1, fleet: readonly string[], limits: readonly SeatLimitV1[], name: RoleName = role => role): string {
   const kept = (Object.keys(KEEP_YOURSELF) as (keyof typeof KEEP_YOURSELF)[]).flatMap((level) => {
-    const publishes = (seat === 'gatekeeper' || seat === 'reviewer') && config.tools.includes('net');
+    const publishes = isReviewSeat(seat) && config.tools.includes('net');
     const groups = limits.flatMap(limit => (limit.level === level && limit.subject !== 'fleet'
       ? [limit.subject === 'gh' && publishes ? REVIEW_PUBLISH_TEXT : GROUP_TEXT[limit.subject]] : []));
     return groups.length === 0 ? [] : [`${KEEP_YOURSELF[level]} ${groups.join(' ')}`];
@@ -255,7 +255,7 @@ function codexLaunch(seat: LaunchSeatId, config: SeatConfigV1): Omit<SeatLaunchV
 }
 
 function piLaunch(seat: LaunchSeatId, config: SeatConfigV1, roleDirectory: string | undefined): Omit<SeatLaunchV1, 'protocol' | 'kind' | 'seat' | 'runtime' | 'source'> {
-  const review = seat === 'gatekeeper' || seat === 'reviewer';
+  const review = isReviewSeat(seat);
   // Pi's denylist blocks the edit/write tools; shell paths stay open. pi-subagents does not refuse a role outside the fleet.
   const limits: SeatLimitV1[] = [
     ...OFF_GROUPS(config).map(group => ({
@@ -288,7 +288,7 @@ export function buildSeatLaunch(seat: LaunchSeatId, config: SeatConfigV1, source
   return { protocol: 1, kind: 'seat_launch', seat, runtime: config.runtime, source, ...launch };
 }
 
-const PANE_ROLE = { orchestrator: 'orch', advisor: 'adv', worker: 'w', 'worker-deep': 'w', 'worker-important': 'w', 'worker-important-fast': 'w', 'worker-light': 'w', gatekeeper: 'gk', reviewer: 'rv' } as const;
+const PANE_ROLE = { orchestrator: 'orch', advisor: 'adv', worker: 'w', 'worker-deep': 'w', 'worker-important': 'w', 'worker-important-fast': 'w', 'worker-light': 'w', gatekeeper: 'gk', 'gatekeeper-deep': 'gd', reviewer: 'rv' } as const;
 const PANE_NAME_MAX = 32;
 const POSITIVE = /^[1-9][0-9]*$/u;
 const WORD = /^[a-z][a-z0-9]*$/u;
@@ -325,7 +325,7 @@ export function seatPaneName(input: SeatPaneNameInput): string {
     if (issue !== undefined && !POSITIVE.test(issue)) fail('the issue must be a positive decimal integer');
     if (release !== undefined && !/^[0-9]+$/u.test(release)) fail('the release item must be digits');
     item = issue ?? `rel${release}`;
-  } else if (seat === 'reviewer' || seat === 'gatekeeper') {
+  } else if (isReviewSeat(seat)) {
     if (pr === undefined || !POSITIVE.test(pr)) fail(`a ${seat} needs a PR, a positive decimal integer`);
     if (issue !== undefined || release !== undefined) fail(`a ${seat} takes only a PR`);
     item = pr;
@@ -344,7 +344,7 @@ export function seatPaneName(input: SeatPaneNameInput): string {
  */
 export function seatTabName(seat: LaunchSeatId, parent?: string): string {
   if (parent !== undefined && !POSITIVE.test(parent)) throw new SeatPaneNameError('Tab name: the parent must be a positive decimal integer.');
-  if (seat === 'reviewer' || seat === 'gatekeeper') return 'review';
+  if (isReviewSeat(seat)) return 'review';
   if (isWorkerSeat(seat)) return parent === undefined ? 'other' : `#${parent}`;
   return 'orch';
 }
