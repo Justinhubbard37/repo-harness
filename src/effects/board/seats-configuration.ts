@@ -111,9 +111,9 @@ function enabledRuntimesOf(config: Record<string, unknown>): readonly string[] {
   try { return decodeAgentsConfig(config.agents).enabled; } catch { throw configInvalid('agents'); }
 }
 
-/** Reads enforce the section contract; only saves enforce the runtime ranges that can change later. */
-function sectionOf(config: Record<string, unknown>): SeatsConfigV1 {
-  try { return decodeSeatsConfig(config.seats); } catch (error) {
+/** Reads and saves enforce the section contract through this one decoder call; only saves enforce the runtime ranges that can change later. */
+function decodeSeatsSection(value: unknown): SeatsConfigV1 {
+  try { return decodeSeatsConfig(value); } catch (error) {
     if (error instanceof SeatsConfigMigrationRequiredError) throw new SeatsConfigurationError(error.code, error.message);
     throw configInvalid('seats');
   }
@@ -126,7 +126,7 @@ export function readSeatsConfiguration(env: NodeJS.ProcessEnv = process.env): Se
   } catch {
     throw new SeatsConfigurationError('config_invalid', 'The repo-harness configuration file is not a valid JSON object.');
   }
-  return { revision: document.revision, seats: sectionOf(document.config), enabled_runtimes: enabledRuntimesOf(document.config) };
+  return { revision: document.revision, seats: decodeSeatsSection(document.config.seats), enabled_runtimes: enabledRuntimesOf(document.config) };
 }
 
 function checkModelAndEffort(subject: string, model: SeatModelV1, runtimeId: SeatRuntime): void {
@@ -186,8 +186,10 @@ export function applySeatsSettings(
         if (seat !== null) checkSeat(id, seat, enabled);
       }
       checkSeatRoutingModels(request.seats.routing);
-      const changed = changedKeys(sectionOf(config), request.seats);
-      return { config: { ...config, seats: request.seats }, value: changed };
+      // One decoder for the read path and the save (#2917): a candidate that `rh quota` or `rh seats argv` would refuse is never written.
+      const next = decodeSeatsSection(request.seats);
+      const changed = changedKeys(decodeSeatsSection(config.seats), next);
+      return { config: { ...config, seats: next }, value: changed };
     }, { expectedRevision: request.expected_revision });
     return { config_revision: result.revision, changed_keys: result.value };
   } catch (error) {

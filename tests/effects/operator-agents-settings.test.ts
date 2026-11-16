@@ -14,6 +14,7 @@ import {
 } from '../../src/core/board/agents-settings';
 import { DEFAULT_SEATS_CONFIG, ROUTING_CLASSES, SEAT_IDS, decodeSeatsConfig, decodeSeatsSettings, type SeatRoutingV1 } from '../../src/core/board/seats-settings';
 import { readSeatsSettings, seatsSettingsWriteRoute, SEATS_CONFIGURATION_FAILURES } from '../../src/effects/operator/seats-settings-route';
+import { applySeatsSettings, readSeatsConfiguration } from '../../src/effects/board/seats-configuration';
 import { migrateSeatsConfiguration } from '../../src/cli/commands/global-runtime';
 import { buildQuotaReport, OPERATOR_QUOTA_PATH, unknownQuotaReading } from '../../src/core/board/quota';
 import { probeAgentRuntimes, registryRuntimes } from '../../src/effects/setup/agent-runtime-probe';
@@ -697,6 +698,21 @@ describe('seat settings contract without transport', () => {
     expect(() => route.decode({ expected_revision: settings.config.revision, seats: changedRuntime }, []))
       .toThrow('seats_settings_request_invalid');
     expect(readFileSync(path, 'utf8')).toBe(original);
+  });
+
+  test('a save refuses a frontend route to a Pi seat as the read path does and writes nothing', () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-save-decoder-')), dir = join(home, '.repo-harness'), path = join(dir, 'config.json'), env = { HOME: home };
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    const written = JSON.stringify({ agents: PANE_AGENTS, seats: { ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing, frontend: ['worker-important'] },
+      'worker-important-fast': { ...DEFAULT_SEATS_CONFIG['worker-important-fast'], runtime: 'pi', model: 'magpie/cursor/deepseek-v41-flash-1017', effort: null, fleet: [] } } });
+    mkdirSync(dir); writeFileSync(path, written);
+    const { revision, seats } = readSeatsConfiguration(env);
+    // The request decoder takes this section; the read decoder refuses it, so the save refuses it with the read path's code.
+    expect(() => applySeatsSettings({ expected_revision: revision, seats: { ...seats, routing: { ...seats.routing, frontend: ['worker-important-fast'] } } }, env))
+      .toThrow(expect.objectContaining({ code: 'config_invalid' }));
+    expect(readFileSync(path, 'utf8')).toBe(written);
+    expect([applySeatsSettings({ expected_revision: revision, seats: { ...seats, advisor: { ...seats.advisor, effort: 'medium' } } }, env).changed_keys,
+      JSON.parse(readFileSync(path, 'utf8')).seats.advisor.effort]).toEqual([['seats.advisor.effort'], 'medium']);
   });
 });
 
