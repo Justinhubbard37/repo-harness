@@ -240,8 +240,26 @@ describe('docs page', () => {
     expect((await show('{"entities":[]}', valid)).state).toBe('valid');
     expect(seen).toEqual([{ entities: [] }]);
     expect((await show('{"entities":[]}')).state).toBe('capability-missing');
-    // A deeply nested block neither overflows the stack nor hides the source.
-    expect((await show(`${'['.repeat(100000)}${']'.repeat(100000)}`, valid)).state).toBe('valid');
+    for (const [check, state] of [
+      [{ state: 'image', src: '/a.svg', stale: false }, 'image'], [{ state: 'image', src: '/a.svg', stale: true }, 'stale'],
+      [{ state: 'pending' }, 'pending'], [{ state: 'browser_missing' }, 'browser-missing'], [{ state: 'failed', reason: 'timeout' }, 'failed'],
+    ] as const) expect((await show('{"entities":[]}', async () => check)).state).toBe(state);
+    // A deeply nested block neither overflows the stack nor is hashed: it reports its own depth error.
+    expect(await show(`${'['.repeat(100000)}${']'.repeat(100000)}`, valid)).toEqual({ state: 'invalid', issues: [expect.stringContaining('field depth')] });
+    // A stale image becomes a fresh one in a new element, so the browser loads the new bytes.
+    const container = document.createElement('div');
+    document.body.append(container);
+    const drawnRoot = createRoot(container);
+    const render = (validate: DiagramValidator) => act(async () => drawnRoot.render(
+      <DocsMarkdown text={fence('{"entities":[]}')} path="docs/a.md" mode="light" onOpen={() => {}} validateDiagram={validate} t={(key, params) => translate('en', key, params)} />,
+    ));
+    await render(async () => ({ state: 'image', src: '/a.svg', stale: true }));
+    await settle();
+    const staleImage = container.querySelector('img');
+    await render(async () => ({ state: 'image', src: '/a.svg', stale: false }));
+    await settle();
+    expect(container.querySelector('img')).not.toBe(staleImage);
+    await act(async () => drawnRoot.unmount());
   });
 
   test('1-DOCS-F1 shows the server reason for a refused path and none of its content', async () => {

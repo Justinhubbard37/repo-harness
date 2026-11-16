@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import type { DevActivityItem } from '../core/dev-activity/types';
-import { decodeDocsFile, decodeDocsRemoteMismatch, decodeDocsTree, type DocsFileV1, type DocsRemoteMismatchV1, type DocsTreeV1, type DocsUnavailableReason } from '../core/operator/docs';
+import { decodeDocsDiagram, decodeDocsFile, decodeDocsRemoteMismatch, decodeDocsTree, type DocsDiagramV1, type DocsFileV1, type DocsRemoteMismatchV1, type DocsTreeV1, type DocsUnavailableReason } from '../core/operator/docs';
 import {
   decodeTaskExecutionView,
   type ExecutionStateUnavailableReason,
@@ -277,6 +277,13 @@ export function fetchDocsTree(repositoryId: string, signal: AbortSignal): Promis
 
 export function fetchDocsFile(repositoryId: string, path: string, signal: AbortSignal): Promise<DocsRead<DocsFileV1>> {
   return readDocs(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/docs/file?${new URLSearchParams({ path })}`, decodeDocsFile, signal);
+}
+
+/** The state of one diagram block by content hash. A body the decoder rejects throws, like an unreachable server. */
+export async function fetchDocsDiagram(hash: string, signal: AbortSignal): Promise<DocsDiagramV1> {
+  const answer = await readJson(`/api/v1/docs/diagrams/${hash}`, signal);
+  if (answer.state !== 'answered' || !answer.ok) throw new Error('diagram state unavailable');
+  return decodeDocsDiagram(answer.body);
 }
 
 /** The same answer twice keeps the first object, so a periodic re-read does not re-render the page. */

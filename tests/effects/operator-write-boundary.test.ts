@@ -96,6 +96,8 @@ describe('operator structural write boundary', () => {
       'task_messages',
       'docs_tree',
       'docs_file',
+      'docs_diagram',
+      'docs_diagram_image',
       'settings_agents',
       'settings_report_language',
       'settings_report_language_write',

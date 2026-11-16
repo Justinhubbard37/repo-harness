@@ -29,6 +29,8 @@ import { decodeTaskExecutionView, type ExecutionStateUnavailableReason, type Tas
 import { decodeTaskMessagesView, TASK_MESSAGES_FAILURES, type TaskMessagesRefusal } from '../../core/operator/task-messages';
 import { decodeTestsSnapshot, type TestsUnavailableReason } from '../../core/operator/tests';
 import { DocsReadError } from './docs-reader';
+import { startDiagramRenderer, docsDiagramState, type DiagramRendererHandle } from './diagram-renderer';
+import { readDiagramImage } from './diagram-render';
 import { decodeDocsFile, decodeDocsTree, OPERATOR_DOCS_FILE_KIND, type DocsRemoteMismatchV1, type DocsUnavailableReason } from '../../core/operator/docs';
 import { decodeRuntimeOverlay, unavailableRuntimeOverlay, type RuntimeOverlay } from '../../core/operator/runtime-status';
 import { ARCHITECTURE_FAILURES, parseArchitectureRequest, decodeArchitectureModuleIndex, decodeArchitectureModuleDetail, decodeArchitectureReviewPrompt, OPERATOR_ARCHITECTURE_HISTORY_ROUTE, OPERATOR_ARCHITECTURE_MODULES_ROUTE, OPERATOR_ARCHITECTURE_MODULE_ROUTE, OPERATOR_ARCHITECTURE_REVIEW_PROMPT_ROUTE } from '../../core/operator/architecture';
@@ -98,6 +100,8 @@ export const OPERATOR_EXECUTION_STATE_ROUTE = /^\/api\/v1\/repositories\/([A-Za-
 /** The stored task inbox of one task that the execution view of the same repository lists as verified. */
 export const OPERATOR_TASK_MESSAGES_ROUTE = /^\/api\/v1\/repositories\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/tasks\/([0-9a-f]{64})\/messages$/u;
 export const OPERATOR_DOCS_TREE_ROUTE = /^\/api\/v1\/repositories\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/docs\/tree$/u;
+export const OPERATOR_DOCS_DIAGRAM_ROUTE = /^\/api\/v1\/docs\/diagrams\/([0-9a-f]{64})$/u;
+export const OPERATOR_DOCS_DIAGRAM_IMAGE_ROUTE = /^\/api\/v1\/docs\/diagrams\/([0-9a-f]{64})\/image$/u;
 export const OPERATOR_DOCS_FILE_ROUTE = /^\/api\/v1\/repositories\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/docs\/file$/u;
 export const OPERATOR_RUNTIME_STATUS_PATH = '/api/v1/runtime/status' as const;
 export const OPERATOR_NOTIFY_STATUS_PATH = '/api/v1/notify/status' as const;
@@ -154,6 +158,8 @@ export const OPERATOR_ROUTES: readonly OperatorRouteV1[] = Object.freeze([
   Object.freeze({ id: 'task_messages', method: 'GET', pattern: OPERATOR_TASK_MESSAGES_ROUTE.source, write: false }),
   Object.freeze({ id: 'docs_tree', method: 'GET', pattern: OPERATOR_DOCS_TREE_ROUTE.source, write: false }),
   Object.freeze({ id: 'docs_file', method: 'GET', pattern: OPERATOR_DOCS_FILE_ROUTE.source, write: false }),
+  Object.freeze({ id: 'docs_diagram', method: 'GET', pattern: OPERATOR_DOCS_DIAGRAM_ROUTE.source, write: false }),
+  Object.freeze({ id: 'docs_diagram_image', method: 'GET', pattern: OPERATOR_DOCS_DIAGRAM_IMAGE_ROUTE.source, write: false }),
   Object.freeze({ id: 'settings_agents', method: 'GET', pattern: OPERATOR_SETTINGS_AGENTS_PATH, write: false }),
   Object.freeze({ id: 'settings_report_language', method: 'GET', pattern: OPERATOR_REPORT_LANGUAGE_PATH, write: false }),
   Object.freeze({ id: 'settings_report_language_write', method: 'POST', pattern: OPERATOR_REPORT_LANGUAGE_ROUTE.source, write: true }),
@@ -218,6 +224,8 @@ export interface OperatorServerOptions {
   readonly read_docs?: (repositoryId: string) => DocsRepositoryCache;
   /** Start the in-process docs collector (operator serve). Ignored when a cache reader is injected. */
   readonly docs_collector?: boolean;
+  /** The render capability a diagram state read reports (tests only); the docs collector starts the renderer that owns it. */
+  readonly read_diagram_capability?: () => ReturnType<DiagramRendererHandle['capability']>;
   /** Tests cache reader by repository id. GET serves only this cache; it never calls GitHub. */
   readonly read_tests?: (repositoryId: string) => TestsRepositoryCache;
   /** Start the in-process tests collector (operator serve). Ignored when a cache reader is injected. */
@@ -1657,6 +1665,28 @@ export async function startOperatorServer(
       return;
     }
 
+    // The artifact store is content-addressed and a read never starts a render.
+    const diagramRoute = OPERATOR_DOCS_DIAGRAM_ROUTE.exec(pathname);
+    const diagramImageRoute = diagramRoute === null ? OPERATOR_DOCS_DIAGRAM_IMAGE_ROUTE.exec(pathname) : null;
+    if (diagramRoute !== null || diagramImageRoute !== null) {
+      if (url.search !== '') {
+        sendRefusal(request, response, 400, errorBody('invalid_request', 'A diagram read accepts no query parameters.'), headOnly);
+        return;
+      }
+      const state = docsDiagramState(options.env ?? process.env, (diagramRoute ?? diagramImageRoute)![1]!, diagramCapability());
+      if (diagramRoute !== null) { sendJson(response, 200, state, headOnly); return; }
+      const image = state.state === 'rendered' || state.state === 'stale' ? readDiagramImage(options.env ?? process.env, state.hash) : null;
+      if (image === null) { sendRefusal(request, response, 404, errorBody('not_found', 'The diagram has no image.'), headOnly); return; }
+      // The image holds no script and no remote address; the policy keeps it so when opened as a document.
+      response.writeHead(200, {
+        'Cache-Control': 'no-store', 'Content-Type': 'image/svg+xml', 'Content-Length': String(image.length),
+        'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:",
+        'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer',
+      });
+      if (headOnly) response.end(); else response.end(image);
+      return;
+    }
+
     const docsTreeRoute = OPERATOR_DOCS_TREE_ROUTE.exec(pathname);
     const docsFileRoute = docsTreeRoute === null ? OPERATOR_DOCS_FILE_ROUTE.exec(pathname) : null;
     if (docsTreeRoute !== null || docsFileRoute !== null) {
@@ -1760,6 +1790,8 @@ export async function startOperatorServer(
   const docs = options.docs_collector && !options.read_docs
     ? startDocsCollector({ env: options.env, read_dev_activity: options.read_dev_activity ?? devActivity?.read ?? unavailableDevActivitySnapshot })
     : null;
+  const diagramRenderer = docs ? startDiagramRenderer({ env: options.env ?? process.env, read_docs: docs.read }) : null;
+  const diagramCapability = options.read_diagram_capability ?? diagramRenderer?.capability ?? (() => ({ state: 'pending' }) as const);
   const tests = options.tests_collector && !options.read_tests
     ? startTestsCollector({ env: options.env, read_dev_activity: options.read_dev_activity ?? devActivity?.read ?? unavailableDevActivitySnapshot })
     : null;
@@ -1799,6 +1831,7 @@ export async function startOperatorServer(
       void notify?.close();
       void cliInventory?.close();
       void docs?.close();
+      void diagramRenderer?.close();
       void tests?.close();
       void execution?.close();
       void worktrees?.close();
@@ -1829,7 +1862,7 @@ export async function startOperatorServer(
     closed = true;
     runtimeService?.close();
     closeCompletion = Promise.resolve().then(async () => {
-      await Promise.all([boardObserver?.close(), devActivity?.close(), setup?.close(), botAccess?.close(), botReviews?.close(), notify?.close(), cliInventory?.close(), docs?.close(), tests?.close(), execution?.close(), worktrees?.close(), architectureMap?.close()]);
+      await Promise.all([boardObserver?.close(), devActivity?.close(), setup?.close(), botAccess?.close(), botReviews?.close(), notify?.close(), cliInventory?.close(), docs?.close(), diagramRenderer?.close(), tests?.close(), execution?.close(), worktrees?.close(), architectureMap?.close()]);
       // Close admission and cancel every owner before waiting for any one of
       // them: a retiring read must not leave other queues launching work.
       for (const cancel of activeTaskReadCancellers) cancel();

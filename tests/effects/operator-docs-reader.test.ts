@@ -7,6 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DOCS_FILE_MAX_BYTES, DocsReadError, DocsReader } from '../../src/effects/operator/docs-reader';
 import { decodeDocsFile } from '../../src/core/operator/docs';
+import { repoHarnessRepoIdFor } from '../../src/effects/repo-registry';
+import { diagramHash, docsDiagramState, startDiagramRenderer } from '../../src/effects/operator/diagram-renderer';
+import { readDiagramImage, RENDER_LIBRARY_VERSION, type RenderPassResult } from '../../src/effects/operator/diagram-render';
+import type { DocsRepositoryCache } from '../../src/effects/operator/docs-collector';
 
 const cleanup: string[] = [];
 const readers: DocsReader[] = [];
@@ -396,4 +400,53 @@ test('close ends the worker and refuses later reads', async () => {
   await docs.file('docs/a.md');
   docs.close();
   expect(await refusal(docs.file('docs/a.md'))).toBe('closed');
+});
+
+test('the diagram renderer draws a block once per content and fingerprint, and a read reports the stored state', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'diagram-renderer-')); cleanup.push(home);
+  const env = { ...process.env, REPO_HARNESS_HOME: home, REPO_HARNESS_RENDER_BROWSER: join(home, 'browser') };
+  writeFileSync(join(home, 'registered-repos.json'), JSON.stringify({ version: 1, authorizationRevision: 1, repos: [
+    { id: repoHarnessRepoIdFor(home), path: home, accessMode: 'read_only', source: 'init', registeredAt: '2026-10-26T00:00:00.000Z', lastSeenAt: '2026-10-26T00:00:00.000Z' }] }));
+  const library = join(home, 'operator/render-capability/node_modules/@eraserlabs/diagrams');
+  mkdirSync(library, { recursive: true });
+  writeFileSync(join(library, 'package.json'), JSON.stringify({ version: RENDER_LIBRARY_VERSION }));
+  const fence = (json: string) => `# Doc\n\n\`\`\`eraser-diagram\n${json}\n\`\`\`\n`;
+  const first = { entities: [{ id: 'a' }] };
+  const second = { entities: [{ id: 'b' }] };
+  // A block nested past the bound sits before the valid one: it gets no artifact and stops nothing.
+  const deep = `\`\`\`eraser-diagram\n${'['.repeat(100_000)}${']'.repeat(100_000)}\n\`\`\`\n`;
+  let text = deep + fence(JSON.stringify(first));
+  let sha = 'a'.repeat(64);
+  const tree = () => ({ files: [{ path: 'docs/a.md', size: 1, sha256: sha }, { path: 'docs/b.ts', size: 1, sha256: sha }] });
+  const read_docs = () => ({ state: 'ready', tree: tree(), reader: { file: async () => ({ text }) } }) as unknown as DocsRepositoryCache;
+  const drawn: unknown[] = [];
+  const render = async (options: { document: unknown }): Promise<RenderPassResult> => {
+    drawn.push(options.document);
+    return JSON.stringify(options.document).includes('"b"')
+      ? { ok: false, kind: 'invalid', issues: [{ element: '/entities/0', field: 'E_UNKNOWN_TAG', fix: 'Use a known tag.' }] }
+      : { ok: true, svg: '<svg/>', png: null };
+  };
+  const renderer = startDiagramRenderer({ env, read_docs, render, interval_ms: 10 });
+  try {
+    // No browser yet: the state names it and nothing is drawn.
+    await renderer.settled();
+    expect(docsDiagramState(env, diagramHash(first), renderer.capability())).toMatchObject({ state: 'browser_missing' });
+    expect(drawn).toEqual([]);
+    writeFileSync(join(home, 'browser'), '');
+    for (let attempt = 0; attempt < 100 && drawn.length < 1; attempt += 1) await Bun.sleep(20);
+    expect(drawn).toEqual([first]);
+    expect(docsDiagramState(env, diagramHash(first), renderer.capability()).state).toBe('rendered');
+    expect(readDiagramImage(env, diagramHash(first))?.toString()).toBe('<svg/>');
+    // The same blob is not read again; a changed blob with another document draws that document only.
+    await Bun.sleep(100);
+    expect(drawn).toHaveLength(1);
+    text = deep + fence(JSON.stringify(second)); sha = 'b'.repeat(64);
+    for (let attempt = 0; attempt < 100 && drawn.length < 2; attempt += 1) await Bun.sleep(20);
+    await renderer.settled();
+    expect(drawn).toEqual([first, second]);
+    expect(docsDiagramState(env, diagramHash(second), renderer.capability())).toMatchObject({ state: 'invalid', issues: [{ field: 'E_UNKNOWN_TAG' }] });
+    expect(docsDiagramState(env, diagramHash({ entities: [] }), renderer.capability()).state).toBe('pending');
+  } finally {
+    await renderer.close();
+  }
 });

@@ -153,3 +153,57 @@ export function decodeDocsFile(value: unknown): DocsFileV1 {
   if (typeof v.worktree_differs !== 'boolean') d.fail('worktree_differs');
   return value as DocsFileV1;
 }
+
+export const OPERATOR_DOCS_DIAGRAM_KIND = 'operator_docs_diagram' as const;
+/** Why the render of one diagram block failed. */
+export const DOCS_DIAGRAM_FAILURES = ['timeout', 'resource_missing', 'render_failed'] as const;
+export type DocsDiagramFailure = typeof DOCS_DIAGRAM_FAILURES[number];
+export const DOCS_DIAGRAM_STATES = ['rendered', 'stale', 'pending', 'invalid', 'failed', 'capability_missing', 'browser_missing'] as const;
+export type DocsDiagramState = typeof DOCS_DIAGRAM_STATES[number];
+
+export interface DocsDiagramIssueV1 { readonly element: string; readonly field: string; readonly fix: string }
+/**
+ * The state of one diagram block, named by the sha256 of `JSON.stringify` of its parsed
+ * document. `rendered` and `stale` have an image under the same hash; `stale` was drawn
+ * with another library, font or icon set than the installed one.
+ */
+export interface DocsDiagramV1 {
+  readonly protocol: 1;
+  readonly kind: typeof OPERATOR_DOCS_DIAGRAM_KIND;
+  readonly hash: string;
+  readonly state: DocsDiagramState;
+  /** Only `invalid` lists issues. */
+  readonly issues: readonly DocsDiagramIssueV1[];
+  /** Only `failed` names a reason. */
+  readonly reason: DocsDiagramFailure | null;
+}
+
+export function decodeDocsDiagram(value: unknown): DocsDiagramV1 {
+  const d = decoder('docs diagram');
+  const v = d.obj(value, ['protocol', 'kind', 'hash', 'state', 'issues', 'reason'], 'diagram');
+  if (v.protocol !== 1 || v.kind !== OPERATOR_DOCS_DIAGRAM_KIND) d.fail('protocol');
+  d.match(v.hash, SHA256, 'hash');
+  if (!(DOCS_DIAGRAM_STATES as readonly unknown[]).includes(v.state)) d.fail('state');
+  if (!Array.isArray(v.issues) || (v.state !== 'invalid' && v.issues.length > 0) || v.issues.length > 100) d.fail('issues');
+  for (const raw of v.issues as unknown[]) {
+    const issue = d.obj(raw, ['element', 'field', 'fix'], 'issue');
+    for (const key of ['element', 'field', 'fix']) if (typeof issue[key] !== 'string' || (issue[key] as string).length > 1000) d.fail(`issue ${key}`);
+  }
+  if (v.state === 'failed' ? !(DOCS_DIAGRAM_FAILURES as readonly unknown[]).includes(v.reason) : v.reason !== null) d.fail('reason');
+  return value as DocsDiagramV1;
+}
+
+/** Eraser documents are a few levels deep; a block nested deeper than this is refused before it is hashed, serialized or drawn. */
+export const DIAGRAM_MAX_DEPTH = 64;
+
+/** Iterative, so the check itself cannot overflow the stack on a hostile block. */
+export function diagramTooDeep(document: unknown): boolean {
+  const stack: Array<readonly [unknown, number]> = [[document, 1]];
+  for (let step = stack.pop(); step !== undefined; step = stack.pop()) {
+    const [value, depth] = step;
+    if (value === null || typeof value !== 'object') continue;
+    if (depth > DIAGRAM_MAX_DEPTH) return true;
+    for (const child of Object.values(value)) stack.push([child, depth + 1]);
+  }
+  return false;
+}

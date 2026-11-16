@@ -2,7 +2,9 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import Markdown, { type Components, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ImageIcon } from '@phosphor-icons/react';
+import { DIAGRAM_MAX_DEPTH, diagramTooDeep, type DocsDiagramFailure } from '../core/operator/docs';
 import type { OperatorTranslate } from './i18n';
+import { fetchDocsDiagram } from './repository-reads';
 import type { ThemeMode } from './theme';
 import { ExternalLink, PageLink } from './ui';
 import type { WorkspaceLocation } from './workspace-location';
@@ -53,11 +55,30 @@ export interface DiagramIssue { readonly element: string; readonly field: string
 export type DiagramCheck =
   | { readonly state: 'valid' }
   | { readonly state: 'invalid'; readonly issues: readonly DiagramIssue[] }
-  | { readonly state: 'capability_missing' };
+  | { readonly state: 'capability_missing' }
+  | { readonly state: 'browser_missing' }
+  | { readonly state: 'pending' }
+  | { readonly state: 'failed'; readonly reason: DocsDiagramFailure }
+  /** The stored artifact, drawn as an image; `stale` when it was drawn with another library, font or icon set. */
+  | { readonly state: 'image'; readonly src: string; readonly stale: boolean };
 export type DiagramValidator = (document: unknown) => Promise<DiagramCheck>;
 
-/** No render capability ships with the core package yet, so no validator exists to call. */
-export const validateDiagramWithCapability: DiagramValidator = async () => ({ state: 'capability_missing' });
+/** The page reads the artifact the server stored for the block's content hash; it never starts a render. */
+export const validateDiagramWithCapability: DiagramValidator = async document => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(document)));
+  const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  const diagram = await fetchDocsDiagram(hash, new AbortController().signal);
+  const image = `/api/v1/docs/diagrams/${hash}/image`;
+  switch (diagram.state) {
+    case 'rendered': return { state: 'image', src: image, stale: false };
+    case 'stale': return { state: 'image', src: image, stale: true };
+    case 'invalid': return { state: 'invalid', issues: diagram.issues };
+    case 'failed': return { state: 'failed', reason: diagram.reason! };
+    default: return { state: diagram.state };
+  }
+};
+
+const DIAGRAM_REFRESH_MS = 5_000;
 
 export const DIAGRAM_LANGUAGE = 'eraser-diagram';
 
@@ -71,6 +92,9 @@ export function diagramSourceIssues(source: string): { readonly document: unknow
   let document: unknown;
   try { document = JSON.parse(source); } catch (error) {
     return { document: null, issues: [{ element: 'block', field: 'JSON', fix: `Fix the JSON syntax: ${error instanceof Error ? error.message : 'the text does not parse'}.` }] };
+  }
+  if (diagramTooDeep(document)) {
+    return { document, issues: [{ element: 'block', field: 'depth', fix: `Nest the JSON at most ${DIAGRAM_MAX_DEPTH} levels deep.` }] };
   }
   const issues: DiagramIssue[] = [];
   // Iterative: a deeply nested block must not overflow the call stack. A pointer is built only for an issue.
@@ -154,18 +178,36 @@ function DiagramBlock({ source, validate, t }: {
   readonly source: string; readonly validate: DiagramValidator; readonly t: OperatorTranslate;
 }) {
   const [checked, setChecked] = useState<{ readonly source: string; readonly check: DiagramCheck } | null>(null);
+  const [round, setRound] = useState(0);
   useEffect(() => {
     let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const own = diagramSourceIssues(source);
-    const done = (check: DiagramCheck) => { if (live) setChecked({ source, check }); };
+    const done = (check: DiagramCheck) => {
+      if (!live) return;
+      setChecked({ source, check });
+      // The renderer draws in the background: a block that waits, or whose image is stale, is read again.
+      if (check.state === 'pending' || (check.state === 'image' && check.stale)) timer = setTimeout(() => setRound(value => value + 1), DIAGRAM_REFRESH_MS);
+    };
     if (own.issues.length > 0) done({ state: 'invalid', issues: own.issues });
     else validate(own.document).then(done, () => done({ state: 'capability_missing' }));
-    return () => { live = false; };
-  }, [source, validate]);
+    return () => { live = false; clearTimeout(timer); };
+  }, [source, validate, round]);
   const check = checked?.source === source ? checked.check : null;
   if (check === null) return <p className="docs-figure__note" data-diagram="checking">{t('docs.diagram.checking')}</p>;
   if (check.state === 'valid') return <><p className="docs-figure__note" data-diagram="valid">{t('docs.diagram.valid')}</p><pre><code>{source}</code></pre></>;
-  if (check.state === 'capability_missing') return <><p className="docs-figure__note" data-diagram="capability-missing">{t('docs.diagram.capability_missing')}</p><pre><code>{source}</code></pre></>;
+  if (check.state === 'image') {
+    return (
+      <>
+        {check.stale && <p className="docs-figure__note" data-diagram="stale">{t('docs.diagram.stale')}</p>}
+        <img key={check.stale ? 'stale' : 'drawn'} src={check.src} alt={t('docs.diagram.alt')} className="docs-figure__image" data-diagram="image" />
+      </>
+    );
+  }
+  if (check.state !== 'invalid') {
+    const note = check.state === 'capability_missing' ? 'capability_missing' : check.state === 'browser_missing' ? 'browser_missing' : check.state === 'pending' ? 'pending' : `failed.${check.reason}` as const;
+    return <><p className="docs-figure__note" data-diagram={check.state.replace('_', '-')}>{t(`docs.diagram.${note}`)}</p><pre><code>{source}</code></pre></>;
+  }
   return (
     <>
       <p className="docs-figure__note" data-diagram="invalid">{t('docs.diagram.invalid')}</p>
