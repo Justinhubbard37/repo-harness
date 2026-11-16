@@ -4,7 +4,7 @@ Worker reference. Use only within the assigned architecture scope.
 
 ## Protocol
 
-1. Confirm the target repo path and architecture scope.
+1. Confirm the target repo path and architecture scope. Run every archctx command as `rh arch <command>` in the target repo. Do not run a bare archctx from PATH: a PATH copy can have another version and can print a help envelope with `"ok": true`.
    Projection diagnostics need CodeGraph code facts. In a new worktree run `codegraph init -y .`; when `.codegraph/` exists, run `codegraph sync .`.
 2. Inspect the committed architecture entry for the projection profile (`docs/architecture/index.md`, or the capability pages under `docs/architecture/modules/` for `repo-harness/v1`) and `.archcontext/model/nodes/`. For a coverage or registration scope, follow the coverage procedure below.
 3. When the scope maps to repo code or config, resolve the capability with:
@@ -17,16 +17,6 @@ Worker reference. Use only within the assigned architecture scope.
    - `rh run capability-resolver validate --repo <repo> --format text`
    - `bun run check:helpers` when a helper source or its standalone projection changed
    - The module reader and the review diff read the committed HEAD model, but archctx `resolve` reads the worktree model. Commit the model before a review diff.
-
-## Managed archctx command
-
-Run `rh architecture-projection status --json`. Require
-`projectionProvider.state` to be `ready`. Set `NODE` to
-`projectionProvider.command[0]` and `ARCHCTX` to `projectionProvider.command[1]`.
-Run every archctx command as `"$NODE" "$ARCHCTX" <command>` in the target repo.
-Do not run a bare archctx from PATH. A PATH copy can have another version. A wrong
-version can print a help envelope with `"ok": true`, so a failure looks like
-success. Do not install a repo-local archctx.
 
 ## Rolling writer
 
@@ -43,7 +33,7 @@ while it cannot update. `rh architecture-projection publish status` with the sam
 state. The writer pushes only the `archctx/projection` branch and opens or
 updates one rolling PR. Before that PR merges, check out its head in a clean
 worktree and run
-`"$NODE" "$ARCHCTX" projection verify-pr --base origin/main --json`. The merge
+`rh arch projection verify-pr --base origin/main --json`. The merge
 of the rolling PR accepts the proven major changes in it.
 
 ## Drift signals
@@ -54,7 +44,7 @@ of the rolling PR accepts the proven major changes in it.
   It runs `docs anchors` and writes no file. It lists cited paths that are
   missing, line numbers out of range, symbols that are missing and lines that
   moved. Fix the citations in your scope. Report the others.
-- Flow selectors: `"$NODE" "$ARCHCTX" flows check --json`. It checks the flow
+- Flow selectors: `rh arch flows check --json`. It checks the flow
   selectors in seconds. Use its reported proof failures to repair the model in scope. It needs CodeGraph code facts.
   Add `--no-sync` to check against an existing index through a private snapshot.
   It does not modify the index. It fails closed with `AC_CODE_FACTS_UNAVAILABLE`
@@ -82,11 +72,11 @@ write nodes.
    `summary`, `responsibilities`, `source.include`, and `extensions` containing
    `contractFiles.agents`, `contractFiles.claude`, `lspProfile`, and `verification`.
    Use the current model schema and source evidence; do not copy an example's semantics.
-4. Set `NODE` and `ARCHCTX` as "Managed archctx command" describes. Write the
+4. Write the
    model through one ChangeSet as described in "Model ChangeSets". Do not edit
    model YAML by hand when a ChangeSet route exists.
-5. Run `"$NODE" "$ARCHCTX" validate --format json` and
-   `"$NODE" "$ARCHCTX" flows check --no-sync --json`. Verify source matching with
+5. Run `rh arch validate --format json` and
+   `rh arch flows check --no-sync --json`. Verify source matching with
    capability-resolver. Commit the model and human prose. After merge, an
    operator runs `rh architecture-projection publish once` or a
    supervised `follow`, as "Rolling writer" describes, to publish the generated
@@ -99,19 +89,19 @@ write nodes.
   `update_entity_fields` and `delete_entity`. A body is the complete new YAML
   document, not a field patch.
 - `expectedHash` is `missing` for a new file. For an existing file, read it with
-  `"$NODE" "$ARCHCTX" hash --path <repo-relative file>`. It is not `sha256sum` of the file.
+  `rh arch hash --path <repo-relative file>`. It is not `sha256sum` of the file.
 - Put dependent changes (node, relation, flow) in one ChangeSet with
-  `"$NODE" "$ARCHCTX" plan --id <id> --operations-file <file>`; `-` reads the
+  `rh arch plan --id <id> --operations-file <file>`; `-` reads the
   operations from stdin. The single-entity route
-  `"$NODE" "$ARCHCTX" plan --id <id> --op <op> --path <file> --expected-hash <hash> --body-file <file>`
+  `rh arch plan --id <id> --op <op> --path <file> --expected-hash <hash> --body-file <file>`
   also works. Input files must be repository-relative; use an ignored path such as
   `.archcontext/tmp/` and delete it before commit.
 - Inspect the draft and preview, then run
-  `"$NODE" "$ARCHCTX" apply --id <same-id> --approved --expected-worktree-digest <draft.base.worktreeDigest>`.
+  `rh arch apply --id <same-id> --approved --expected-worktree-digest <draft.base.worktreeDigest>`.
   A draft lives in daemon memory. Plan again after a daemon restart or any worktree
   change. `--approved` records the authorized Agent decision; it does not grant extra scope.
 - After `apply` returns a `journalId`, run
-  `"$NODE" "$ARCHCTX" ledger receipt --journal-id <id> --json` and record the
+  `rh arch ledger receipt --journal-id <id> --json` and record the
   receipt in the PR body. The receipt lists the base and result model digests and
   each file path, operation and `bodyHash`. It is unsigned: its
   `approvalAuthenticity` is `unverified`. It exists only on the machine that
@@ -119,7 +109,7 @@ write nodes.
 - A component footprint is `source.include` on the `component.*` node, with an
   optional `source.exclude`. ArchContext validation owns the include and exclude
   shapes. repo-harness resolves path ownership only through
-  `"$NODE" "$ARCHCTX" resolve --paths-from <file> --json`. When the candidates lie on one
+  `rh arch resolve --paths-from <file> --json`. When the candidates lie on one
   `parent` chain, the deepest node owns the path, and the result reports
   `owningCapabilityId`. A capability can own paths only through globs. It then
   has no literal anchor, and lists show it by its node id.
@@ -154,22 +144,21 @@ Use this flow when `architecture-projection status --json` returns a `next` step
 Then the repository has no complete ArchContext model, and `apply.enabled` is
 `false`. Do the flow in one branch. Commit the result in one pull request.
 
-1. Run `codegraph init -y .`. Set `NODE` and `ARCHCTX` as "Managed archctx command"
-   describes.
+1. Run `codegraph init -y .`.
 2. While `.ai/harness/policy.json#context.capability_source` is `registry`, export
    the registry:
    `rh run capability-resolver export --format archcontext-nodes-v2`.
    The output is a JSON array of complete `archcontext.node/v2` capability nodes.
    An empty registry gives an empty array. Then author the first nodes as
    "Coverage and Agent-owned registration" describes.
-3. Run `"$NODE" "$ARCHCTX" init --name <product name>`. It writes
+3. Run `rh arch init --name <product name>`. It writes
    `.archcontext/manifest.yaml`, `.archcontext/product.yaml` and one sample node
    `capability.architecture.context`. The sample node has no `responsibilities`
    or `extensions`, so repo-harness cannot read it.
 4. Write one ChangeSet. Create one node file per exported node at
    `.archcontext/model/nodes/<id>.yaml`. JSON text is valid YAML, so the body can
    be the exported node. Delete the sample node with the hash from
-   `"$NODE" "$ARCHCTX" hash --path .archcontext/model/nodes/capability.architecture.context.yaml`.
+   `rh arch hash --path .archcontext/model/nodes/capability.architecture.context.yaml`.
    A first apply has no baseline, so it cannot accept an unproven capability. Give
    each capability both proofs in the same ChangeSet. One proof is not sufficient:
    - P1: a child `component.*` node with `parent` set to the capability, and a
@@ -185,8 +174,8 @@ Then the repository has no complete ArchContext model, and `apply.enabled` is
    `proofStatusAfter` shows the missing proof as `"unprovable"`, for example
    `{"p1": "proven", "p2": "unprovable"}`. Add the missing proof and run the
    apply again.
-5. Run `"$NODE" "$ARCHCTX" validate --format json` and
-   `"$NODE" "$ARCHCTX" flows check --json`.
+5. Run `rh arch validate --format json` and
+   `rh arch flows check --json`.
 6. Set `context.capability_source` to `archcontext` in `.ai/harness/policy.json`.
    Delete `.ai/context/capabilities.json`. In `.ai/context/context-map.json`,
    replace `.ai/context/capabilities.json` in `root_context_files` with
@@ -201,7 +190,7 @@ Then the repository has no complete ArchContext model, and `apply.enabled` is
 8. Run `rh architecture-projection apply --json`. A repository with an
    existing `docs/architecture/index.md` returns `adoption-required`. Then read the
    `adoptionPlanId` from the preview
-   `"$NODE" "$ARCHCTX" docs adopt --profile repo-harness/v1`. The preview writes
+   `rh arch docs adopt --profile repo-harness/v1`. The preview writes
    no file. Run
    `rh architecture-projection adopt --json --adoption-plan-id <adoptionPlanId>`.
 9. Commit the projected `docs/architecture/` files. Run

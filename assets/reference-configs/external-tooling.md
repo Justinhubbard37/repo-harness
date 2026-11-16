@@ -1064,8 +1064,8 @@ source path, initialization state and effective execution settings without a
 provider process. `rh architecture-projection status --json` adds the
 exact package capability handshake and project apply readiness.
 `projectionProvider.command` is the managed invocation `[nodePath, binaryPath]`.
-Guidance runs archctx only as `"$NODE" "$ARCHCTX" <command>`, with `NODE` and
-`ARCHCTX` taken from that field. Update installs the pinned CLI entry at
+Guidance runs archctx only as `rh arch <command>`, which starts the pinned
+package-local archctx. Update installs the pinned CLI entry at
 `<BUN_INSTALL>/bin/archctx`. Setup check fails when PATH resolves to an unrelated
 copy and reports the owner-specific uninstall command. For an npm global copy,
 the command uses the owning prefix's Node and npm with `--prefix <prefix> -g
@@ -1186,7 +1186,7 @@ model still needs the missing proof. Add it in a model PR; start from
 is the acceptance. repo-harness keeps no separate accept step. The rolling PR
 body records `Base: main at <sha>`. The Bot merges the rolling PR only with the
 owner's GO for its reviewed head, green checks, a passing
-`"$NODE" "$ARCHCTX" projection verify-pr --base origin/main --json`, and
+`rh arch projection verify-pr --base origin/main --json`, and
 `gh pr merge <rolling-pr> --squash --match-head-commit <reviewed-sha>`.
 `humanEditedPaths` in the `verify-pr` result means changes to human-owned text,
 not hand edits inside generated regions.

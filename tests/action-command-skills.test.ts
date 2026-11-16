@@ -266,12 +266,11 @@ describe("repo-harness action command skills", () => {
     expect(handoff).not.toContain("codex-handoff-resume");
   });
 
-  test("architecture worker runs archctx through the status command and has an adoption flow", () => {
+  test("architecture worker runs archctx through rh arch and has an adoption flow", () => {
     const architecture = readFileSync(join(COMMAND_ROOT, "repo-harness-architecture/references/worker.md"), "utf-8");
 
-    expect(architecture).toContain("`projectionProvider.command[0]`");
-    expect(architecture).toContain("`projectionProvider.command[1]`");
-    expect(architecture).toContain('`"$NODE" "$ARCHCTX" flows check --json`');
+    expect(architecture).toContain("`rh arch flows check --json`");
+    expect(architecture).not.toContain("ARCHCTX");
     expect(architecture).toContain("`rh architecture-projection anchors --json`");
     expect(architecture).toContain("rh architecture-projection publish once");
     // projection-apply derives the accepted request id; a per-apply id rule is obsolete.
@@ -280,8 +279,8 @@ describe("repo-harness action command skills", () => {
     expect(architecture).toContain("## Adopt ArchContext in a repository");
     for (const step of [
       "rh run capability-resolver export --format archcontext-nodes-v2",
-      '"$NODE" "$ARCHCTX" init --name <product name>',
-      '"$NODE" "$ARCHCTX" docs adopt --profile repo-harness/v1',
+      "rh arch init --name <product name>",
+      "rh arch docs adopt --profile repo-harness/v1",
       "rh architecture-projection adopt --json --adoption-plan-id <adoptionPlanId>",
     ]) expect(architecture).toContain(step);
   });

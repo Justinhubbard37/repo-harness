@@ -1351,7 +1351,7 @@ describe('package-local ArchContext projection provider', () => {
     expect(readiness.projectionProvider.version).toBe(ARCHCTX_REQUIRED_VERSION);
     expect(readiness.projectionProvider.binaryPath).toBe(resolvePackageLocalArchctx(join(import.meta.dir, '..')).binaryPath);
     expect(JSON.parse(readFileSync(join(f.repoRoot, 'node_modules', 'archctx', 'package.json'), 'utf8')).version).toBe('0.0.1');
-    // The guides run "$NODE" "$ARCHCTX" from this field, so it must run as given.
+    // The status field is the managed invocation and must run as given.
     const [node, archctx] = readiness.projectionProvider.command;
     expect(readiness.projectionProvider.command).toEqual([readiness.projectionProvider.nodePath, readiness.projectionProvider.binaryPath]);
     const handshake = JSON.parse(execFileSync(node, [archctx, 'capabilities', '--json'], { cwd: f.repoRoot, encoding: 'utf8', timeout: 10_000 }));

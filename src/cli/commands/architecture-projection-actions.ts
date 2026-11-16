@@ -69,7 +69,7 @@ export function execute(mode: ProjectionMode, options: ProjectionCommandOptions)
   }
 }
 
-const ADOPTION_NEXT = 'resolve "$NODE" and "$ARCHCTX" from rh architecture-projection status --json, preview "$NODE" "$ARCHCTX" docs adopt --profile repo-harness/v1, then run rh architecture-projection adopt --json --adoption-plan-id <id> (repo-harness-architecture worker, "Managed archctx command" and "Adopt ArchContext" step 8)';
+const ADOPTION_NEXT = 'preview rh arch docs adopt --profile repo-harness/v1, then run rh architecture-projection adopt --json --adoption-plan-id <id> (repo-harness-architecture worker, "Adopt ArchContext" step 8)';
 const ROLLING_PR_NEXT = 'inspect rh architecture-projection publish status (with the writer\'s own ARCHCONTEXT_STATE_DIR) and the open rolling PR; its merge is the acceptance; a feature worker does not apply or commit generated docs (repo-harness-architecture worker, "Rolling writer")';
 const UNPROVABLE_FLOW_NEXT = `${ARCHITECTURE_DEBT_COMMAND}, then add the missing P1/P2 proof in a model PR; the rolling PR merge is the acceptance (repo-harness-architecture worker, "Adopt ArchContext" step 4)`;
 const OWNER_DECISION_NEXT = 'the reported model, proof or ownership decision (external-tooling, "Rolling writer"); a feature worker does not apply or commit generated docs';

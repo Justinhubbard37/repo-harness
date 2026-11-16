@@ -11,5 +11,7 @@ responsibilities:
 source:
   include:
     - src/cli/commands/architecture-*.ts
+    - src/cli/commands/arch.ts
+    - src/cli/commands/arch-actions.ts
   exclude:
     - src/cli/commands/architecture-thread.ts

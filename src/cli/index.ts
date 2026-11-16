@@ -56,6 +56,7 @@ import { buildSeatsCommand } from './commands/seats';
 import { buildCatchUpCommand } from './commands/catch-up';
 import { buildQuotaCommand } from './commands/quota';
 import { buildRulesCommand } from './commands/rules';
+import { buildArchCommand } from './commands/arch';
 import { buildArchitectureDebtCommand } from './commands/architecture-debt';
 import { buildArchitectureProjectionCommand } from './commands/architecture-projection';
 import { buildRetentionCommand, type RetentionPorts } from './commands/retention';
@@ -206,6 +207,7 @@ export const SUBCOMMANDS = [
   'state',
   'publication',
   'fleet',
+  'arch',
   'architecture-projection',
   'architecture-debt',
   'refactor',
@@ -1076,6 +1078,7 @@ export function buildProgram(): Command {
   program.addCommand(buildQuotaCommand());
   program.addCommand(buildRulesCommand());
   program.addCommand(pluginCommand(buildRefactorCommand(), 'architecture'));
+  program.addCommand(pluginCommand(buildArchCommand(), 'architecture'));
   program.addCommand(pluginCommand(buildArchitectureProjectionCommand(), 'architecture'));
   program.addCommand(pluginCommand(buildArchitectureDebtCommand(), 'architecture'));
   program.addCommand(pluginCommand(buildStrategyCommand(), 'strategy-memory'));

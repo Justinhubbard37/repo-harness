@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { ARCHCONTEXT_NODE_RANGE, ARCHITECTURE_DOCS_PROJECTION_MANIFEST_SCHEMA_VERSION, ARCHITECTURE_DOCS_PROJECTION_MANIFEST_UPGRADE_COMMAND, ERROR_CATALOG, PROJECTION_MANIFEST_UPGRADE_REQUIRED, failureIssues, architectureDocsProjectionCompatibilityIssues, PROJECTION_REQUEST_SCHEMA_VERSION, digestJson, type ArchContextError, type ArchctxCapabilitiesV1, type ArchitectureDebtReportV1, type DocsAnchorsReportV1, type Json, type ProjectionApplyReadbackResultV2, type ProjectionExpectedSnapshotV1, type ProjectionMode, type ProjectionRequestV1, type ProjectionResultV3 } from 'archctx-contracts';
 import { isRecord } from '../../core/evidence/is-record';
 import { readWorkflowPolicyDocument } from '../state/resolve-effective-state';
@@ -235,6 +236,18 @@ export function archctxCapabilities(repoRoot: string, options: ArchctxProviderOp
   try { assertArchctxVersion(value, policy.requiredVersion); }
   catch (error) { throw new ArchctxClientError({ code: 'RH_ARCHCTX_PACKAGE_MISMATCH', action: 'update-repo-harness', message: error instanceof Error ? error.message : String(error) }); }
   return { resolved, capabilities: value as ArchctxCapabilitiesV1 };
+}
+
+/**
+ * `rh arch`: the version handshake, then the package-local archctx with the caller's
+ * arguments, inherited stdio and no output cap. Returns the archctx exit code; a signal exit is 1.
+ */
+export function runArchctxPassThrough(cwd: string, args: readonly string[], options: ArchctxProviderOptions = {}): number {
+  const { resolved } = archctxCapabilities(cwd, options);
+  const env = options.env ?? process.env;
+  const result = spawnSync(resolveCompatibleNodeRuntime(env, options.trustedNodeCandidateSource), [resolved.binaryPath, ...args], { cwd, env, stdio: 'inherit' });
+  if (result.error) throw result.error;
+  return result.status ?? 1;
 }
 
 /** Lifecycle readback is separate from the CLI-only capabilities handshake. */

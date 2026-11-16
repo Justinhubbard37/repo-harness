@@ -337,3 +337,51 @@ function record(value: unknown, label: string): JsonRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as JsonRecord;
 }
+
+export type ArchctxDisposition = 'pass' | 'owned' | 'refused' | 'held';
+export interface ArchctxCommandDisposition { readonly disposition: ArchctxDisposition; readonly use?: string }
+
+const passCommands = [
+  'capabilities', 'init', 'sync', 'validate', 'context', 'status', 'daemon', 'state', 'repo', 'landscape', 'ledger', 'book', 'explore', 'prepare',
+  'practices', 'checkpoint', 'plan', 'apply', 'hash', 'review', 'complete', 'manifest', 'config', 'doctor', 'paths', 'privacy-audit', 'export',
+  'import', 'resolve', 'impact', 'history', 'flows', 'state-machines', 'deps', 'constraints', 'docs',
+] as const;
+const owned = (use: string): ArchctxCommandDisposition => ({ disposition: 'owned', use });
+const refused = (use: string): ArchctxCommandDisposition => ({ disposition: 'refused', use });
+const held = (): ArchctxCommandDisposition => ({ disposition: 'held', use: 'waits for an owner decision (repo-harness #2869)' });
+
+/**
+ * One entry for each command of the pinned archctx help envelope, plus `docs`.
+ * `rh arch` starts archctx only for `pass`; a test fails when the help list and
+ * these keys differ.
+ */
+export const ARCHCTX_COMMAND_DISPOSITIONS: Readonly<Record<string, ArchctxCommandDisposition>> = {
+  ...Object.fromEntries(passCommands.map(name => [name, { disposition: 'pass' } as ArchctxCommandDisposition])),
+  projection: owned('rh architecture-projection'),
+  debt: owned('rh architecture-debt'),
+  refactor: owned('rh refactor'),
+  recommendations: owned('rh refactor'),
+  install: refused('rh install'),
+  uninstall: refused('rh uninstall'),
+  update: refused('rh update'),
+  hooks: refused('rh install'),
+  mcp: refused('rh install'),
+  tunnel: refused('not available through rh'),
+  audit: held(),
+  investigate: held(),
+  agents: held(),
+  jobs: held(),
+  hook: held(),
+};
+
+/** `projection verify-pr` is read-only and the rolling-writer acceptance runs it; the rest of `projection` stays owned. */
+const PASS_PROJECTION_SUBCOMMAND = 'verify-pr';
+
+/** The refusal text for a command that `rh arch` does not start, or null when it starts. */
+export function archctxRefusal(args: readonly string[]): string | null {
+  const [command = ''] = args;
+  const entry = Object.hasOwn(ARCHCTX_COMMAND_DISPOSITIONS, command) ? ARCHCTX_COMMAND_DISPOSITIONS[command] : undefined;
+  if (!entry) return `arch_command_unknown: ${command}`;
+  if (entry.disposition === 'pass' || (command === 'projection' && args[1] === PASS_PROJECTION_SUBCOMMAND)) return null;
+  return `arch_command_${entry.disposition}: ${command}. Use: ${entry.use}`;
+}
