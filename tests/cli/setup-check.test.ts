@@ -202,6 +202,7 @@ describe('setup check command', () => {
       expect(report.checks.find((entry) => entry.id === 'legacy.project-codex-hooks')?.status).toBe('needs_agent');
       expect(report.checks.find((entry) => entry.id === 'legacy.project-claude-settings')?.detail).toContain('cannot inspect');
       expect(report.agent_actions.find((entry) => entry.id === 'legacy.project-adapters.review')?.targets).toEqual([claude, codex]);
+      expect(report.agent_actions.find((entry) => entry.id === 'legacy.project-adapters.review')?.command).toBe('rh init');
       expect(readFileSync(claude, 'utf8')).toBe('{ broken');
 
       // Issue 1650: outside a repository (cwd = $HOME) the same files are the user-level adapters.
@@ -212,13 +213,13 @@ describe('setup check command', () => {
       }
       expect(report.agent_actions.find((entry) => entry.id === 'legacy.project-adapters.review')).toBeUndefined();
 
-      // A repository rooted at HOME holds the user-level adapters, which migrate refuses.
+      // A repository rooted at HOME holds user-level adapters, so no project cleanup is offered.
       initGitRepo(repo);
       report = run(repo);
       expect(report.checks.find((entry) => entry.id === 'legacy.project-codex-hooks')).toMatchObject({ status: 'na', detail: `user-level adapter, not a project adapter: ${codex}` });
       expect(report.agent_actions.find((entry) => entry.id === 'legacy.project-adapters.review')).toBeUndefined();
 
-      // A dotfiles layout: HOME links one adapter into the repository, so migrate refuses the legacy codex file too.
+      // A dotfiles layout: HOME links one adapter into the repository, so review stays manual.
       mkdirSync(join(home, '.claude'), { recursive: true });
       symlinkSync(claude, join(home, '.claude', 'settings.json'));
       report = run();

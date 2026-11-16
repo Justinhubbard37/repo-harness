@@ -12,4 +12,3 @@ source:
   include:
     - src/cli/commands/adoption-plan.ts
     - src/cli/repo-adoption/**
-    - src/cli/commands/migrate.ts

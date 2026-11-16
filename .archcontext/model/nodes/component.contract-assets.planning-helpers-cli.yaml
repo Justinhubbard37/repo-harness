@@ -11,5 +11,3 @@ responsibilities:
 source:
   include:
     - src/cli/commands/run.ts
-    - src/cli/commands/brain.ts
-    - src/cli/commands/brain-root.ts

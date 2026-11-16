@@ -848,9 +848,10 @@ function legacyChecks(cwd: string, home: string, target: InitHookTarget, checkUp
       status: 'needs_agent',
       reason: userLevelAdapter
         ? 'Repo-local host adapter configs are retired. A candidate is, or cannot be resolved apart from, a user-level adapter; review the targets manually.'
-        : 'Repo-local host adapter configs are retired; user-level adapters should own runtime routing. Review each target, then remove its repo-harness hook commands by hand.',
+        : 'Repo-local host adapter configs are retired; user-level adapters should own runtime routing. Review each target, then run rh init to remove its repo-harness hook commands.',
+      command: userLevelAdapter ? undefined : 'rh init',
       requires_agent: true,
-      risk: 'These files may contain user-owned historical config; review or remove the repo-harness entries by hand.',
+      risk: 'These files may contain user-owned historical config; review the targets before cleanup. rh init also refreshes the repo-local harness.',
       targets: present,
       verification: verificationCommand(target, checkUpdates),
     }, presentChecks);

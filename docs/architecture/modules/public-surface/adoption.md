@@ -155,10 +155,10 @@ sequenceDiagram
 - 事务在 apply 后持久化 manifest 和 registry projection，然后刷新 handoff 与 strict workflow evidence。每次写入把原字节和 content hash 存入 `.ai/harness/backups/fs-transaction/<transaction>/manifest.json`。remove 把旧文件移入 transaction backup area；move 记录 source 和 destination。manifest 落盘失败是 failed apply，不是 success。rollback 只恢复 transaction-owned operation，并拒绝覆盖 apply 之后的用户编辑。
 - `rh init rollback --transaction <manifest>` 只在 target 仍归本事务时恢复 backup 和 Git index。`gitUntrack` rollback 恢复记录的 index mode 和 blob，不 stage 当前工作树字节。apply 只记录一个 `100644` 或 `100755` 的 stage-0 entry；mutation 前拒绝 unmerged entry、其他 mode 和 intent-to-add entry。changed target、changed index entry、missing blob、occupied restore path、symlink（含 dangling）或 invalid manifest 给出结构化失败，不覆盖用户数据。manifest 没有 index entry 时，提示用户手动运行 `git add -- <path>`。
 
-### 3.6 归属与开放问题（2026-10-11）
+### 3.6 归属与开放问题
 
-- include 增加原本没有归属的 `src/cli/repo-adoption/**` 和 `src/cli/commands/migrate.ts`。没有删除任何条目。
-- `rh migrate`（`src/cli/commands/migrate.ts`）删除 repo 级旧 hook adapter。它与 `init` 共用 `core/adoption/managed-hook-config.ts` 的识别逻辑。它的写入用逐文件备份加原子写（`migrate.ts:14-18`），不经过 `applyAdoptionPlan`。这是 §3.1 第 5 条之外的第二条写入路径。它是有意保留的独立迁移命令，还是应该并入 FsTransaction？没有记录。
+- `src/cli/repo-adoption/**` 归本 capability 所有。
+- `rh init` 通过 `addLegacyCleanup()`（`src/effects/adoption/standard-plan.ts#addLegacyCleanup`）删除 repo-local hook 配置中的 repo-harness 命令。清理与其他 adoption 操作共用 `FsTransaction`。`rh migrate` 已在 #2937 删除。
 - `src/effects/path-safety.ts` 被 `src/core/evidence/` 和 `src/effects/evidence/` 下的 7 个文件 import（归属提议 §7 风险 3）。这条反向依赖会在 evidence-ledger 建立后成为一条进入本 capability 的跨 capability 边。它是否应该移到共享位置？没有记录。
 
 ---
