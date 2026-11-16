@@ -195,7 +195,7 @@
 
 ## 缺口清单
 
-设计稿依赖 38 项后端或数据能力，其中 4 项 P0 不补就不能上线对应页面。「现状」列是读源码和文档得到的事实，不是运行结果。
+设计稿依赖 39 项后端或数据能力，其中 4 项 P0 不补就不能上线对应页面。「现状」列是读源码和文档得到的事实，不是运行结果。
 
 | # | 优先级 | 缺口 | 现状 | 需要补的 | 影响页面 |
 | --- | --- | --- | --- | --- | --- |
@@ -237,6 +237,7 @@
 | G36 | P2 | 编排席推荐档位不一致 | herdr-notify.md 推荐 Opus high，agents/fleet/orchestrator.md 写 Opus xhigh | 已定（2026-11-03）：默认 high，用户在席位设置里自己调；orchestrator.md 随 3.5 改成 high | 设置 · 席位 |
 | G37 | P1 | classic herdr CLI 退役 | owner 2026-11-03：新版本弃用 herdr CLI，全面改用 herdr-app + herdr-core。仓库里传输 herdr.ts、task-session、review --launch herdr、operator collector、notify 插件、强 readiness 和 CI 的 install-pinned-herdr 仍只认 classic（#1413 列表） | 迁移 issue #1474（子 issue #1475–#1483）：逐个表面改到 hc / herdr-app，一次性迁移后删掉 classic 路径，不留回退 | Bots、看板、系统、席位 |
 | G38 | P1 | 顾问席对话 | 控制台不向任何会话发消息；看板的 attention watcher（#1509）已用 hc send 把提醒送到编排席和顾问席；hcSend、hcRead、hcWait、hcEvents 已封装在 src/effects/terminal/herdr-core.ts | 按「写入 API」加顾问席消息与读回路由：服务端只接受 board 上 seat 标签为 advisor、属于当前 parent 的活终端；读回只读这个终端，过 SECRET\_TOKEN\_PATTERNS 再出服务端；不读编排席和执行席 | 看板 |
+| G39 | P2 | agent 写的图 | 文档页只把 `mermaid` 代码块转成 SVG 并以图片显示（`src/operator-web/DocsMarkdown.tsx`）；架构页用 `@xyflow/react`，数据来自架构 API；agent 写进文档的图控制台画不出来，agent 也看不到自己画的图 | 见「文档读取」的「agent 写的图（G39）」：文档里的图块用 Eraser Diagrams JSON，先校验，渲染成静态 HTML 产物，控制台只读产物；agent 能读到同一张图的图片；用户按需导出。以 spike（#2822）的结论为准，spike 不过则 G39 留在 P2 backlog | 文档、文档会话 |
 
 ## 存放层级：repo 与 global
 
@@ -381,6 +382,18 @@ issue-flow 在 Herdr 里开三种进程 agent，统称席位：编排席（orche
 - 正文读默认分支最新提交里的 blob，和文档会话的起点一致。服务启动时每个仓库起一个常驻的 `git cat-file --batch` worker（带超时），GET 只向它要对象，不另起子进程。工作区里有未提交改动的文件照样显示，标「引用以提交为准」。单文件上限 512 KiB。
 - 范围：允许列表是 `docs/**` 和被引用的源码文件；先解析 realpath，再在物理路径上同时检查允许列表和拒绝列表。MCP 的 `paths.ts` 只查逻辑路径，软链能越界，不能直接复用。
 - 现有约定要改：revamp 计划要求「文档只显示路径，服务端只回纯文本」（:251、:530）。新方案在浏览器端渲染 markdown，服务端仍只回原文。渲染不执行任何脚本：不开原始 HTML，链接只放行 http、https 和仓库内相对路径；Mermaid 用 strict 安全级别，生成的 SVG 以图片显示。不用 innerHTML，现有的扫描测试继续有效。
+
+### agent 写的图（G39，P2，待 spike #2822）
+
+- owner 决定（2026-11-16）：产品 UI 层显示 HTML；只在用户导出时才生成 SVG。
+- 对「不开原始 HTML」的例外：一个静态 HTML 产物，放在不带 `allow-scripts` 的沙箱 iframe 里，可以显示。产物由固定模板和受支持的图数据生成，不含脚本和外部资源地址。例外是否成立，等 spike（#2822）验证后才生效；在此之前，文档读取一律按上一节的规则，不开原始 HTML。
+- 五条边界（父 issue #2810；顾问席评审提出，待 owner 用 `decision` 评论确认）：
+  1. Chromium 是可选的渲染能力，不是 repo-harness 核心安装或普通文档阅读的硬依赖。
+  2. 控制台只读已生成的产物；打开文档时不启动 Chromium。
+  3. 模板和字体固定，图标在本地；资源缺失或渲染失败时显示明确状态。
+  4. 架构图仍是现有架构权威的投影；Eraser JSON 不是第二个架构来源。
+  5. 只接受受支持的图数据和固定模板，不接受任意 HTML、脚本或外部资源地址。
+- 导出格式未定：「导出时生成 SVG」怎么做，由 spike 回答，否则向 owner 提议另一种格式。
 
 ### 引用协议（G8）
 
