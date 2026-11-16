@@ -3,7 +3,8 @@ import { ArchitectureModelReader } from '../../src/effects/architecture/model-re
 import { decodeArchitectureModuleIndex, decodeArchitectureModuleDetail, decodeArchitectureReviewPrompt } from '../../src/core/operator/architecture';
 import { isArchitectureRequest, parseArchitectureRequest } from '../../src/core/operator/architecture';
 import { MODULE_ID, MODULE_NODE, MODULE_FLOW, moduleRepository, fixtureWrite, fixtureCommit, fixtureGit, fixtureYaml, writeStateMachine } from '../helpers/module-repository';
-import { readArchitectureView } from '../../src/effects/architecture/architecture-read';
+import { readArchitectureView, readArchVerification } from '../../src/effects/architecture/architecture-read';
+import { archVerifyCheck } from '../../src/core/architecture/arch-verify';
 import { readFileSync, realpathSync, rmSync } from 'node:fs';
 import {
   archctxRefusal,
@@ -516,6 +517,26 @@ describe('architecture map', () => {
       const known = new Set(result.snapshot.nodes.map(node => node.id));
       expect(debtSection({ ...report, items: report.items.map(item => ({ ...item, kind: 'practice-regression' as const })) }, known))
         .toEqual({ state: 'unavailable', reason: 'archctx_failed' });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('the arch verify reads reuse the operator envelope read: an archctx code survives, so no check turns it into a pass', () => {
+    const root = realpathSync(moduleRepository());
+    try {
+      const policy = { provider: 'archctx', applyMode: 'manual', requiredVersion: ARCHCTX_REQUIRED_VERSION, timeoutMs: 120_000 } as const;
+      // The fixture has no CodeGraph index, so `flows check` answers with its own error envelope.
+      const flows = readArchVerification(root, ['flows', 'check', '--no-sync', '--json'], { policy });
+      expect(flows).toEqual({ ok: false, error: { code: 'AC_CODE_FACTS_UNAVAILABLE', message: 'Required code facts have no available index. Run codegraph init.' } });
+      expect(archVerifyCheck('flows', flows)).toMatchObject({ status: 'unavailable', count: 0 });
+      // The fixture has no product intent, so the model itself is invalid: a measured finding, not an error.
+      expect(archVerifyCheck('validate', readArchVerification(root, ['validate', '--format', 'json'], { policy })))
+        .toMatchObject({ status: 'findings', count: 1 });
+      // A partial debt read still reports its measured items through the same envelope.
+      expect(archVerifyCheck('debt', readArchVerification(root, ['debt', '--json'], { policy }))).toMatchObject({ status: 'pass', count: 0 });
+      // The verified base is a commit, so `verify-pr` answers the empty range the operator map also accepts.
+      const head = fixtureGit(root, ['rev-parse', 'HEAD']);
+      expect(archVerifyCheck('projection', readArchVerification(root, ['projection', 'verify-pr', '--base', head, '--json'], { policy })))
+        .toMatchObject({ status: 'pass', count: 0 });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

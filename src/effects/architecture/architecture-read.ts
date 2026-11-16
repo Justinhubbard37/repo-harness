@@ -10,8 +10,9 @@ import { isRecord } from '../../core/evidence/is-record';
 import { capabilityRegistryFromNativeContext, type ArchcontextPathOwner } from '../../core/capabilities/registry';
 import { ARCHCTX_REQUIRED_VERSION, ARCHCONTEXT_MANIFEST, ArchctxClientError, decodeArchitectureHandEdits, decodeNativeContextExport, firstRenderChangeCommit, type DifferingRenderTarget, type NativeContextSource } from '../../core/architecture/projection';
 import type { ArchctxProviderOptions } from '../../core/architecture/contracts';
+import type { ArchVerifyCheckRead } from '../../core/architecture/arch-verify';
 import { gitExecFileSync } from '../git/runner';
-import { ArchctxClient } from './archctx-provider';
+import { ArchctxClient, commandLabel } from './archctx-provider';
 import { loadArchitectureProjectionPolicy } from './projection-config';
 
 /** A cold `archctx history` derives every model revision (10.9 s for 50 milestones), so it has its own limit. */
@@ -200,15 +201,74 @@ export type ArchitectureViewArgs =
   | readonly ['impact', '--base', string, '--head', string, '--json']
   | readonly ['impact', '--paths-from', string, '--json'];
 
+/** The one envelope read behind the operator views and `rh arch verify`. */
+type ArchctxEnvelopeRead =
+  | { readonly state: 'data'; readonly data: Record<string, unknown> }
+  | { readonly state: 'envelope-error'; readonly error: Record<string, unknown> }
+  | { readonly state: 'invalid' }
+  | { readonly state: 'failed'; readonly failure: unknown };
+
+/** An error envelope is data, so a check keeps archctx's own code and message. */
+function readArchctxEnvelope(repoRoot: string, args: readonly string[], maximumMs: number, options: ArchctxProviderOptions): ArchctxEnvelopeRead {
+  let value: unknown;
+  try { value = new ArchctxClient(repoRoot, ARCHCTX_REQUIRED_VERSION, options).json(args, maximumMs, true); }
+  catch (failure) { return { state: 'failed', failure }; }
+  if (isRecord(value) && value.ok === true && isRecord(value.data)) return { state: 'data', data: value.data };
+  if (isRecord(value) && value.ok === false && isRecord(value.error)) return { state: 'envelope-error', error: value.error };
+  return { state: 'invalid' };
+}
+
 /** One view read: its data, or its error envelope's fields. `error: null`: the run failed or gave no envelope. */
 export function readArchitectureView(
   repoRoot: string,
   args: ArchitectureViewArgs,
   options: ArchctxProviderOptions = {},
 ): { readonly ok: true; readonly data: Record<string, unknown> } | { readonly ok: false; readonly error: Record<string, unknown> | null } {
-  let value: unknown;
-  try { value = new ArchctxClient(repoRoot, ARCHCTX_REQUIRED_VERSION, options).json(args, ARCHITECTURE_VIEW_TIMEOUT_MS, true); }
-  catch { return { ok: false, error: null }; }
-  if (isRecord(value) && value.ok === true && isRecord(value.data)) return { ok: true, data: value.data };
-  return { ok: false, error: isRecord(value) && value.ok === false && isRecord(value.error) ? value.error : null };
+  const read = readArchctxEnvelope(repoRoot, args, ARCHITECTURE_VIEW_TIMEOUT_MS, options);
+  if (read.state === 'data') return { ok: true, data: read.data };
+  return { ok: false, error: read.state === 'envelope-error' ? read.error : null };
+}
+
+/** The read commands of `rh arch verify`, in the order it runs them. No write command is in this list. */
+export type ArchitectureVerifyArgs =
+  | readonly ['validate', '--format', 'json']
+  | readonly ['flows', 'check', '--no-sync', '--json']
+  | readonly ['state-machines', 'check', '--json']
+  | readonly ['constraints', 'check', '--json']
+  | readonly ['docs', 'anchors', '--json']
+  | readonly ['projection', 'verify-pr', '--base', string, '--json']
+  | readonly ['debt', '--json'];
+
+/** A run that started no read and reported no archctx code. */
+export const ARCH_VERIFY_READ_FAILED = 'RH_ARCH_VERIFY_READ_FAILED';
+/** A run whose answer broke the envelope contract. */
+export const ARCH_VERIFY_ENVELOPE_INVALID = 'RH_ARCH_VERIFY_ENVELOPE_INVALID';
+
+/**
+ * One `rh arch verify` read with the policy timeout. The policy controls projection
+ * writes, not reads, so a disabled provider still allows every check. archctx's own
+ * error code and message survive, so the caller can tell an unobservable subject
+ * from a failure. A missing or mismatched package and a timeout are failures.
+ */
+export function readArchVerification(
+  repoRoot: string,
+  args: ArchitectureVerifyArgs,
+  options: ArchctxProviderOptions = {},
+): ArchVerifyCheckRead {
+  const policy = options.policy ?? loadArchitectureProjectionPolicy(options.env);
+  const read = readArchctxEnvelope(repoRoot, args, policy.timeoutMs, options);
+  if (read.state === 'data') return { ok: true, data: read.data };
+  if (read.state === 'envelope-error') {
+    const code = typeof read.error.code === 'string' && read.error.code !== '' ? read.error.code : ARCH_VERIFY_ENVELOPE_INVALID;
+    const message = typeof read.error.message === 'string' ? read.error.message : `${commandLabel(args)} reported no message`;
+    return { ok: false, error: { code, message } };
+  }
+  if (read.state === 'invalid') return { ok: false, error: { code: ARCH_VERIFY_ENVELOPE_INVALID, message: `${commandLabel(args)} returned no valid archcontext envelope` } };
+  const failure = read.failure;
+  return {
+    ok: false,
+    error: failure instanceof ArchctxClientError
+      ? { code: failure.code, message: failure.providerMessage }
+      : { code: ARCH_VERIFY_READ_FAILED, message: failure instanceof Error ? failure.message : String(failure) },
+  };
 }

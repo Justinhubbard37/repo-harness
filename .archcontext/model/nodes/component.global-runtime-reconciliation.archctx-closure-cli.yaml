@@ -13,5 +13,6 @@ source:
     - src/cli/commands/architecture-*.ts
     - src/cli/commands/arch.ts
     - src/cli/commands/arch-actions.ts
+    - src/cli/commands/arch-verify.ts
   exclude:
     - src/cli/commands/architecture-thread.ts
