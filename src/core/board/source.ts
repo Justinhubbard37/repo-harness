@@ -485,7 +485,8 @@ export function claimStatusTarget(comment: BoardCommentV1): string | null {
 
 const CLAIM_HEADER = 'repo-harness issue claim';
 const CLAIM_STATUS_HEADER = 'repo-harness issue claim status';
-const BOUNDARY_QUESTION_HEADER = 'repo-harness boundary question';
+/** The first line of a boundary question to the coordinator (`templates.md`); `openQuestions` reads it. */
+export const BOUNDARY_QUESTION_HEADER = 'repo-harness boundary question';
 
 /** The claim URLs that an `issue claim status` with `done` or `released` closes. A status closes only the claim it names, even if it arrives late. */
 export function closedClaimUrls(page: BoardCommentPageV1): Set<string | null> {
@@ -507,6 +508,33 @@ export function issueClaim(page: BoardCommentPageV1): IssueClaimV1 {
   if (claim === null) return page.truncated ? { status: 'unknown' } : { status: 'none' };
   if (closedClaimUrls(page).has(claim.url)) return { status: 'none' };
   return { status: 'active', url: claim.url, created_at: claim.created_at, role: field(claim.body, 'Role') };
+}
+
+/** The fields of one `boundary question` comment. `rh board post question` renders them. */
+export interface BoundaryQuestionCommentFieldsV1 {
+  /** The only addressee that `openQuestions` reads: the coordinator. */
+  readonly to: 'coordinator';
+  /** The comment URL of the writer's claim. */
+  readonly claim: string;
+  readonly blocker: string;
+  readonly evidence: string;
+  /** The choices, in the `A ... | B ...` form of `templates.md`. */
+  readonly options: string;
+  /** What the writer does not do until the answer arrives. */
+  readonly holding: string;
+}
+
+/** One `boundary question` comment: the header, then the six field lines. */
+export function renderBoundaryQuestionComment(fields: BoundaryQuestionCommentFieldsV1): string {
+  return [
+    BOUNDARY_QUESTION_HEADER,
+    `To: ${fields.to}`,
+    `Claim: ${fields.claim}`,
+    `Blocker: ${fields.blocker}`,
+    `Evidence: ${fields.evidence}`,
+    `Options: ${fields.options}`,
+    `Holding: ${fields.holding}`,
+  ].join('\n');
 }
 
 export type OpenQuestionsV1 =
@@ -617,6 +645,31 @@ export interface AcceptanceDispositionV1 {
   readonly record: string;
   readonly subject_sha: string;
   readonly findings: readonly string[];
+}
+
+/** The first line of an acceptance disposition on a pull request (`templates.md`); `parseAcceptanceDisposition` reads it. */
+export const ACCEPTANCE_DISPOSITION_HEADER = 'repo-harness acceptance disposition';
+
+/** The fields of one `acceptance disposition` comment. `rh board post disposition` renders them. */
+export interface AcceptanceDispositionCommentFieldsV1 {
+  /** The comment URL of the FAIL acceptance record. */
+  readonly record: string;
+  /** The 40-hex subject SHA of the FAIL row. */
+  readonly subject: string;
+  readonly findings: readonly string[];
+  /** The comment URL of the decision that resolves the findings. */
+  readonly decision: string;
+}
+
+/** One `acceptance disposition` comment: the header, then the four field lines. */
+export function renderAcceptanceDispositionComment(fields: AcceptanceDispositionCommentFieldsV1): string {
+  return [
+    ACCEPTANCE_DISPOSITION_HEADER,
+    `Record: ${fields.record}`,
+    `Subject: ${fields.subject}`,
+    `Findings: ${fields.findings.join(', ')}`,
+    `Decision: ${fields.decision}`,
+  ].join('\n');
 }
 
 /**

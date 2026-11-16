@@ -2041,7 +2041,7 @@ function migrationStub(initial: readonly MigrationSubIssue[], missing: readonly 
     return answer({ data: { repository } });
   };
   const input = { repo_root: '/nonexistent', parent: 1503, gh_runner: runner };
-  // `plan` is the run without --write. `migrate` is `--write --plan <digest>`: a fresh plan, the digest check, then exactly its writes;
+  // `plan` is the run without --apply. `migrate` is `--apply --plan <digest>`: a fresh plan, the digest check, then exactly its writes;
   // without a digest it uses the fresh plan's own, as a person who checked that same list would.
   return {
     runner, writes, blockerReads: () => blockerReads, calls: () => calls, plan: () => planDependencyMigration(input),
@@ -2078,20 +2078,20 @@ test('migrate-dependencies turns the dependency lines of open sub-issues into bl
     '#1509 blocked by #1505', '#1509 blocked by #1473', '#1509 blocked by #1476', '#1510 blocked by #1505', '#1512 blocked by #1505']);
 });
 
-test('migrate-dependencies without --write prints the whole plan and writes nothing', () => {
+test('migrate-dependencies without --apply prints the whole plan and writes nothing', () => {
   const stub = migrationStub(MIGRATION_SUB_ISSUES);
   const text = renderDependencyMigrationPlan(stub.plan());
   expect(stub.writes).toEqual([]);
   for (const line of ['create label tier:low', 'create #1508 blocked by #1505 (line 5: Depends on #1505 board core)',
-    'create #1512 blocked by #1505 (line 1: Depends on #1505)', 'skip #1509 line 3: 风险：High（验收链路）。', '--write makes 9 writes',
-    `plan digest: ${stub.plan().digest} (apply with --write --plan ${stub.plan().digest})`]) {
+    'create #1512 blocked by #1505 (line 1: Depends on #1505)', 'skip #1509 line 3: 风险：High（验收链路）。', '--apply makes 9 writes',
+    `plan digest: ${stub.plan().digest} (apply with --apply --plan ${stub.plan().digest})`]) {
     expect(text).toContain(line);
   }
   const refused = migrationStub([...MIGRATION_SUB_ISSUES, { number: 1505, state: 'OPEN', body: '- Example:\n\n      Depends on #7\n' }]);
   const stopped = renderDependencyMigrationPlan(refused.plan());
   expect(refused.writes).toEqual([]);
   expect(stopped).toContain('refuse #1505 line 3: Depends on #7');
-  expect(stopped).toContain('--write stops before any write: dependency_line_ambiguous');
+  expect(stopped).toContain('--apply stops before any write: dependency_line_ambiguous');
 });
 
 test('a second migrate-dependencies run writes nothing and reports every link and label as existing', () => {
@@ -2156,20 +2156,34 @@ test('migrate-dependencies stops before any write on an unparsable line, a decla
   const missing = migrationStub([...MIGRATION_SUB_ISSUES, open(1505, '-     Depends on #7\n'), open(1506, 'Depends on #999\n')], [999]);
   expect(stopOf(() => missing.migrate())).toMatchObject({ code: 'dependency_line_ambiguous' });
   expect([missing.blockerReads(), missing.writes]).toEqual([0, []]);
-  // --write applies only the checked list: a body edited after the dry run changes the digest.
+  // --apply applies only the checked list: a body edited after the dry run changes the digest.
   const drift = migrationStub(MIGRATION_SUB_ISSUES);
   const checked = drift.plan();
   drift.edit(1510, 'Watcher.\n依赖：#1473\n');
   expect(stopOf(() => drift.migrate(checked.digest))).toMatchObject({ code: 'dependency_plan_changed' });
   expect(drift.writes).toEqual([]);
-  // --write without --plan <digest> is refused, and the command refuses it before any GitHub call.
+  // --apply without --plan <digest> is refused, and the command refuses it before any GitHub call.
   expect(stopOf(() => drift.apply(undefined))).toMatchObject({ code: 'plan_digest_required' });
   expect(drift.writes).toEqual([]);
   const flags = migrationStub(MIGRATION_SUB_ISSUES);
   expect(stopOf(() => flags.command({ write: true, plan: undefined }))).toMatchObject({ code: 'plan_digest_required' });
-  // --plan <digest> without --write is refused too.
+  // --plan <digest> without --apply is refused too.
   expect(stopOf(() => flags.command({ write: false, plan: checked.digest }))).toMatchObject({ code: 'plan_without_write' });
   expect([flags.calls(), flags.writes]).toEqual([0, []]);
+});
+
+test('migrate-dependencies takes --apply, and the removed --write is an unknown option that runs nothing', () => {
+  const root = tmpWorkspace('board-migrate-apply');
+  const cli = join(import.meta.dir, '../src/cli/index.ts');
+  // The retired option is refused by the CLI parser, before any repository or GitHub read.
+  const retired = run(process.execPath, [cli, 'board', 'migrate-dependencies', '--parent', '1', '--write'], root);
+  expect(retired.status).toBe(1);
+  expect(retired.stdout).toBe('');
+  expect(retired.stderr).toContain("unknown option '--write'");
+  const help = run(process.execPath, [cli, 'board', 'migrate-dependencies', '--help'], root);
+  expect(help.status).toBe(0);
+  expect(help.stdout).toContain('--apply');
+  expect(help.stdout).not.toContain('--write');
 });
 
 test('advisor seat: plain text reaches only the one live advisor terminal of the repository; the read-back withholds key blocks and long lines and redacts the rest', () => {

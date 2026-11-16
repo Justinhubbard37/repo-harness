@@ -194,6 +194,28 @@ template only. Do not wrap the posted comment in a fence: its first line is
 the header. A fence that the template itself requires in the body, such as
 the plan block's JSON, stays.
 
+Five kinds have a command that writes them: `plan`, `merge hold`,
+`merge hold released`, `acceptance disposition` and `boundary question`.
+Post them with `rh board post` and keep the templates below as the field
+reference:
+
+```bash
+rh board post <plan|hold|release|disposition|question> --target <issue-or-pr-number> --fields-file <path> [--dry-run] [--json]
+```
+
+`--fields-file` holds one JSON object. Its keys are the field names of the
+matching template, in lower snake case (`coordinator`, `baseline`,
+`supersedes`, `issues`, `reason`, `record`, `subject`, `findings`,
+`decision`, `to`, `claim`, `blocker`, `evidence`, `options`, `holding`);
+`plan` also takes `block`, the plan block object. The command renders the
+comment, decodes the rendered text with the parser of the board, and posts
+it only when that parser accepts it. An unknown key, a missing required
+field or a wrong type exits 2 with `board_post_fields_invalid: <key>:
+<reason>`; text that the parser refuses exits 1 with
+`board_post_roundtrip_failed`. Neither case posts anything. `plan` also
+needs `supersedes` when the thread holds a plan already: the URL of that
+plan comment. `--dry-run` prints the checked comment and posts nothing.
+
 ### issue claim
 
 ```text
@@ -249,6 +271,9 @@ Next: <what happens next, who acts>
 
 ### boundary question
 
+Post it with `rh board post question`; the fields are `to` (`coordinator`),
+`claim`, `blocker`, `evidence`, `options` and `holding`.
+
 ```text
 repo-harness boundary question
 To: coordinator
@@ -285,6 +310,9 @@ agent's comment of one of these kinds takes effect only when the
 coordinator confirms it.
 
 ### plan
+
+Post it with `rh board post plan`. The fields are `coordinator`, `baseline`,
+`supersedes` and `block`; the block comes below.
 
 ```text
 repo-harness plan
@@ -357,6 +385,9 @@ read makes the PR state unknown, not accepted.
 
 ### acceptance disposition (on the PR, coordinator only)
 
+Post it with `rh board post disposition`; the fields are `record`,
+`subject`, `findings` and `decision`.
+
 ```text
 repo-harness acceptance disposition
 Record: <FAIL acceptance record comment URL>
@@ -411,6 +442,9 @@ Next: merge main into your branch (no force push; the `unblocked` case of `worke
 ```
 
 ### merge hold (on the parent, an issue or a PR)
+
+Post it with `rh board post hold`; the fields are `issues` and `reason`.
+Post a release with `rh board post release` and the field `reason`.
 
 ```text
 repo-harness merge hold

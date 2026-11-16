@@ -6,6 +6,19 @@
  */
 export const PLAN_BLOCK_PROTOCOL = 2 as const;
 export const PLAN_BLOCK_KIND = 'repo-harness.plan' as const;
+/** The first line of a plan comment; `board.ts` and `board dispatch` read the newest one (`templates.md`, plan). */
+export const PLAN_COMMENT_HEADER = 'repo-harness plan' as const;
+
+/** The fields of one `plan` comment, as `templates.md` names them. `rh board post plan` renders them. */
+export interface PlanCommentFieldsV1 {
+  /** The comment URL of the coordinator claim. */
+  readonly coordinator: string;
+  /** `<branch>@<sha>`, the base that the plan was written against. */
+  readonly baseline: string;
+  /** The plan comment URL that this plan replaces; null on the first plan of a thread. */
+  readonly supersedes: string | null;
+  readonly block: PlanBlockV2;
+}
 
 export interface PlanHoldV1 {
   readonly issue: number;
@@ -94,4 +107,15 @@ export function decodePlanBlock(commentBody: string): PlanBlockV2 {
 /** Every issue that the block names. */
 export function planIssues(block: PlanBlockV2): ReadonlySet<number> {
   return new Set([...block.merge_order, ...block.holds.map(hold => hold.issue)]);
+}
+
+/** The plan comment of these fields: the header, the field lines, then exactly one fenced block. */
+export function renderPlanComment(fields: PlanCommentFieldsV1): string {
+  return [
+    PLAN_COMMENT_HEADER,
+    `Coordinator: ${fields.coordinator}`,
+    `Baseline: ${fields.baseline}`,
+    ...(fields.supersedes === null ? [] : [`Supersedes: ${fields.supersedes}`]),
+    '', '```json', JSON.stringify(fields.block), '```',
+  ].join('\n');
 }

@@ -13,6 +13,8 @@ import { renderDependencyMigrationPlan } from '../../core/board/dependency-migra
 import { DependencyMigrationError, runDependencyMigration, type DependencyMigrationResultV1 } from '../../effects/board/dependency-migration';
 import { BoardParentsError, collectBoardParents } from '../../effects/board/parents';
 import { BoardSeatsError, collectBoardSeats } from '../../effects/board/seats';
+import { gitHubPostPorts, runBoardPost, type BoardPostPorts } from '../../effects/board/post';
+import { BoardPostFieldsError, BoardPostRoundtripError, BoardPostSupersedesError, BOARD_POST_KINDS } from '../../core/board/post';
 import { DispatchError, type DispatchPlanV1 } from '../../core/board/dispatch';
 import { runDispatch } from '../../effects/board/dispatch';
 import { runReview, type ReviewObserver, type ReviewResultV1 } from '../../effects/board/review';
@@ -36,13 +38,37 @@ interface AttentionOptions extends BoardOptions {
 const CLI_ENTRY = fileURLToPath(new URL('../index.ts', import.meta.url));
 
 interface MigrateDependenciesOptions extends BoardOptions {
-  readonly write?: boolean;
+  readonly apply?: boolean;
   readonly plan?: string;
+}
+
+interface PostOptions extends BoardOptions {
+  readonly target: string;
+  readonly fieldsFile: string;
+  readonly dryRun?: boolean;
 }
 
 function parentNumber(options: BoardOptions): number {
   if (options.parent === undefined || !/^[1-9][0-9]*$/u.test(options.parent)) throw new BoardCollectError('--parent <issue number> is required');
   return Number(options.parent);
+}
+
+/** The one JSON object of `--fields-file`; a path that does not read, or that holds no JSON object, is refused input. */
+function readFieldsFile(path: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    throw new BoardPostFieldsError('fields', `the file ${path} cannot be read`);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new BoardPostFieldsError('fields', `the file ${path} is not JSON`);
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new BoardPostFieldsError('fields', 'not a JSON object');
+  return value as Record<string, unknown>;
 }
 
 /** A collect or source failure is the whole result; the board has no partial form. */
@@ -95,8 +121,12 @@ function mergeText(result: BoardMergeResultV1, requested: number | null, dryRun:
  * appear; `board attention` reads them with `optsWithGlobals()`. They are not
  * mandatory options, because Commander would then check them for the
  * subcommand's ancestors too; `parentNumber` checks `--parent`.
+ *
+ * `postPorts` is the seam of `board post`: the composition root leaves it out, so the command reads and posts through `gh`, and a test
+ * passes its own ports to prove that `--dry-run` writes nothing.
  */
-export function buildBoardCommand(host: BoardHostPortsV1, attentionHost: AttentionHostPortsV1): Command {
+export function buildBoardCommand(host: BoardHostPortsV1, attentionHost: AttentionHostPortsV1,
+  postPorts: (repo_root: string) => BoardPostPorts = gitHubPostPorts): Command {
   const board = new Command('board')
     .description('Read a parent issue board, or list the parents and seats of this repository')
     .option('--parent <number>', 'Parent issue number')
@@ -255,14 +285,36 @@ export function buildBoardCommand(host: BoardHostPortsV1, attentionHost: Attenti
   advisor.command('transcript')
     .description('Read the last lines of the advisor seat terminal with hc read; every line is redacted')
     .action(advisorAction(readAdvisorSeat));
+  board.command('post <kind>')
+    .description(`Write one protocol comment that the board parses (${BOARD_POST_KINDS.join(', ')}), checked with its parser before it is posted`)
+    .requiredOption('--target <number>', 'The issue or pull request number that receives the comment')
+    .requiredOption('--fields-file <path>', 'A JSON object of the field names of the matching template in templates.md; plan also takes block, the plan block object')
+    .option('--dry-run', 'Print the checked comment and post nothing')
+    .action((kind: string, _options: PostOptions, command: Command) => {
+      const options = command.optsWithGlobals<PostOptions>();
+      try {
+        if (!/^[1-9][0-9]*$/u.test(options.target)) throw new BoardPostFieldsError('target', 'not an issue or pull request number');
+        const result = runBoardPost({ target: Number(options.target), kind, fields: readFieldsFile(options.fieldsFile), dry_run: options.dryRun === true }, postPorts(process.cwd()));
+        if (options.json === true) process.stdout.write(`${JSON.stringify({ ok: true, kind: result.kind, url: result.url })}\n`);
+        else process.stdout.write(result.url === null ? `${result.body}\n` : `${result.url}\n`);
+      } catch (error) {
+        if (!(error instanceof BoardPostFieldsError || error instanceof BoardPostRoundtripError || error instanceof BoardPostSupersedesError
+          || error instanceof BoardCollectError)) throw error;
+        // Refused fields and a plan without supersedes are refused input (exit 2); a parser that refuses the rendered text, or a failed
+        // GitHub read or write, is a failure (exit 1). Neither case posted a comment.
+        const code = error instanceof BoardCollectError ? null : error.code;
+        process.stderr.write(`${JSON.stringify({ ok: false, error: code ?? error.name, message: code === null ? error.message : `${code}: ${error.message}` })}\n`);
+        process.exitCode = error instanceof BoardPostFieldsError || error instanceof BoardPostSupersedesError ? 2 : 1;
+      }
+    });
   board.command('migrate-dependencies')
-    .description('One-shot operator migration: plan the blocked-by links for the Depends on / 依赖 lines of the open sub-issues of one parent and the tier labels, with no write; --write applies the plan (takes --parent and --json)')
-    .option('--write', 'Apply the plan: create the planned labels and blocked-by links (requires --plan)')
-    .option('--plan <digest>', 'The plan digest that the checked run without --write printed')
+    .description('One-shot operator migration: plan the blocked-by links for the Depends on / 依赖 lines of the open sub-issues of one parent and the tier labels, with no write; --apply applies the plan (takes --parent and --json)')
+    .option('--apply', 'Apply the plan: create the planned labels and blocked-by links (requires --plan)')
+    .option('--plan <digest>', 'The plan digest that the checked run without --apply printed')
     .action((_options: MigrateDependenciesOptions, command: Command) => {
       const options = command.optsWithGlobals<MigrateDependenciesOptions>();
       try {
-        const outcome = runDependencyMigration({ repo_root: process.cwd(), parent: parentNumber(options) }, { write: options.write === true, plan: options.plan });
+        const outcome = runDependencyMigration({ repo_root: process.cwd(), parent: parentNumber(options) }, { write: options.apply === true, plan: options.plan });
         if (options.json === true) process.stdout.write(`${JSON.stringify(outcome)}\n`);
         else process.stdout.write(outcome.kind === 'repo-harness.dependency-migration-plan' ? renderDependencyMigrationPlan(outcome) : migrationText(outcome));
       } catch (error) {

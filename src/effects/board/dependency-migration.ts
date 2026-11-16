@@ -175,11 +175,11 @@ export function planDependencyMigration(input: DependencyMigrationInput): Depend
 
 /**
  * The command: the flags are checked before any GitHub read, then a run
- * without `write` returns the plan and a run with `write` applies a fresh one.
+ * without `write` returns the plan and a run with `write` (`--apply`) applies a fresh one.
  */
 export function runDependencyMigration(input: DependencyMigrationInput, flags: { readonly write: boolean; readonly plan: string | undefined }): DependencyMigrationPlanV1 | DependencyMigrationResultV1 {
-  if (flags.write && flags.plan === undefined) throw new DependencyMigrationError('plan_digest_required', '--write requires --plan <digest> from a run without --write');
-  if (!flags.write && flags.plan !== undefined) throw new DependencyMigrationError('plan_without_write', '--plan <digest> is used only with --write');
+  if (flags.write && flags.plan === undefined) throw new DependencyMigrationError('plan_digest_required', '--apply requires --plan <digest> from a run without --apply');
+  if (!flags.write && flags.plan !== undefined) throw new DependencyMigrationError('plan_without_write', '--plan <digest> is used only with --apply');
   const plan = planDependencyMigration(input);
   return flags.write ? applyDependencyMigration(input, plan, flags.plan) : plan;
 }
@@ -192,9 +192,9 @@ export function runDependencyMigration(input: DependencyMigrationInput, flags: {
  * stops the run and reports the writes that finished; a new plan skips them.
  */
 export function applyDependencyMigration(input: DependencyMigrationInput, plan: DependencyMigrationPlanV1, reviewedDigest: string | undefined): DependencyMigrationResultV1 {
-  if (reviewedDigest === undefined) throw new DependencyMigrationError('plan_digest_required', '--write requires --plan <digest> from a run without --write');
+  if (reviewedDigest === undefined) throw new DependencyMigrationError('plan_digest_required', '--apply requires --plan <digest> from a run without --apply');
   if (plan.digest !== reviewedDigest) {
-    throw new DependencyMigrationError('dependency_plan_changed', `the plan changed since the checked run (${reviewedDigest} -> ${plan.digest}); run without --write and check the list again`);
+    throw new DependencyMigrationError('dependency_plan_changed', `the plan changed since the checked run (${reviewedDigest} -> ${plan.digest}); run without --apply and check the list again`);
   }
   if (plan.stop !== null) throw new DependencyMigrationError(plan.stop.code, plan.stop.message);
   const labels: DependencyMigrationLabelV1[] = [];

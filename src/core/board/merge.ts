@@ -10,6 +10,34 @@ import { protocolComments, type BoardCommentPageV1 } from './source';
 export const MERGE_HOLD_HEADER = 'repo-harness merge hold';
 export const MERGE_HOLD_RELEASED_HEADER = 'repo-harness merge hold released';
 
+/** The fields of one `merge hold` comment, as `templates.md` names them. `rh board post hold` renders them. */
+export interface MergeHoldCommentFieldsV1 {
+  /** The issues that the hold narrows to; null holds every item of the thread. Only a parent hold carries the line. */
+  readonly issues: readonly number[] | null;
+  /** The stop decision, and who made it. */
+  readonly reason: string;
+}
+
+/** The fields of one `merge hold released` comment. `rh board post release` renders them. */
+export interface MergeHoldReleaseCommentFieldsV1 {
+  /** The release decision, and who made it. */
+  readonly reason: string;
+}
+
+/** One `merge hold` comment: the header, the optional `Issues:` line, then the reason. */
+export function renderMergeHoldComment(fields: MergeHoldCommentFieldsV1): string {
+  return [
+    MERGE_HOLD_HEADER,
+    ...(fields.issues === null ? [] : [`Issues: ${fields.issues.map(issue => `#${issue}`).join(' ')}`]),
+    `Reason: ${fields.reason}`,
+  ].join('\n');
+}
+
+/** One `merge hold released` comment. It ends every older hold on the same thread that it is strictly newer than. */
+export function renderMergeHoldReleaseComment(fields: MergeHoldReleaseCommentFieldsV1): string {
+  return [MERGE_HOLD_RELEASED_HEADER, `Reason: ${fields.reason}`].join('\n');
+}
+
 /** The refusal detail of a required check that is not `success`: the reason of an unavailable read, or each context that is not `success`. */
 export function requiredCheckDetail(check: BoardRequiredCheckV1): string {
   if (check.status === 'unavailable') return `required contexts unavailable: ${check.reason}`;

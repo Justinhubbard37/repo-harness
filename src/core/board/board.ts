@@ -5,8 +5,9 @@ import type { PullRequestReadinessV2 } from '../publication/merge-readiness';
 import { isSeatStatusMessage, seatStatusMessage } from './advisor-seat';
 import { modelFamily } from '../review/model-family';
 import { readMergeHold, type BoardMergeHoldV1 } from './merge';
-import { decodePlanBlock, PlanBlockError, type PlanBlockV2 } from './plan-block';
+import { decodePlanBlock, PlanBlockError, PLAN_COMMENT_HEADER, type PlanBlockV2 } from './plan-block';
 import {
+  ACCEPTANCE_DISPOSITION_HEADER,
   BoardSourceError,
   commentId,
   field,
@@ -19,6 +20,7 @@ import {
   parseClaimStatus,
   parseRefs,
   protocolComments,
+  type BoardCommentPageV1,
   type BoardCommentV1,
   type BoardParentReadV1,
   type BoardPullRequestReadV1,
@@ -45,11 +47,10 @@ export const BOARD_KIND = 'repo-harness.board' as const;
 
 export type BoardTier = 'low' | 'medium' | 'high';
 const TIER_LABELS: Readonly<Record<string, BoardTier>> = { 'tier:low': 'low', 'tier:medium': 'medium', 'tier:high': 'high' };
-const PLAN_HEADER = 'repo-harness plan';
+const PLAN_HEADER = PLAN_COMMENT_HEADER;
 const CLAIM_HEADER = 'repo-harness issue claim';
 const CLAIM_STATUS_HEADER = 'repo-harness issue claim status';
 export const ACCEPTANCE_RECORD_HEADER = 'repo-harness acceptance record';
-export const ACCEPTANCE_DISPOSITION_HEADER = 'repo-harness acceptance disposition';
 const ACCEPTANCE_CLAIM_HEADER = 'repo-harness acceptance claim';
 
 export type BoardPlanV1 =
@@ -391,11 +392,15 @@ export function decodeBoard(value: unknown): BoardV1 {
   return board as BoardV1;
 }
 
-function projectPlan(parent: BoardParentReadV1['parent']): BoardPlanV1 {
-  const comment = newestProtocolComment(parent.comments, PLAN_HEADER);
-  if (comment === null) return { status: 'absent', truncated: parent.comments.truncated };
+/**
+ * The plan of one comment thread, from its newest plan comment: observed with its block, absent, or unavailable with the decode error.
+ * The board and `rh board post plan` read it here, so one decoder decides what a plan is.
+ */
+export function planFromComments(comments: BoardCommentPageV1): BoardPlanV1 {
+  const comment = newestProtocolComment(comments, PLAN_HEADER);
+  if (comment === null) return { status: 'absent', truncated: comments.truncated };
   try {
-    const revision = parent.comments.truncated ? null : protocolComments(parent.comments, PLAN_HEADER).length;
+    const revision = comments.truncated ? null : protocolComments(comments, PLAN_HEADER).length;
     return { status: 'observed', comment_url: comment.url, created_at: comment.created_at, revision, block: decodePlanBlock(comment.body) };
   } catch (error) {
     if (!(error instanceof PlanBlockError)) throw error;
@@ -698,7 +703,7 @@ export function projectBoard(input: BoardInputV1): BoardV1 {
     default_branch: input.parent.repository.default_branch,
     acceptance_merge: input.acceptance_merge,
     parent: Object.freeze({ number: parent.number, title: parent.title, url: parent.url, state: parent.state, labels: parent.labels, milestone: parent.milestone }),
-    plan: projectPlan(parent),
+    plan: planFromComments(parent.comments),
     merge_hold: readMergeHold(parent.comments, true),
     reviewer_family: input.reviewer_family,
     items: Object.freeze(items),

@@ -190,13 +190,13 @@ export interface PlannedEdgeV1 extends DependencyLineV1 {
   readonly blocker_id: string;
 }
 
-/** The stop that a `--write` run raises before its first write. */
+/** The stop that an `--apply` run raises before its first write. */
 export interface DependencyMigrationStopV1 {
   readonly code: 'dependency_line_ambiguous' | 'dependency_line_unparsed';
   readonly message: string;
 }
 
-/** Everything a `--write` run would write, read from GitHub with no write. A person checks it first. */
+/** Everything an `--apply` run would write, read from GitHub with no write. A person checks it first. */
 export interface DependencyMigrationPlanV1 {
   readonly protocol: 1;
   readonly kind: 'repo-harness.dependency-migration-plan';
@@ -208,7 +208,7 @@ export interface DependencyMigrationPlanV1 {
   readonly ambiguous: readonly AmbiguousLineV1[];
   readonly unparsed: readonly UnparsedLineV1[];
   readonly stop: DependencyMigrationStopV1 | null;
-  /** `sha256:<hex>` over the checked items; `--write --plan <digest>` refuses a plan that differs. */
+  /** `sha256:<hex>` over the checked items; `--apply --plan <digest>` refuses a plan that differs. */
   readonly digest: string;
 }
 
@@ -243,7 +243,7 @@ export function dependencyMigrationStop(ambiguous: readonly AmbiguousLineV1[], u
   return null;
 }
 
-/** The plan as text: one line per planned write, existing item, skip, refusal and parse error, then the `--write` outcome. */
+/** The plan as text: one line per planned write, existing item, skip, refusal and parse error, then the `--apply` outcome. */
 export function renderDependencyMigrationPlan(plan: DependencyMigrationPlanV1): string {
   const writes = plan.labels.filter(label => label.action === 'create').length + plan.edges.filter(edge => edge.action === 'create').length;
   return [
@@ -252,7 +252,7 @@ export function renderDependencyMigrationPlan(plan: DependencyMigrationPlanV1): 
     ...plan.skipped.map(line => `skip #${line.issue} line ${line.line_number}: ${line.line.trim()}`),
     ...plan.ambiguous.map(line => `refuse #${line.issue} line ${line.line_number}: ${line.line.trim()}`),
     ...plan.unparsed.map(line => `unparsed #${line.issue} line ${line.line_number} (${line.reason}): ${line.line.trim()}`),
-    plan.stop === null ? `--write makes ${writes} writes` : `--write stops before any write: ${plan.stop.code}`,
-    `plan digest: ${plan.digest} (apply with --write --plan ${plan.digest})`,
+    plan.stop === null ? `--apply makes ${writes} writes` : `--apply stops before any write: ${plan.stop.code}`,
+    `plan digest: ${plan.digest} (apply with --apply --plan ${plan.digest})`,
   ].join('\n') + '\n';
 }

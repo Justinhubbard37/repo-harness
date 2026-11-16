@@ -123,9 +123,10 @@ The claim comment wins over the table.
 
 A parent with more than two children gets a `plan` comment before
 dispatch. Its plan block holds the merge order, the holds and
-the seat limit (`templates.md`, plan). A plan change is a new `plan` with
-`Supersedes:`; never edit the old comment. A parent with two children or
-fewer needs no plan.
+the seat limit (`templates.md`, plan). Post it with `rh board post plan`, so
+its block decodes before `rh board --parent <n>` reads it. A plan change is a
+new `plan` with `Supersedes:`; never edit the old comment. A parent with two
+children or fewer needs no plan.
 
 The merge order follows the dependencies, not the order of filing.
 `board merge` stops at the first open entry of the merge order, so one held
@@ -148,7 +149,7 @@ moves them once, in two steps:
    skipped line, the refused or unparsed lines that stop a write, and the
    plan digest.
 2. A person checks every listed link against its source line. Then run
-   `rh board migrate-dependencies --parent <n> --write --plan
+   `rh board migrate-dependencies --parent <n> --apply --plan
    <digest>`. It plans again and writes exactly the planned items. When the
    new plan differs from the checked one, it writes nothing
    (`dependency_plan_changed`); start again at step 1.
@@ -649,15 +650,16 @@ comments.
 
 A hold record narrows only. When a stop is decided locally (an owner
 instruction that reaches your seat, or a joint decision on a "stop" or "no"
-comment), post `merge hold` (`templates.md`) in the same turn, before any
-other action. A hold on the parent holds the whole batch, or only the issues of
-its `Issues:` line. A hold on an issue or a PR holds that issue or PR. Each
-hold stays in force until a `merge hold released` on the same thread that
-is strictly newer than the hold; a release with the same time does not end
-it. When the newest 50 comments of a thread hold no release and older
-comments exist, the command refuses with `hold_unknown`. Before you post a
-release to clear it, read the full thread: a release ends every older hold
-on that thread.
+comment), post the `merge hold` with `rh board post hold` in the same turn,
+before any other action. A hold on the parent holds the whole batch, or only
+the issues of its `Issues:` line. A hold on an issue or a PR holds that
+issue or PR. Each hold stays in force until a `merge hold released` on the
+same thread that is strictly newer than the hold; post that one with
+`rh board post release`. A release with the same time does not end the hold.
+When the newest 50 comments of a thread hold no release and older comments
+exist, the command refuses with `hold_unknown`. Before you post a release to
+clear it, read the full thread: a release ends every older hold on that
+thread.
 
 ## 10. Close out
 
