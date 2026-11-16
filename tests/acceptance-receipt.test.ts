@@ -722,10 +722,13 @@ darwinTest('generic orchestration collects domain Results, keeps one reviewer fo
   writeFileSync(join(f.root, 'feature.txt'), 'fourth repair\n'); writePassingChecks(f.root);
   await expect(runReviewRound(f.options, f.effects)).rejects.toThrow('round_budget_exhausted');
   // Restore the exact accepted semantic bytes before close.
+  // Three review rounds, three admitted verifications and two close attempts. Measured
+  // 56 s on macos arm64 and over 60 s on the Intel runner, so the 60 s default sits too near
+  // the runtime to be a signal. This budget covers the work, not a hang (#2934).
   writeFileSync(join(f.root, 'feature.txt'), 'candidate repair 3\n'); writePassingChecks(f.root);
   expect((await closeReview(f.root, f.options.authority, false, f.home, f.effects)).status).toBe('closed');
   expect(f.calls).toContain('close');
-});
+}, 180_000);
 
 darwinTest('generic review allows explicit same-harness and only preflight-missing fallback; pending launch never replays', async () => {
   const f = reviewFixture(); f.verdict('PASS');

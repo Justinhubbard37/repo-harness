@@ -773,7 +773,7 @@ describe('single affected verification and daily fallback', () => {
     const home = workflow.jobs['home-isolation'];
     expect(home.if).toBe("needs.selection.outputs.mode == 'daily' || (needs.selection.outputs.mode == 'affected' && needs.selection.outputs.home_isolation != 'false')");
     expect(home['runs-on']).toBe('${{ matrix.os }}');
-    expect(home.strategy.matrix.os).toEqual(['ubuntu-latest', 'macos-latest', 'windows-latest']);
+    expect(home.strategy.matrix.os).toEqual(['ubuntu-latest', 'macos-15-intel', 'windows-latest']);
     expect(home.steps.some((step: any) => step.name === 'Run native OAR acceptance tests')).toBe(false);
     expect(home.steps.some((step: any) => step.name === 'Run the isolation tests')).toBe(true);
     const job = workflow.jobs['native-oar'];
@@ -784,7 +784,7 @@ describe('single affected verification and daily fallback', () => {
     expect(workflow.jobs.selection.outputs.documentation).toBeUndefined();
     expect(workflow.jobs.required.steps[0].env.NATIVE_OAR).toBe('${{ needs.selection.outputs.native_oar }}');
     expect(workflow.jobs.required.steps[0].env.HOME_ISOLATION).toBe('${{ needs.selection.outputs.home_isolation }}');
-    expect(job['runs-on']).toBe('macos-latest');
+    expect(job['runs-on']).toBe('macos-15-intel');
     expect(job['timeout-minutes']).toBe(10);
     expect(job.strategy).toEqual({ 'fail-fast': false, matrix: { test: [
       'tests/generic-review.test.ts', 'tests/acceptance-receipt.test.ts tests/herdr-task-lifecycle.test.ts',

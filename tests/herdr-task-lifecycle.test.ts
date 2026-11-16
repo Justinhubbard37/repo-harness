@@ -479,7 +479,7 @@ darwinTest('OAR fixed host runs visibly in a private hc terminal and disposes be
   let binding: Awaited<ReturnType<typeof api.startTaskApplicationHost>> | undefined;
   try {
     const parent = await parentTerminal(repo);
-    const command = reviewHostCommand(realpathSync('/opt/homebrew/opt/node@24/bin/node'), realpathSync(join(import.meta.dir,'../dist/oar-review-host.js')), specFile);
+    const command = reviewHostCommand(realpathSync(Bun.which('node')!), realpathSync(join(import.meta.dir,'../dist/oar-review-host.js')), specFile);
     binding = await api.startTaskApplicationHost(repo, { task:'oar-fixture', role:'deep-reasoner', harness_kind:'codex', endpoint,
       args:[], max_requests:3 }, command, async () => { await until(() => existsSync(readyFile)); });
     expect(binding.provider.pid).toBe(JSON.parse(readFileSync(readyFile,'utf8')).pid);
