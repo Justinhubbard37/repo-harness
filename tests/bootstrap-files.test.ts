@@ -102,7 +102,7 @@ describe("Bootstrap Script Contracts", () => {
     expect(evaluator).not.toContain("bun run benchmark:debug");
 
     const routing = read("docs/reference-configs/agentic-development-flow.md");
-    expect(routing).toContain("Use independent gatekeeper/cross-model review for large changes, security/permissions or model uncertainty");
+    expect(routing).toContain("Use independent gatekeeper/cross-model review for large changes, I1/I2 paths or model uncertainty");
     expect(routing).toContain("Ordinary work has no plan/contract/review/notes");
   });
 

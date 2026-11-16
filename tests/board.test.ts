@@ -1274,7 +1274,7 @@ test('acceptance: every record on the head counts, and one FAIL withholds accept
 test('one hit for each rule that the recorded state does not trigger', () => {
   const later = new Date('2026-11-03T02:00:00Z');
   const plan = { protocol: 2, kind: 'repo-harness.plan', merge_order: [1475, 1476], holds: [], seat_limits: { worker: 3 } };
-  const hook = 'src/cli/hook/mutation-guard.ts';
+  const hook = 'src/cli/installer/uninstall.ts';
   const board = replay({
     now: later,
     hcVersion: '0.1.15',
@@ -1295,7 +1295,7 @@ test('one hit for each rule that the recorded state does not trigger', () => {
       pr1499.isDraft = false;
       pr1499.files = { totalCount: 1, nodes: [{ path: 'src/effects/terminal/task-session.ts', additions: 10, deletions: 2 }] };
       pr1499.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.push({ name: 'Required / CI', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-11-02T21:30:00Z', detailsUrl: null, startedAt: null, checkSuite: { workflowRun: null } });
-      // #1494 (tier:medium #1479) changes a hook: R5.
+      // #1494 (tier:medium #1479) changes a deletion path: R5.
       data.repository.pr1494.files.nodes.push({ path: hook });
       data.repository.pr1494.files.totalCount += 1;
       // A newer commit than the claim status on #1475, while its worker t13 reports done.
@@ -1330,11 +1330,9 @@ test('one hit for each rule that the recorded state does not trigger', () => {
     [list(row, row), 'duplicate hazard id ci-config'],
   ] as const) expect(() => decodeReviewHazards(JSON.parse(JSON.stringify(value)))).toThrow(`review hazards invalid: ${error}`);
   // `**` matches zero or more whole segments, `*` stays inside one segment; the other hazards need a reviewer.
-  expect(pathHazardHits(['.github/workflows/ci.yml', 'docs/.github/x', 'Dockerfile', 'ops/web/Dockerfile.dev', 'ops/api.Dockerfile', 'bun.lock', 'pkg/a/yarn.lock', 'bun.lock.bak', 'install.sh']))
+  expect(pathHazardHits(['.github/workflows/ci.yml', 'docs/.github/x', 'Dockerfile', 'bun.lock', 'install.sh']))
     .toEqual([
       { hazard: 'ci-config', path: '.github/workflows/ci.yml' },
-      { hazard: 'container-build', path: 'Dockerfile' }, { hazard: 'container-build', path: 'ops/web/Dockerfile.dev' }, { hazard: 'container-build', path: 'ops/api.Dockerfile' },
-      { hazard: 'dependency', path: 'bun.lock' }, { hazard: 'dependency', path: 'pkg/a/yarn.lock' },
     ]);
 
   // A rule that cannot read its input lists the subject: no status time, no issue label, an issue or a claim PR off the board.
@@ -1350,8 +1348,8 @@ test('one hit for each rule that the recorded state does not trigger', () => {
   expect(merged.findings.filter(finding => finding.rule === 'A9').map(finding => [finding.terminals, finding.pull_requests])).toEqual([[['t2'], [1494]]]);
 });
 
-test('R5 and the effective tier read the High list: board record-writing code is Medium on one PASS row; a hook change is High and needs two', () => {
-  const [hook, boardWriter] = ['src/cli/hook/mutation-guard.ts', 'src/effects/board/review.ts'];
+test('R5 and the effective tier read the High list: board record-writing code is Medium on one PASS row; a deletion-path change is High and needs two', () => {
+  const [hook, boardWriter] = ['src/cli/installer/uninstall.ts', 'src/effects/board/review.ts'];
   const receipt = (subject_sha: string): ReviewPublishReceipt => ({
     protocol: 2, kind: 'repo-harness-review-publish-receipt', confirmed_fixed: [], round: 1, subject_sha, risk_tier: 'medium', reviewer: { harness: 'codex', actual_model: null }, verdict: 'PASS', model_relation: 'different-family', summary: 'Reviewed.', findings: [],
   });
@@ -1376,7 +1374,7 @@ test('R5 and the effective tier read the High list: board record-writing code is
       ...attention.unevaluated.filter(entry => entry.rule === 'R5' && entry.subject?.startsWith('#1499') === true).map(entry => `${entry.reason}: ${entry.subject}`)];
   };
   expect(view([boardWriter])).toEqual(['medium', 'accepted']);
-  expect(view([boardWriter, hook])).toEqual(['high', 'not_accepted', `#1499 changes ${hook} (hooks), a High signal, but #1476 is tier:medium`]);
+  expect(view([boardWriter, hook])).toEqual(['high', 'not_accepted', `#1499 changes ${hook} (deletion), a High signal, but #1476 is tier:medium`]);
   expect(view([hook], 'tier:high')).toEqual(['high', 'not_accepted']);
   // A change hazard path sets the High tier too; R3 names the label.
   expect(view(['.github/workflows/ci.yml'])).toEqual(['high', 'not_accepted']);

@@ -318,7 +318,7 @@ describe("root rule invariants", () => {
   test("both root files keep the hard boundaries and the risk-tier rule", () => {
     for (const file of RULE_FILES) {
       const content = rootRules(file);
-      expect(content).toContain("The owner keeps every security decision (owner, 2026-11-09, #2008): credentials, tokens and secrets");
+      expect(content).toContain("The owner keeps (owner, 2026-11-09, #2008; list narrowed 2026-11-16): credentials, tokens and secrets");
       expect(content).toContain("current task explicitly authorizes main publication");
       expect(content).toContain("`publication.acceptance_merge` is `on` in the policy on the PR base");
       expect(content).toContain("A production deployment needs an explicit owner authorization for that deployment; no standing GO and no joint decision covers it.");

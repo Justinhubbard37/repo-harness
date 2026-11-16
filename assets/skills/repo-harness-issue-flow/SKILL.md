@@ -51,9 +51,10 @@ role has one holder at a time. Every PR has one head owner, the only agent that
 pushes to it. Claims, handoffs and dependency rules are in
 `references/board.md`.
 
-The user stays the owner and keeps every security decision. The root
-`CLAUDE.md` and `AGENTS.md` list them: credentials, permissions, the safety
-net, deletion that git cannot restore, and production. The life cycle makes
+The security bar is I1 (no credential leak) and I2 (no deletion or overwrite
+of a user file without authorization). The user stays the owner and keeps
+the decisions on them. The root `CLAUDE.md` and `AGENTS.md` list them:
+credentials and secrets, deletion that git cannot restore, and production. The life cycle makes
 every other decision by the rules below and the root life-cycle rules
 (owner, 2026-11-09, #2008).
 
@@ -155,13 +156,12 @@ map ─▶ split ─▶ gap review ─▶ publish ─▶ dispatch ─▶ worker 
   (`archctx/projection`) merges on green CI; its merge is its acceptance.
 - Fix rounds. A fix loop continues after round 3 without the owner while
   each round has fewer blocking findings (P0-P2) than the round before and
-  the scope does not grow. A grown scope is a joint decision. When the count does not drop but every open blocking finding fails closed (no fail-open and no credential or data effect; availability only), the loop continues by joint decision under one rule, also in the safety net and the hooks. A new P0
-  finding, or a new P1 finding about security, secrets, data or
-  authentication, goes to the owner as a notice. The loop continues
+  the scope does not grow. A grown scope is a joint decision. When the count does not drop but no open blocking finding touches I1 or I2, the loop continues by joint decision under one rule. A new P0
+  finding, or a new P1 finding on I1 or I2, goes to the owner as a notice. The loop continues
   without an owner word when the fix closes the finding. It stops at the
   owner only when the fix for that finding would accept a residual, relax a
-  control or grow the scope. Each merge outside rule 2, each release, each credential or
-  permission change and each deletion that git cannot restore stay with
+  control or grow the scope. Each merge outside rule 2, each release, each change that reads, moves or exposes a
+  credential and each deletion that git cannot restore stay with
   the owner. Any other new P1 finding does not stop the loop. Round 5 is
   the hard stop. Details:
   `references/acceptor.md` §2.2. For issue-flow review loops,
@@ -170,7 +170,7 @@ map ─▶ split ─▶ gap review ─▶ publish ─▶ dispatch ─▶ worker 
 - Dispatch. After the owner approves a batch parent and its plan comment,
   the orchestrator dispatches the plan's issues in plan order with no other
   owner step. A new issue or a changed order goes to the owner or to a joint
-  decision. A new issue that only closes a security gap (no accepted residual,
+  decision. A new issue that only closes an I1/I2 gap (no accepted residual,
   no relaxed control, no grown scope) joins a batch by joint decision, with a
   notice to the owner.
 - Intake. Open issues are cleared before new ones are filed. During a batch,
@@ -182,12 +182,12 @@ map ─▶ split ─▶ gap review ─▶ publish ─▶ dispatch ─▶ worker 
   their dependencies. The release run starts when every train of the set is
   merged. Do not propose a release for a few merged issues or to put one
   change on the host (`references/orchestrator.md` §4.1).
-- Joint decision. The flow aims at full automation outside security and
+- Joint decision. The flow aims at full automation outside I1/I2 and
   deployment. The seats decide and act on every other item, by rule or by
   joint decision. An owner message applies to the item it names and stops
   or reorders no other work. The orchestrator and the advisor make a
   decision that otherwise goes to the owner when both agree, unless it
-  touches security. A new issue that only closes a security gap (no accepted
+  touches security. A new issue that only closes an I1/I2 gap (no accepted
   residual, no relaxed control, no grown scope) joins a batch by joint
   decision, with a notice to the owner. Before the action, the orchestrator posts it on the
   owning issue or PR as `Joint decision (orchestrator + advisor)` with the

@@ -98,13 +98,7 @@ describe("change hazard list", () => {
       for (const marker of [
         "`.github/`",
         "release, publish, update or install script",
-        "`Dockerfile`",
-        "network address",
-        "telemetry",
         "credentials",
-        "dependency or a lockfile entry",
-        "binary",
-        "encoded or opaque blob",
       ]) {
         expect(hazards, marker).toContain(marker);
       }
@@ -122,7 +116,7 @@ describe("change hazard list", () => {
     expect(() => renderHazardRegion(doc.replace("<!-- review-hazards:list:end -->", ""), REVIEW_HAZARDS)).toThrow("exactly one");
     // assets/review-high-list.v1.json owns the High list table the same way.
     expect(renderHighListRegion(doc, REVIEW_HIGH_LIST)).toBe(doc);
-    const handEdited = doc.replace("`src/cli/hook/**`, ", "");
+    const handEdited = doc.replace("`src/core/security/**`", "`src/core/security/x/**`");
     expect(handEdited).not.toBe(doc);
     expect(renderHighListRegion(handEdited, REVIEW_HIGH_LIST)).not.toBe(handEdited);
   });

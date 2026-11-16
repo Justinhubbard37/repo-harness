@@ -74,7 +74,7 @@ Manual probe: to see what named test files do on one runner for a branch head, d
 - A merge of different themes is a reclassification. A person checks the events of the themes for overlap and sets `Seen` from that check.
 - A history migration sets the start value of `Seen` from the history evidence, not from the number of references.
 - `Enforced by` names the file that fails when the mistake comes back. For an architecture or type fix, name the file that makes the mistake impossible. `judgment` means that no file catches the mistake.
-- `Missed by` names the check layer that should have caught the mistake before merge. `unknown` means that the evidence does not show the missed layer; the entry's `Why` says which evidence is missing. `none` means that no layer applies and that this was checked. Two entries with `Missed by: independent-review` on the same [Review by risk](#review-by-risk) signal move that signal up one tier in the PR that adds the second entry.
+- `Missed by` names the check layer that should have caught the mistake before merge. `unknown` means that the evidence does not show the missed layer; the entry's `Why` says which evidence is missing. `none` means that no layer applies and that this was checked.
 - An entry with `Missed by: independent-review` adds its `Triggered by correction` PR/SHA and date to the row for the producer in `agents/fleet/known-gaps.md`. The producer is the model or harness in the `Agent:` line of the issue claim for the PR's branch; a claim that names none leaves the producer unknown and adds no evidence. Add or remove rows as that file requires. Do not copy the table here.
 - From `Seen: 2×`, fix the mistake class in the PR that adds the entry. Use the highest level that works:
   1. Architecture or data structure: one owner for each state, one way to do each task, and no old path that an agent can copy.
@@ -100,7 +100,7 @@ An external PR never uses the internal flow. A worker produces the ready-for-GO 
 ## Four operation boundaries
 - Main merge requires explicit current-task authorization, current automated checks, no outstanding change requests or unresolved review threads that a person started, exact head/base and conflict safety.
 - Only merged, clean, inactive worktrees/branches may be deleted automatically; other deletion requires the user.
-- Credentials, permissions, sandbox/write grants and confirmation-bypass settings require user approval of the exact change.
+- Credentials and secrets (I1) and deletion that git cannot restore (I2) require user approval of the exact change.
 - Release and production effects require user approval of the exact artifact and operation.
 
 ## Bot and worker
@@ -122,7 +122,7 @@ PRs and CI. It edits no product code. It may call the read-only roles
 cross-review never run as its sub-agents: they run in Herdr seats, for
 worktree isolation and one writer per file.
 
-The bot selects scope, worker and verification by risk. Use independent gatekeeper/cross-model review for large changes, security/permissions or model uncertainty; do not rerun a passing check or require multiple re-gates.
+The bot selects scope, worker and verification by risk. Use independent gatekeeper/cross-model review for large changes, I1/I2 paths or model uncertainty; do not rerun a passing check or require multiple re-gates.
 
 ### Change hazards
 
@@ -133,13 +133,9 @@ The board rule R3 reads only the rows with `path_visible: true`: a changed path 
 
 | Hazard | Paths that R3 reads |
 | --- | --- |
-| Changes a workflow or other CI configuration under `.github/`. | `.github/**` |
+| Changes a workflow or other CI configuration under `.github/` where it changes secrets or permissions. | `.github/**` |
 | Changes a release, publish, update or install script, or a package script that runs at install or release. | None (`path_visible: false`) |
-| Changes a `Dockerfile` or another container build file. | `**/Dockerfile`, `**/Dockerfile.*`, `**/*.Dockerfile`, `**/Containerfile`, `**/Containerfile.*` |
-| Adds a network address, endpoint or telemetry. | None (`path_visible: false`) |
 | Reads credentials, such as tokens, keys, `~/.ssh`, `~/.npmrc` or credential environment variables. | None (`path_visible: false`) |
-| Adds or changes a dependency or a lockfile entry. A lockfile-only bump is still a hit; its source does not lower the tier. | `**/bun.lock`, `**/bun.lockb`, `**/package-lock.json`, `**/npm-shrinkwrap.json`, `**/yarn.lock`, `**/pnpm-lock.yaml`, `**/Cargo.lock`, `**/go.sum`, `**/poetry.lock`, `**/uv.lock`, `**/Pipfile.lock`, `**/Gemfile.lock`, `**/composer.lock` |
-| Adds a binary, or an encoded or opaque blob, such as base64, long hex, minified or otherwise unreadable content. | None (`path_visible: false`) |
 <!-- review-hazards:list:end -->
 
 ### Review by risk
@@ -149,7 +145,7 @@ The diff sets the tier. The author does not: a human change and a model change w
 | --- | --- |
 | Low | Docs only; tests only; the generated projection PR (`archctx/projection`); or a fix of at most 50 changed lines (added plus deleted, `git diff --numstat`) with no hit on the High list or the change hazard list. |
 | Medium | Every change that is not Low or High. This includes code that writes comments, records, reviews or labels to GitHub, cross-module behavior, public API and shared runtime changes, and a change across more than one capability boundary. |
-| High | Any hit on the [change hazard list](#change-hazards) or the [High list](#high-list): permissions, sandbox settings or seat tool grants; hooks and the mutation guard; credentials, tokens and secrets; deletion paths; release, publish and deploy, including `deploy/sql/`; merge and push paths (the publication executor, branch protection, force push). |
+| High | Any hit on the [change hazard list](#change-hazards) or the [High list](#high-list): credentials, tokens and secrets (I1); deletion paths (I2); release, publish and deploy, including `deploy/sql/`. |
 
 #### High list
 <!-- review-high-list:list:begin -->
@@ -157,12 +153,9 @@ The board rule R5 reads only the rows with `path_visible: true`: a changed path 
 
 | High signal | Paths that R5 reads |
 | --- | --- |
-| Changes permissions, sandbox settings or seat tool grants. | `.claude/**`, `.codex/**`, `src/core/board/seats-settings.ts`, `src/core/board/seat-launch.ts`, `src/effects/board/seats-configuration.ts` |
-| Changes a hook or the mutation guard. | `src/cli/hook/**`, `src/cli/hook-entry.ts` |
 | Reads, moves or exposes credentials, tokens or secrets. | `src/core/security/**` |
 | Changes a path that deletes files, worktrees, branches or seats. | `src/effects/board/closeout.ts`, `src/cli/installer/uninstall.ts`, `scripts/ship-worktrees.sh`, `scripts/worktree-merge-lib.sh` |
 | Changes release, publish or deploy, including `deploy/sql/`. | `deploy/sql/**`, `src/core/release/**`, `src/effects/release/**`, `scripts/check-npm-release.sh`, `scripts/check-release-published.sh` |
-| Changes a merge or push path: the publication executor, branch protection or force push. | `src/core/publication/acceptance-merge-policy.ts`, `src/core/publication/merge-readiness.ts`, `src/effects/publication/merge-executor.ts`, `src/effects/publication/merge-readiness.ts`, `src/effects/publication/new-remote-ref-push.ts`, `scripts/merge-gate.ts` |
 <!-- review-high-list:list:end -->
 
 Review follows the `repo-harness-issue-flow` skill, [references/acceptor.md](../../assets/skills/repo-harness-issue-flow/references/acceptor.md). The tier selects the depth: no independent review for Low, one fresh-context review from a model family different from the writer's for Medium, and the gatekeeper plus one review for High, at least one of the two from a model family different from the writer's. The round rules (who reviews each round, the claims of a round, the round-2 scope and the convergence rule) are only in [references/acceptor.md §2.2](../../assets/skills/repo-harness-issue-flow/references/acceptor.md#22-rounds). The Acceptor SOP owns the round, findings and publish steps.
@@ -175,6 +168,7 @@ Rules for every tier:
 - The reviewer reads the current diff only. A defect in code the diff did not touch is a non-blocking note; open an issue for it, do not add a finding.
 - Review rounds follow [references/acceptor.md §2.2](../../assets/skills/repo-harness-issue-flow/references/acceptor.md#22-rounds). The reviewer reads CI on the exact head and the recorded evidence, and does not rerun a passing check ([references/acceptor.md §2.1](../../assets/skills/repo-harness-issue-flow/references/acceptor.md#21-evidence)).
 - When an independent review ran, the PR description lists each finding with its disposition: fixed, or closed with the reason.
+- The security bar is I1 (no user key, token or credential leaks) and I2 (no deletion or overwrite of a user file without authorization). Guards protect against accidents, not against an adversary who already runs as the user. An adversarial finding (attacker, race, alias, shell trick) is a residual P3 note unless it can happen by accident.
 - A low tier adds no review. A new test file or a rebase does not raise the tier.
 - Changing implementation and test assertions together does not raise the tier. Within the tier's existing review, check whether assertions preserve the intended behavior and whether removed or weakened coverage has a valid requirement-based reason. At Low, the author performs this check in self-review. Record the reason for each assertion change in the PR; never change assertions only to make a test pass. Do not dispatch a separate test-review gate.
 - A parent, coordinator or merge session reuses recorded acceptance when the reviewed diff, relevant base context, verification inputs and environment still match, and the review meets the current tier. The PR records the reviewed revision or diff, commands, results and finding dispositions. A change of session or reviewer is not a reason to repeat acceptance.
@@ -184,7 +178,7 @@ Rules for every tier:
 The bot measures progress by side effects only: commits, pushes, evidence events and PR or check changes. It does not resume a worker to check liveness. A worker past its timebox with no new side effect is stalled; stop it or ask the user.
 Retry by failure mode. Reduce scope after a limit or out-of-memory stop. Move a tool error to another model. A network drop or an unknown failure gets one retry only for a read-only or idempotent call. For a call that can change remote state, check the original request and the provider receipt first; do not retry an unknown effect. After two failures of one task, stop and ask the user.
 Clear conflicts first. Once conflicts are clear, triage review threads and watch CI in parallel. Classify a CI failure before a retry. A suspected flake gets one fresh build; an identical second failure is not a flake. Classify each review comment as fix, dismiss or ask by the review-comment triage reference of the installed `repo-harness-check` skill.
-Stop and ask the user when a command or result names `unknown`, `ambiguous`, `pending`, `unproven`, `identity_lost`, `reconciliation_required` or `recovery_required`, or says `inspect the same`, `inspect same`, `never replay`, `do not resend` or `do not launch again`; when a lease directory is empty or malformed; when a review thread concerns security, authentication, data or migrations; or when a written rule conflicts with observed state.
+Stop and ask the user when a command or result names `unknown`, `ambiguous`, `pending`, `unproven`, `identity_lost`, `reconciliation_required` or `recovery_required`, or says `inspect the same`, `inspect same`, `never replay`, `do not resend` or `do not launch again`; when a lease directory is empty or malformed; when a review thread concerns I1, I2 or migrations; or when a written rule conflicts with observed state.
 
 Pending main push CI follows Daily Flow step 5, not the stop-and-ask rule above.
 

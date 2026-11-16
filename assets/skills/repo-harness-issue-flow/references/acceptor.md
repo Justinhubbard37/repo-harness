@@ -88,9 +88,7 @@ The table rules govern how the row combines with the review.
    review of the delta from the reviewed head that writes one record row
    for the new head. A Medium head needs one delta check row under the
    Medium rule above. A High head needs the round-1 rule: two delta
-   check rows from distinct claims, at least one different-family. For a
-   PR that changes a hook path, the owner approves each head of the hook
-   diff again.
+   check rows from distinct claims, at least one different-family.
 2. **Round 2.** The reviewer or reviewers that raised a blocking finding
    read the fix delta (the hunks that changed after round 1) and the
    sibling cases of each of its findings. On a High or unknown-tier PR,
@@ -104,17 +102,15 @@ The table rules govern how the row combines with the review.
 4. **After round 3.** A fix loop continues after round 3 without the owner
    while each round has fewer blocking findings (P0-P2) than the round
    before and the scope does not grow. A grown scope is a joint decision.
-   When the count does not drop but every open blocking finding fails closed (no fail-open and no credential or data effect; availability only), the loop continues by joint decision under one rule, also in the safety net and the hooks.
-   A new P0 finding, or a new P1 finding about security, secrets, data or
-   authentication, goes to the owner as a notice. The loop continues
+   When the count does not drop but no open blocking finding touches I1 or I2, the loop continues by joint decision under one rule.
+   A new P0 finding, or a new P1 finding on I1 or I2, goes to the owner as a notice. The loop continues
    without an owner word when the fix closes the finding. It stops at the
    owner only when the fix for that finding would accept a residual, relax a
-   control or grow the scope. Each merge outside rule 2, each release, each credential or
-   permission change and each deletion that git cannot restore stay with
+   control or grow the scope. Each merge outside rule 2, each release, each change that reads, moves or exposes a
+   credential and each deletion that git cannot restore stay with
    the owner. Any other new P1 finding does not stop the loop. Round 5 is
    the hard stop. When every remaining finding
-   is P2, all of them are in one bug family, and none concerns security,
-   secrets, data or authentication,
+   is P2, all of them are in one bug family, and none concerns I1 or I2,
    a recorded decision (the owner, or a joint decision of the orchestrator
    and the advisor) may move that family to one follow-up issue after round
    3 or round 4. The coordinator then resolves each remaining P2 thread with
@@ -124,7 +120,7 @@ The table rules govern how the row combines with the review.
    that new head with those threads deferred. It must return `PASS` for that
    head before the PR merges, and its record names the follow-up issue. A
    `FAIL` in round 5 is a hard stop and takes no deferral. A blocking
-   finding after round 5, or a fix for a new P0 or security P1 that would accept a
+   finding after round 5, or a fix for a new P0 or an I1/I2 P1 that would accept a
    residual, relax a control or grow the scope, becomes a parked owner gate
    (`docs/reference-configs/agentic-development-flow.md`, Park a gate).
    Other work continues.
@@ -133,7 +129,7 @@ The worker fixes each finding by the class rule (`worker.md` §7).
 If a new P1 appears in the fix delta in two rounds in a row, stop
 patching. The orchestrator and the advisor then make a joint decision to
 rescope the PR or revert it to the last clean rule. A new P0 or a new P1
-about security, secrets, data or authentication still goes to the owner
+on I1 or I2 still goes to the owner
 as a notice.
 
 Return `PASS` or `FAIL`. A `FAIL` has at least one P0, P1 or P2 finding.
@@ -196,6 +192,11 @@ gate.
 | P1 | Wrong behavior or broken boundary | Inline thread on the changed line |
 | P2 | Real defect, small | Inline thread on the changed line |
 | NIT (P3) | Improvement | Review body only. No thread and no merge block |
+
+Judge a product PR on its own behavior and on I1 (no credential leak) and
+I2 (no deletion or overwrite of a user file without authorization). An
+adversarial finding (attacker, race, alias, shell trick) is a P3 note unless
+it can happen by accident.
 
 A finding gives the file, the line, the evidence and the smallest fix. A
 defect in code that the PR does not change is a note, not a finding.

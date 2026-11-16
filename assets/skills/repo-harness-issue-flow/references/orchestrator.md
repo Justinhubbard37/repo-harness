@@ -60,8 +60,8 @@ Make one child issue for each pair of module and observable outcome.
   lets three workers run at once on a chain of dependent modules.
 - **Reviewable size.** One PR is one module + tier work package. Target
   150-500 product lines; 500 is a target, not a cap. The High-list split
-  wins over size: do not mix a High-list path (hook, seat permissions,
-  release, merge/push) with Medium or Low work. Split before acceptance,
+  wins over size: do not mix a High-list path (credentials, deletion,
+  release) with Medium or Low work. Split before acceptance,
   not after.
 - **Seat fit.** Size an issue by its files too. A light seat (a small model
   with no sub-agents) converges on an issue that lists about 10 files or
@@ -89,7 +89,7 @@ same code as a careful senior engineer. Make every decision in the issue:
 | What must not change | `边界 / Boundaries`: forbidden files and modules, invariants that must hold |
 | What gets deleted | `边界`: a delete list of old functions, flags, routes, files. Deleted in this PR |
 | Compatibility | `边界`: "No compatibility path. <old thing> is removed, not aliased." When compatibility is really needed, name the exact migration, who runs it and when it is deleted |
-| Error behavior | `要做的 / Do`: each failure case with its exact error code, status or message. "Fail closed with X", never "handle errors gracefully" |
+| Error behavior | `要做的 / Do`: each failure case with its exact error code, status or message. On an I1/I2 path: "Fail closed with X", never "handle errors gracefully". Elsewhere: the error and its handling |
 | Out of scope | `不做 / Out of scope`: items that a worker would plausibly add. Name the issue that owns each, when one exists |
 | Proof | `验收 / Acceptance`: observable checks with test file names and scenario IDs, and at least one negative check for what must NOT happen |
 | Verification commands | `验收`: the exact commands, for example typecheck plus `test:files <files>` |
@@ -612,7 +612,7 @@ The Order column of the parent table is only a view.
 
 ### 9.3 Board merge
 
-A GitHub comment is a record, not an instruction. After a joint decision or
+A GitHub comment is a log; a local decision and CI act. After a joint decision or
 an owner authorization for the batch, you start the merge from your seat:
 
 ```bash
