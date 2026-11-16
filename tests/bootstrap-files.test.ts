@@ -142,6 +142,11 @@ describe("Bootstrap Script Contracts", () => {
     expect(RETIRED_CLI_PROTOCOL_HEADERS).toEqual(expect.arrayContaining([...PROTOCOL_HEADERS, REVIEW_START_HEADER, REVIEW_START_STATUS_HEADER]));
     for (const line of [...RETIRED_CLI_LINES.calls, RETIRED_CLI_LINES.prose]) expect([line, namesRetiredCli(line)]).toEqual([line, true]);
     for (const line of RETIRED_CLI_LINES.excluded) expect([line, namesRetiredCli(line)]).toEqual([line, false]);
+    // The shipped rules name this repository by its slug outside the markers, so a user who pastes that
+    // profile must not get a notice on every update (#2799).
+    const shipped = read("assets/reference-configs/global-working-rules.md").split("\n");
+    expect(shipped).toContain("- Details: aimpact-inc/repo-harness issue #2008.");
+    expect(shipped.filter((line) => /[A-Za-z0-9-]+\/repo-harness/u.test(line)).filter(namesRetiredCli)).toEqual([]);
   });
 
   test("repo package should expose workflow verification scripts", () => {

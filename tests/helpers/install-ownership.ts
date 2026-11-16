@@ -141,5 +141,8 @@ export const RETIRED_CLI_LINES = {
     'repo-harness review reply', 'repo-harness review start status', 'repo-harness acceptance record', 'npx -y -p repo-harness@latest rh install',
     'bunx -p repo-harness@latest rh install', 'bun add -g repo-harness@latest', 'exec repo-harness-hook Stop', 'cat ~/.repo-harness/config.json',
     'REPO_HARNESS_HOME=/x rh update', 'https://github.com/aimpact-inc/repo-harness#readme', 'rh board seats',
+    // #2799: the repository slug, an issue reference and a path name the project, so each stays as written.
+    '- Details: aimpact-inc/repo-harness issue #2008.', 'see aimpact-inc/repo-harness#2771 for the record', 'see repo-harness#2771 for the record',
+    'assets/skills/repo-harness/README.md',
   ],
 } as const;
