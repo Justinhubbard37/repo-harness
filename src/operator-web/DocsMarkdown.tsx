@@ -59,8 +59,8 @@ export type DiagramCheck =
   | { readonly state: 'browser_missing' }
   | { readonly state: 'pending' }
   | { readonly state: 'failed'; readonly reason: DocsDiagramFailure }
-  /** The stored artifact, drawn as an image; `stale` when it was drawn with another library, font or icon set. */
-  | { readonly state: 'image'; readonly src: string; readonly stale: boolean };
+  /** The stored artifact's bytes, drawn as an image; `stale` when it was drawn with another library, font or icon set. */
+  | { readonly state: 'image'; readonly svg: string; readonly stale: boolean };
 export type DiagramValidator = (document: unknown) => Promise<DiagramCheck>;
 
 /** The page reads the artifact the server stored for the block's content hash; it never starts a render. */
@@ -68,10 +68,15 @@ export const validateDiagramWithCapability: DiagramValidator = async document =>
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(document)));
   const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
   const diagram = await fetchDocsDiagram(hash, new AbortController().signal);
-  const image = `/api/v1/docs/diagrams/${hash}/image`;
+  // The page holds the bytes it shows, so the export is those bytes even when the stored artifact changes later.
+  const image = async (stale: boolean): Promise<DiagramCheck> => {
+    const response = await fetch(`/api/v1/docs/diagrams/${hash}/image`);
+    // The artifact left between the state read and the image read: the next refresh reads the new state.
+    return response.ok ? { state: 'image', svg: await response.text(), stale } : { state: 'pending' };
+  };
   switch (diagram.state) {
-    case 'rendered': return { state: 'image', src: image, stale: false };
-    case 'stale': return { state: 'image', src: image, stale: true };
+    case 'rendered': return image(false);
+    case 'stale': return image(true);
     case 'invalid': return { state: 'invalid', issues: diagram.issues };
     case 'failed': return { state: 'failed', reason: diagram.reason! };
     default: return { state: diagram.state };
@@ -200,7 +205,9 @@ function DiagramBlock({ source, validate, t }: {
     return (
       <>
         {check.stale && <p className="docs-figure__note" data-diagram="stale">{t('docs.diagram.stale')}</p>}
-        <img key={check.stale ? 'stale' : 'drawn'} src={check.src} alt={t('docs.diagram.alt')} className="docs-figure__image" data-diagram="image" />
+        <img key={check.stale ? 'stale' : 'drawn'} src={svgDataUrl(check.svg)} alt={t('docs.diagram.alt')} className="docs-figure__image" data-diagram="image" />
+        {/* The shown SVG is the export; the browser saves it only when the user follows this link. */}
+        <a href={svgDataUrl(check.svg)} download="diagram.svg" className="docs-figure__note" data-diagram-export>{t('docs.diagram.export')}</a>
       </>
     );
   }

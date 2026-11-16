@@ -6,7 +6,7 @@ import { Window } from 'happy-dom';
 import { decodeDevActivitySnapshot } from '../../src/core/dev-activity/decode';
 import { unavailableRuntimeOverlay } from '../../src/core/operator/runtime-status';
 import { OperatorApp, type OperatorAppProps } from '../../src/operator-web/App';
-import { DIAGRAM_LANGUAGE, DocsMarkdown, docsLink, MERMAID_CONFIG, type DiagramValidator } from '../../src/operator-web/DocsMarkdown';
+import { DIAGRAM_LANGUAGE, DocsMarkdown, docsLink, MERMAID_CONFIG, validateDiagramWithCapability, type DiagramValidator } from '../../src/operator-web/DocsMarkdown';
 import { translate } from '../../src/operator-web/i18n';
 import { registryOf } from '../../src/operator-web/fixtures';
 
@@ -241,7 +241,7 @@ describe('docs page', () => {
     expect(seen).toEqual([{ entities: [] }]);
     expect((await show('{"entities":[]}')).state).toBe('capability-missing');
     for (const [check, state] of [
-      [{ state: 'image', src: '/a.svg', stale: false }, 'image'], [{ state: 'image', src: '/a.svg', stale: true }, 'stale'],
+      [{ state: 'image', svg: '<svg/>', stale: false }, 'image'], [{ state: 'image', svg: '<svg/>', stale: true }, 'stale'],
       [{ state: 'pending' }, 'pending'], [{ state: 'browser_missing' }, 'browser-missing'], [{ state: 'failed', reason: 'timeout' }, 'failed'],
     ] as const) expect((await show('{"entities":[]}', async () => check)).state).toBe(state);
     // A deeply nested block neither overflows the stack nor is hashed: it reports its own depth error.
@@ -253,12 +253,31 @@ describe('docs page', () => {
     const render = (validate: DiagramValidator) => act(async () => drawnRoot.render(
       <DocsMarkdown text={fence('{"entities":[]}')} path="docs/a.md" mode="light" onOpen={() => {}} validateDiagram={validate} t={(key, params) => translate('en', key, params)} />,
     ));
-    await render(async () => ({ state: 'image', src: '/a.svg', stale: true }));
+    await render(async () => ({ state: 'image', svg: '<svg/>', stale: true }));
     await settle();
     const staleImage = container.querySelector('img');
-    await render(async () => ({ state: 'image', src: '/a.svg', stale: false }));
+    await render(async () => ({ state: 'image', svg: '<svg/>', stale: false }));
     await settle();
     expect(container.querySelector('img')).not.toBe(staleImage);
+    // The export carries the bytes of the shown image, also after the stored artifact is replaced: both change together.
+    const exported = () => container.querySelector<HTMLAnchorElement>('a[data-diagram-export]')!;
+    expect(exported().getAttribute('download')).toBe('diagram.svg');
+    expect(exported().getAttribute('href')).toBe(container.querySelector('img')!.getAttribute('src'));
+    await render(async () => ({ state: 'image', svg: '<svg id="b"/>', stale: false }));
+    await settle();
+    expect(decodeURIComponent(exported().getAttribute('href')!)).toContain('<svg id="b"/>');
+    expect(exported().getAttribute('href')).toBe(container.querySelector('img')!.getAttribute('src'));
+    // The real validator reads the artifact bytes once; an artifact that left after the state read shows as pending, not as a 404 export.
+    const hash = 'a'.repeat(64);
+    const rendered = { protocol: 1, kind: 'operator_docs_diagram', hash, state: 'rendered', issues: [], reason: null };
+    const realFetch = globalThis.fetch;
+    try {
+      const reply = (image: Response) => (input: RequestInfo | URL) => Promise.resolve(String(input).endsWith('/image') ? image : Response.json(rendered));
+      globalThis.fetch = reply(new Response('<svg id="c"/>')) as typeof fetch;
+      expect(await validateDiagramWithCapability({})).toMatchObject({ state: 'image', svg: '<svg id="c"/>' });
+      globalThis.fetch = reply(new Response('gone', { status: 404 })) as typeof fetch;
+      expect(await validateDiagramWithCapability({})).toEqual({ state: 'pending' });
+    } finally { globalThis.fetch = realFetch; }
     await act(async () => drawnRoot.unmount());
   });
 
