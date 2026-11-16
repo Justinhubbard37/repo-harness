@@ -126,7 +126,7 @@ export async function runDispatch(input: DispatchInput): Promise<DispatchResultV
   const terminals = input.host.seatTerminals(repositoryId);
   if (terminals.status === 'unavailable') throw new BoardCollectError(`hc could not list the seat terminals: ${terminals.reason}`);
   const { seats } = readSeatsConfiguration(process.env);
-  const quota = seatAccountQuotas((await readQuotaReport(process.env)).accounts, seats.routing);
+  const quota = seatAccountQuotas((await readQuotaReport(process.env, seats.routing.exhausted_at_or_above_used)).accounts, seats.routing);
   const plan = planDispatch({ parent, terminals: terminals.terminals, seats, quota });
   const started = await executeDispatch(plan, { repositoryId, parent: input.parent, space: input.space, dry_run: input.dry_run,
     // The same projection that `seatLaunch` uses for the argv, so the claim names the model that runs.

@@ -164,7 +164,7 @@ async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configur
       done.add(account);
       readings.push(account === 'claude' ? readClaudeQuota(env) : await readCodexQuota(env, PACKAGE_VERSION));
     }
-    return seatAccountQuotas(readings.map(reading => classifyQuotaReading(reading, Date.now())), seats.routing);
+    return seatAccountQuotas(readings.map(reading => classifyQuotaReading(reading, Date.now(), seats.routing.exhausted_at_or_above_used)), seats.routing);
   };
   const own = seatAccount(configured);
   let quota = await read(own);

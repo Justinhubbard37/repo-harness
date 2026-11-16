@@ -292,6 +292,28 @@ describe('quota classification', () => {
     expect(account.state).toBe(accountState);
   });
 
+  test.each([
+    // [case, window used, hours to reset, exhaustion line, window state, account state] — elapsed at 84 h is 50%.
+    // The pace is used - 50, so a 95% window is over +15 and reads tight below a line of 100.
+    ['the default line is 95', 95, 84, undefined, 'exhausted', 'exhausted'],
+    ['94% used stays below the default line', 94, 84, undefined, 'tight', 'tight'],
+    ['a 95% window is tight at a line of 100', 95, 84, 100, 'tight', 'tight'],
+    ['a 100% window is exhausted at a line of 100', 100, 84, 100, 'exhausted', 'exhausted'],
+    ['a 50% window is exhausted at the lowest line', 50, 84, 50, 'exhausted', 'exhausted'],
+  ] as const)('the exhaustion line decides the state: %s', (_name, used, hours, line, windowState, accountState) => {
+    const reading = decodeClaudeQuotaCapture({ observed_at: new Date(NOW).toISOString(), rate_limits: { seven_day: week(used, hours) } });
+    const account = line === undefined ? classifyQuotaReading(reading, NOW) : classifyQuotaReading(reading, NOW, line);
+    expect(account.windows.find(window => window.window === 'seven_day')?.state).toBe(windowState);
+    expect(account.state).toBe(accountState);
+  });
+
+  test('a provider-reported limit is exhausted at any exhaustion line', () => {
+    const reading = decodeCodexRateLimitsResult({ rateLimits: {
+      primary: { usedPercent: 10, windowDurationMins: 10_080, resetsAt: (NOW + 84 * HOUR) / 1000 }, rateLimitReachedType: 'rate_limit_reached',
+    } }, new Date(NOW).toISOString());
+    expect(classifyQuotaReading(reading, NOW, 100)).toMatchObject({ state: 'exhausted', reason: 'rate_limit_reached_type rate_limit_reached' });
+  });
+
   test('the worst window wins and each failed field names its reason', () => {
     const fiveHour = { used_percentage: 96, resets_at: (NOW + HOUR) / 1000 };
     expect(claude({ five_hour: fiveHour, seven_day: week(60, 12) }).state).toBe('exhausted');
@@ -424,7 +446,28 @@ function quota(args: string[], env: Record<string, string>) {
   return spawnSync(process.execPath, [CLI, 'quota', ...args], { cwd: ROOT, env, encoding: 'utf8', timeout: 40_000 });
 }
 
+function seatsArgv(args: string[], env: Record<string, string>) {
+  return spawnSync(process.execPath, [CLI, 'seats', 'argv', ...args], { cwd: ROOT, env, encoding: 'utf8', timeout: 40_000 });
+}
+
 describe('rh quota', () => {
+  test('the stored exhaustion line decides whether a 95% window blocks the gatekeeper (#2909)', () => {
+    const f = fixture('exhausted');
+    // An absent seats section reads as the defaults, so the host line is 95: this window is exhausted and refuses.
+    expect((JSON.parse(quota(['--json'], f.env).stdout) as QuotaReport).accounts[1]).toMatchObject({ state: 'exhausted' });
+    const blocked = seatsArgv(['gatekeeper', '--pr', '2262', '--json'], f.env);
+    expect([blocked.status, JSON.parse(blocked.stderr).error]).toEqual([1, 'seat_quota_exhausted']);
+    writeFileSync(join(f.home, '.repo-harness', 'config.json'), JSON.stringify({ seats: { ...DEFAULT_SEATS_CONFIG,
+      routing: { ...DEFAULT_SEATS_CONFIG.routing, exhausted_at_or_above_used: 100 } } }));
+    const report = JSON.parse(quota(['--json'], f.env).stdout) as QuotaReport;
+    // The same 95% weekly window is now tight: over the headroom and pace rules, below the exhaustion line.
+    expect(report.accounts[1]?.state).toBe('tight');
+    expect(report.accounts[1]?.windows.find(window => window.window === 'secondary')).toMatchObject({ state: 'tight', used_percent: 95 });
+    const launched = seatsArgv(['gatekeeper', '--pr', '2262', '--json'], f.env);
+    expect(launched.status, launched.stderr).toBe(0);
+    expect(JSON.parse(launched.stdout).argv).toContain(DEFAULT_SEATS_CONFIG.gatekeeper.model);
+  });
+
   test('reads the capture file and one app-server rateLimits read, grouped by account', () => {
     const f = fixture('ok');
     const resetsAt = Math.floor(Date.now() / 1000) + 2 * 3600;

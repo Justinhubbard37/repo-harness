@@ -61,7 +61,7 @@ import { AGENTS_CONFIGURATION_FAILURES, OPERATOR_SETTINGS_AGENTS_PATH, OPERATOR_
 import { OPERATOR_REPORT_LANGUAGE_PATH, OPERATOR_REPORT_LANGUAGE_ROUTE, OPERATOR_DOCUMENTATION_LANGUAGE_ROUTE, requireLanguageSettings, readDocumentationLanguage, reportingLanguageWriteRoute, documentationLanguageWriteRoute, type OperatorLanguageSettingsAdapter } from './language-settings-route';
 import { OperatorWriteRefusal } from './write-run';
 import { OPERATOR_SETTINGS_SEATS_PATH, OPERATOR_SETTINGS_SEATS_ROUTE, SEATS_CONFIGURATION_FAILURES, readSeatsSettings, seatsSettingsWriteRoute } from './seats-settings-route';
-import { SeatsConfigurationError } from '../board/seats-configuration';
+import { SeatsConfigurationError, readSeatsConfiguration } from '../board/seats-configuration';
 import { AgentsConfigurationError } from '../configuration/agents-configuration';
 import type { AgentRuntimesCacheV1 } from '../../core/board/agents-settings';
 import { OPERATOR_DEFAULT_HOST, OPERATOR_DEFAULT_MAX_CONCURRENCY, OPERATOR_DEFAULT_PORT, OPERATOR_DEFAULT_TIMEOUT_MS } from '../../core/review/operator-console-port';
@@ -1391,13 +1391,20 @@ export async function startOperatorServer(
       }
       quotaBusy = true;
       try {
-        const value = await (options.read_quota ?? (() => readQuotaReport(options.env ?? process.env)))();
+        // The stored seats section is the one authority for the exhaustion line (#2909), so the account states that this
+        // route serves agree with the routes that the same section derives.
+        const exhaustion = readSeatsConfiguration(options.env ?? process.env).seats.routing.exhausted_at_or_above_used;
+        const value = await (options.read_quota ?? (() => readQuotaReport(options.env ?? process.env, exhaustion)))();
         let report;
         try { report = decodeQuotaReport(value); } catch {
           sendRefusal(request, response, 502, errorBody('quota_invalid', 'The quota report failed validation.'), headOnly);
           return;
         }
         sendJson(response, 200, report, headOnly);
+      } catch (error) {
+        if (!(error instanceof SeatsConfigurationError)) throw error;
+        sendRefusal(request, response, SEATS_CONFIGURATION_FAILURES[error.code].status,
+          errorBody(error.code, error.message, SEATS_CONFIGURATION_FAILURES[error.code].next_action), headOnly);
       } finally { quotaBusy = false; }
       return;
     }

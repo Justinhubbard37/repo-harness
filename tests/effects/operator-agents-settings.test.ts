@@ -661,7 +661,9 @@ describe('seat settings contract without transport', () => {
         ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing, [field]: value },
       } }, [])).toThrow('seats_settings_request_invalid');
     }
-    for (const [field, valid, refused] of [['codex_credit_mode', ['off', 'review', 'all'], ['on', null]], ['codex_credit_floor', [0, 2000, 0.5], [-1, '2000', null]]] as const) {
+    // The exhaustion line has its own range (#2909); see EXHAUSTED_AT_OR_ABOVE_USED_RANGE.
+    for (const [field, valid, refused] of [['codex_credit_mode', ['off', 'review', 'all'], ['on', null]], ['codex_credit_floor', [0, 2000, 0.5], [-1, '2000', null]],
+      ['exhausted_at_or_above_used', [50, 95, 100], [49, 101, null, '95']]] as const) {
       for (const value of valid) expect(decodeSeatsConfig({ ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing, [field]: value } }).routing[field]).toBe(value);
       for (const value of refused) expect(() => route.decode({ expected_revision: 'absent', seats: {
         ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing, [field]: value },

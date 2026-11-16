@@ -6,6 +6,18 @@
  */
 import { isRecord } from '../evidence/is-record';
 
+/**
+ * The line at or above which a window is `exhausted` (#2909). The owner sets it as
+ * `seats.routing.exhausted_at_or_above_used`; the seats default and its range import these values,
+ * so the reading and the config keep one authority.
+ */
+export const DEFAULT_EXHAUSTED_AT_OR_ABOVE_USED = 95;
+/**
+ * The range that a seats save accepts (#2909). The line decides only the `exhausted` state, so it stays inside the
+ * percent scale, and a lower bound of 50 keeps the `tight` and `surplus` rules readable as the states below it.
+ */
+export const EXHAUSTED_AT_OR_ABOVE_USED_RANGE = Object.freeze({ min: 50, max: 100 });
+
 export const QUOTA_PROTOCOL = 'repo-harness.quota.v1' as const;
 export const OPERATOR_QUOTA_PATH = '/api/v1/quota' as const;
 /** The Claude capture file, relative to HOME. Q1 reads it; the Q2 status line route writes it with mode 0600. */
@@ -210,7 +222,7 @@ export function decodeCodexRateLimitsResult(value: unknown, observedAt: string):
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
-function classifyWindow(sample: WindowSample, nowMs: number, readingReason: string | null): QuotaWindowReport {
+function classifyWindow(sample: WindowSample, nowMs: number, readingReason: string | null, exhaustedAtOrAboveUsed: number): QuotaWindowReport {
   const report: QuotaWindowReport = {
     window: sample.window, window_minutes: sample.window_minutes, used_percent: sample.used_percent,
     resets_at: sample.resets_at === null ? null : new Date(sample.resets_at * 1000).toISOString(),
@@ -224,7 +236,7 @@ function classifyWindow(sample: WindowSample, nowMs: number, readingReason: stri
   if (remainingMs > windowMs) return { ...report, reason: 'resets_at is beyond the window length' };
   const used = sample.used_percent;
   const elapsed = 100 * (1 - remainingMs / windowMs), pace = used - elapsed;
-  const state: QuotaState = used >= 95 ? 'exhausted'
+  const state: QuotaState = used >= exhaustedAtOrAboveUsed ? 'exhausted'
     : 100 - used < 15 || pace > 15 ? 'tight'
       : pace < -25 && remainingMs < SURPLUS_RESET_MS ? 'surplus'
         : 'normal';
@@ -232,13 +244,13 @@ function classifyWindow(sample: WindowSample, nowMs: number, readingReason: stri
 }
 
 /**
- * Applies the #1716 decision table to each window. The worst window state wins; `rate_limit_reached_type` set means exhausted.
- * No window of 10080 min means no weekly reading; that counts as an unknown window in the order.
+ * Applies the #1716 decision table to each window. The worst window state wins; `rate_limit_reached_type` set means exhausted
+ * at any exhaustion line. No window of 10080 min means no weekly reading; that counts as an unknown window in the order.
  */
-export function classifyQuotaReading(reading: QuotaReading, nowMs: number): QuotaAccountReport {
+export function classifyQuotaReading(reading: QuotaReading, nowMs: number, exhaustedAtOrAboveUsed: number = DEFAULT_EXHAUSTED_AT_OR_ABOVE_USED): QuotaAccountReport {
   const stale = reading.reason === null && reading.observed_at !== null && nowMs - Date.parse(reading.observed_at) > QUOTA_STALE_MS;
   const reason = stale ? 'reading older than 30 min' : reading.reason;
-  const windows = reading.windows.map(sample => classifyWindow(sample, nowMs, reason));
+  const windows = reading.windows.map(sample => classifyWindow(sample, nowMs, reason, exhaustedAtOrAboveUsed));
   const reached = reason === null ? reading.codex?.rate_limit_reached_type ?? null : null;
   const weekly = reading.windows.some(sample => sample.window_minutes === WEEKLY_WINDOW_MINUTES);
   // A missing weekly reading is one more `unknown` candidate: exhausted or tight on another window still wins.
@@ -253,8 +265,10 @@ export function classifyQuotaReading(reading: QuotaReading, nowMs: number): Quot
   };
 }
 
-export function buildQuotaReport(readings: readonly QuotaReading[], nowMs: number): QuotaReport {
-  return { protocol: QUOTA_PROTOCOL, read_at: new Date(nowMs).toISOString(), accounts: readings.map(reading => classifyQuotaReading(reading, nowMs)) };
+export function buildQuotaReport(readings: readonly QuotaReading[], nowMs: number,
+  exhaustedAtOrAboveUsed: number = DEFAULT_EXHAUSTED_AT_OR_ABOVE_USED): QuotaReport {
+  return { protocol: QUOTA_PROTOCOL, read_at: new Date(nowMs).toISOString(),
+    accounts: readings.map(reading => classifyQuotaReading(reading, nowMs, exhaustedAtOrAboveUsed)) };
 }
 
 function formatWindow(window: QuotaWindowReport, nowMs: number): string {

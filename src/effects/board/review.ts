@@ -150,7 +150,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewResultV1> {
     const comments = new Map(open.map(pr => [pr.number, readComments(input, pr.number)]));
     const { seats } = readSeatsConfiguration(process.env);
     // The same projection that `seatLaunch` uses for `seats argv gatekeeper`, so the family check names the seat that launches.
-    const gatekeeper = effectiveGatekeeper(seats, seatAccountQuotas((await readQuotaReport(process.env)).accounts, seats.routing));
+    const gatekeeper = effectiveGatekeeper(seats, seatAccountQuotas((await readQuotaReport(process.env, seats.routing.exhausted_at_or_above_used)).accounts, seats.routing));
     const decisions = planReview({ board, comments, gatekeeper }).filter(decision => input.pr === undefined || decision.pr === input.pr);
     return { decisions, ...await executeReview(decisions, { repositoryId, parent: input.parent, space: input.space, dry_run: input.dry_run, gatekeeper, observe: input.observe }, {
       worktree: (ref, sha) => worktreeAt(input, ref, sha),

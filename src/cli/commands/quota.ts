@@ -10,12 +10,13 @@ export function buildQuotaCommand(): Command {
     .description('Read the rate-limit windows of each provider account and classify them for dispatch')
     .option('--json', 'Print the readings and states as one JSON line')
     .action(async (options: { json?: boolean }) => {
-      const report = await readQuotaReport(process.env);
+      // The section is read once: its exhaustion line classifies the windows, and its thresholds route them (#2909).
+      const { seats } = readSeatsConfiguration(process.env);
+      const report = await readQuotaReport(process.env, seats.routing.exhausted_at_or_above_used);
       if (options.json) {
         console.log(JSON.stringify(report));
         return;
       }
-      const { seats } = readSeatsConfiguration(process.env);
       const quota = seatAccountQuotas(report.accounts, seats.routing);
       console.log(`${formatQuotaReport(report)}\n${formatSeatModes(seats, quota)}\n${formatSeatRoutes(seats, quota)}`);
     });

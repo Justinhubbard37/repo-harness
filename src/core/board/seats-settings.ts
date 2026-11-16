@@ -3,6 +3,7 @@
 // decoders check shape and seat invariants. The allowed models, efforts and fleet roles come
 // from the fleet role profiles, so the configuration effect checks them; the
 // GET body carries the result as `ranges`, and the browser renders only that.
+import { DEFAULT_EXHAUSTED_AT_OR_ABOVE_USED, EXHAUSTED_AT_OR_ABOVE_USED_RANGE } from './quota';
 
 export const WORKER_SEAT_IDS = ['worker', 'worker-deep', 'worker-important', 'worker-important-fast', 'worker-light'] as const;
 export type WorkerSeatId = typeof WORKER_SEAT_IDS[number];
@@ -63,6 +64,12 @@ export type SeatRoutingV1 = { readonly [task in RoutingClass]: readonly WorkerSe
   /** Claude hyper mode (#2633): weekly remaining at or above this percent. Saving wins below its own threshold. */
   readonly claude_hyper_at_or_above_remaining: number;
   readonly codex_hyper_at_or_above_remaining: number;
+  /**
+   * A window at or above this percent used is `exhausted` (#2909). The default is the reading's own
+   * `DEFAULT_EXHAUSTED_AT_OR_ABOVE_USED`, so the quota classifier and the section keep one value. A
+   * provider-reported limit is exhausted at any value.
+   */
+  readonly exhausted_at_or_above_used: number;
   readonly codex_credit_mode: CodexCreditMode;
   /** Below this credit balance the credit mode acts as `off`. */
   readonly codex_credit_floor: number;
@@ -74,7 +81,7 @@ export type SeatRoutingV1 = { readonly [task in RoutingClass]: readonly WorkerSe
   readonly unavailable_pi_providers: readonly string[];
 };
 export const ROUTING_KEYS = [...ROUTING_CLASSES, 'claude_saving_below_remaining', 'claude_hyper_at_or_above_remaining', 'codex_hyper_at_or_above_remaining',
-  'codex_credit_mode', 'codex_credit_floor', 'low_quota_explorer', 'unavailable_pi_providers'] as const satisfies readonly (keyof SeatRoutingV1)[];
+  'exhausted_at_or_above_used', 'codex_credit_mode', 'codex_credit_floor', 'low_quota_explorer', 'unavailable_pi_providers'] as const satisfies readonly (keyof SeatRoutingV1)[];
 export type SeatsConfigV1 = { readonly [seat in Exclude<SeatId, OptionalSeatId>]: SeatConfigV1 } & {
   readonly [seat in OptionalSeatId]: SeatConfigV1 | null;
 } & {
@@ -108,6 +115,7 @@ export const DEFAULT_SEATS_CONFIG: SeatsConfigV1 = Object.freeze({
     claude_saving_below_remaining: 20,
     claude_hyper_at_or_above_remaining: 50,
     codex_hyper_at_or_above_remaining: 50,
+    exhausted_at_or_above_used: DEFAULT_EXHAUSTED_AT_OR_ABOVE_USED,
     codex_credit_mode: 'off',
     codex_credit_floor: 0,
     important_deep: Object.freeze(['worker-important', 'worker-deep'] as const),
@@ -127,6 +135,7 @@ export const INTRODUCED_ROUTING_DEFAULTS = Object.freeze({
   codex_credit_mode: DEFAULT_SEATS_CONFIG.routing.codex_credit_mode,
   codex_credit_floor: DEFAULT_SEATS_CONFIG.routing.codex_credit_floor,
   claude_hyper_at_or_above_remaining: DEFAULT_SEATS_CONFIG.routing.claude_hyper_at_or_above_remaining,
+  exhausted_at_or_above_used: DEFAULT_SEATS_CONFIG.routing.exhausted_at_or_above_used,
   unavailable_pi_providers: DEFAULT_SEATS_CONFIG.routing.unavailable_pi_providers,
 }) satisfies Partial<SeatRoutingV1>;
 
@@ -269,6 +278,10 @@ function decodeModel(value: unknown, code: string): SeatModelV1 {
 function decodeRouting(value: unknown, code: string): SeatRoutingV1 {
   const record = object(value, ROUTING_KEYS, code);
   const percent = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 ? value : invalid(code);
+  // The exhaustion line has its own range (#2909); see EXHAUSTED_AT_OR_ABOVE_USED_RANGE.
+  const exhaustedAtOrAboveUsed = typeof record.exhausted_at_or_above_used === 'number' && Number.isFinite(record.exhausted_at_or_above_used)
+    && record.exhausted_at_or_above_used >= EXHAUSTED_AT_OR_ABOVE_USED_RANGE.min
+    && record.exhausted_at_or_above_used <= EXHAUSTED_AT_OR_ABOVE_USED_RANGE.max ? record.exhausted_at_or_above_used : invalid(code);
   const routes = Object.fromEntries(ROUTING_CLASSES.map(task => {
     const seats = record[task];
     const allowed = task === 'frontend' ? FRONTEND_SEAT_IDS : WORKER_SEAT_IDS;
@@ -279,6 +292,7 @@ function decodeRouting(value: unknown, code: string): SeatRoutingV1 {
   return { ...routes, claude_saving_below_remaining: percent(record.claude_saving_below_remaining),
     claude_hyper_at_or_above_remaining: percent(record.claude_hyper_at_or_above_remaining),
     codex_hyper_at_or_above_remaining: percent(record.codex_hyper_at_or_above_remaining),
+    exhausted_at_or_above_used: exhaustedAtOrAboveUsed,
     codex_credit_mode: CODEX_CREDIT_MODES.includes(record.codex_credit_mode as CodexCreditMode) ? record.codex_credit_mode as CodexCreditMode : invalid(code),
     codex_credit_floor: typeof record.codex_credit_floor === 'number' && Number.isFinite(record.codex_credit_floor) && record.codex_credit_floor >= 0
       ? record.codex_credit_floor : invalid(code),

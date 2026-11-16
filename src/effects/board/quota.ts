@@ -19,9 +19,14 @@ import {
 
 const CODEX_READ_TIMEOUT_MS = 20_000;
 
-export async function readQuotaReport(env: NodeJS.ProcessEnv): Promise<QuotaReport> {
+/**
+ * One report from the two provider sources, classified at the given exhaustion line. The seats section
+ * (`seats.routing.exhausted_at_or_above_used`, #2909) is the one authority for that line: each caller reads
+ * it once and passes the value, so the states and the routing thresholds of one command come from one revision.
+ */
+export async function readQuotaReport(env: NodeJS.ProcessEnv, exhaustedAtOrAboveUsed: number): Promise<QuotaReport> {
   const readings = [readClaudeQuota(env), await readCodexQuota(env, PACKAGE_VERSION)];
-  return buildQuotaReport(readings, Date.now());
+  return buildQuotaReport(readings, Date.now(), exhaustedAtOrAboveUsed);
 }
 
 function claudeCapturePath(env: NodeJS.ProcessEnv): string {

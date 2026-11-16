@@ -113,7 +113,7 @@ export async function startCleanupInvestigation(sessionId: string, options: Clea
   if (plan.items.length > WORKTREE_CLEANUP_INVESTIGATION_MAX_ITEMS) throw refusal('investigation_too_large');
   const previous = loadCleanupInvestigation(env, sessionId);
   if (previous !== null && current(previous, Date.now()).state === 'running') throw refusal('investigation_running');
-  await assertCodexQuota(options.read_quota ?? (() => readQuotaReport(env)), env);
+  await assertCodexQuota(options.read_quota ?? (() => readQuotaReport(env, readSeatsConfiguration(env).seats.routing.exhausted_at_or_above_used)), env);
   const now = Date.now();
   const job: CleanupInvestigationJob = { protocol: 1, kind: 'operator_worktree_cleanup_investigation', session_id: sessionId, job_id: randomBytes(16).toString('hex'),
     state: 'running', started_at: iso(now), deadline_at: iso(now + JOB_TIMEOUT_MS), failure: null };

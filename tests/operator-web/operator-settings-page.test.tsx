@@ -227,6 +227,37 @@ describe('agents page seats section', () => {
     await settle();
   }
 
+  /**
+   * Types `value` over a threshold field one character at a time, as a keyboard does, and leaves it (#2909). A threshold
+   * keeps a local draft, so every intermediate text such as `1` stays in the field; the value commits at blur. It returns
+   * the text that the field showed after each keystroke, so a snapped-back draft is visible. An empty `value` is one
+   * keystroke that clears the field.
+   */
+  async function typeText(selector: string, value: string) {
+    const input = document.querySelector<HTMLInputElement>(selector)!;
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { input.focus(); });
+    const seen: string[] = [];
+    for (const text of value === '' ? [''] : Array.from({ length: value.length }, (_, index) => value.slice(0, index + 1))) {
+      await act(async () => {
+        setValue.call(input, text);
+        input.dispatchEvent(new window.KeyboardEvent('keyup', { key: text.at(-1) ?? 'Backspace', bubbles: true }) as unknown as Event);
+      });
+      await settle();
+      seen.push(input.value);
+    }
+    return seen;
+  }
+  async function leaveField(selector: string) {
+    await act(async () => { document.querySelector<HTMLInputElement>(selector)!.blur(); });
+    await settle();
+  }
+  async function typeNumber(selector: string, value: string) {
+    const seen = await typeText(selector, value);
+    await leaveField(selector);
+    return seen;
+  }
+
   test('every seat has a card; a review seat shows only its read, shell and network groups and no fleet; modes stay unknown while quota is not read', async () => {
     await mount(seatsProps([]));
     expect(all('[role="group"][aria-label="Seat"] button')).toHaveLength(11);
@@ -292,12 +323,18 @@ describe('agents page seats section', () => {
     // worker-light is null in busy, so no list offers it.
     expect(all('[data-route="frontend"] ~ button').map(button => button.getAttribute('aria-label'))).toEqual(['Add worker-important']);
     await setNumber('[data-threshold="codex_hyper_at_or_above_remaining"]', '70');
+    // The exhaustion line is a routing setting of its own (#2909): 100 typed over 95 passes through 1 and 10, and neither
+    // intermediate text may be refused or snap back.
+    expect(document.querySelector<HTMLInputElement>('[data-threshold="exhausted_at_or_above_used"]')!.value).toBe('95');
+    expect(await typeNumber('[data-threshold="exhausted_at_or_above_used"]', '100')).toEqual(['1', '10', '100']);
+    expect(document.querySelector<HTMLInputElement>('[data-threshold="exhausted_at_or_above_used"]')!.value).toBe('100');
     await click(document.querySelector<HTMLButtonElement>('[aria-label="Codex on credits when exhausted"] button:nth-child(2)')!);
     await setNumber('[data-credit-floor]', '2000');
     await click(seatsSave());
     expect(posts[0]!.seats.routing).toMatchObject({
       important_deep: ['worker-deep', 'worker-important'], simple_fast: ['worker-deep'], frontend: ['worker-important-fast'],
-      claude_saving_below_remaining: 20, codex_hyper_at_or_above_remaining: 70, codex_credit_mode: 'review', codex_credit_floor: 2000,
+      claude_saving_below_remaining: 20, codex_hyper_at_or_above_remaining: 70, exhausted_at_or_above_used: 100,
+      codex_credit_mode: 'review', codex_credit_floor: 2000,
     });
     // worker-light as the only seat of a route: setting it to not configured empties the route, and the decoder refusal keeps Save off.
     await click(pick('worker-light'));
@@ -338,6 +375,29 @@ describe('agents page seats section', () => {
     }
   });
 
+  test('the exhaustion line keeps an intermediate draft, commits a value in range, and refuses one outside it (#2909)', async () => {
+    const posts: (SeatsSettingsRequestV1 & { readonly request_id: string })[] = [];
+    await mount(seatsProps(posts));
+    const field = () => document.querySelector<HTMLInputElement>('[data-threshold="exhausted_at_or_above_used"]')!;
+    const selector = '[data-threshold="exhausted_at_or_above_used"]';
+    // Clearing the field is a keystroke of its own: the empty draft stays, and leaving the field restores 95 uncommitted.
+    expect(await typeText(selector, '')).toEqual(['']);
+    expect(seatsSave().disabled).toBe(true);
+    await leaveField(selector);
+    expect(field().value).toBe('95');
+    expect(seatsSave().disabled).toBe(true);
+    // A value below the range is refused at blur, and the field shows the stored value again.
+    expect(await typeNumber(selector, '49')).toEqual(['4', '49']);
+    expect(field().value).toBe('95');
+    expect(seatsSave().disabled).toBe(true);
+    // 50 is the lowest accepted value, and the save carries it.
+    expect(await typeNumber(selector, '50')).toEqual(['5', '50']);
+    expect(field().value).toBe('50');
+    expect(seatsSave().disabled).toBe(false);
+    await click(seatsSave());
+    expect(posts[0]!.seats.routing.exhausted_at_or_above_used).toBe(50);
+  });
+
   test('the credit preview names the configured seats that run on credits', async () => {
     // degraded quota, given credits: ChatGPT is exhausted with a balance of 5000.
     const report = degradedQuota(NOW);
@@ -359,8 +419,8 @@ describe('agents page seats section', () => {
     await mount({ ...seatsProps([]), readQuota: async () => ({ state: 'ok', settings: busyQuota(NOW) }) });
     expect([mode('claude').getAttribute('data-mode'), mode('chatgpt').getAttribute('data-mode')]).toEqual(['saving', 'hyper']);
     expect(mode('claude').textContent).toContain('12% left this week');
-    await setNumber('[data-threshold="claude_saving_below_remaining"]', '10');
-    await setNumber('[data-threshold="codex_hyper_at_or_above_remaining"]', '70');
+    await typeNumber('[data-threshold="claude_saving_below_remaining"]', '10');
+    await typeNumber('[data-threshold="codex_hyper_at_or_above_remaining"]', '70');
     expect([mode('claude').getAttribute('data-mode'), mode('chatgpt').getAttribute('data-mode')]).toEqual(['normal', 'normal']);
   });
 
