@@ -142,12 +142,50 @@ A changed registry refuses the whole apply with exit 2. Apply checks each repo
 again just before its first write. It then runs the `init` refresh transaction,
 `upgrade --scope project --apply` and the managed worktree sweep. A failed repo does not stop or roll back
 the other repos. The `init` refresh updates the repo's registry row, so preview
-again before the next apply. The command never commits, pushes or opens a PR.
-`--json` prints one object with `revision`, `apply`, `exitCode` and `repos`.
-Each repo has `path` and `status` (`ready`, `applied`, `skipped` or `failed`),
-plus `reason`, `detail`, `pending`, `init`, `upgrade`, `sweep` or `error` when
-they apply. Preview exits 1 when a repo has pending work or failed. Apply exits
-1 when a repo failed. A successful `update` prints one read-only line with the
+again before the next apply. Without `--pr` the command never commits, pushes
+or opens a PR.
+
+`rh upgrade --registered --apply --pr --expected-revision <digest>` does not
+write the primary checkout. A repo that is ready, or skipped only as
+`dirty_worktree` or `not_default_branch`, is refreshed in the temporary
+worktree `<managed worktree root>/harness-refresh.<repo>` on the branch
+`repo-harness/refresh`. Git resolves the fetch URL and every push URL of
+`origin` (after `insteadOf`, `pushInsteadOf` and `remote.origin.pushurl`).
+All of them must name the same github.com repository, else the repo is skipped
+with `remote_target_mismatch`. Its detail names each URL only by its
+owner/name, or as "a non-github.com URL", so a token in a URL is not printed.
+Each `gh` call gets that repository as `--repo`, and
+the caller's `GH_REPO` and `GH_HOST` do not reach `gh`. Only an open PR whose
+head is that repository counts; more than one such PR skips the repo with
+`refresh_pr_ambiguous`. The command fetches `origin/<base_branch>` and
+makes the worktree from it. The base branch must be the one that the policy at
+`origin/<base_branch>` names. When the refresh changes tracked files, the
+command makes one commit `chore(harness): refresh repo-harness files for
+<version>`, pushes the branch and opens its PR with `gh`. When a PR of the
+branch is open, the push updates it, and the command sets only its title. When
+the remote branch already holds the same tree on the same base, it pushes
+nothing. When the base needs no refresh but a refresh PR is still open, the
+command reports that PR and does not close it. It then removes the worktree and
+the local branch while the branch still points at the commit that this run
+created; otherwise it leaves the branch and fails the repo. It never merges.
+The run creates the local `repo-harness/refresh` branch only when no such
+branch exists; an existing branch, of another run or of the operator, skips
+the repo with `refresh_branch_exists`. A worktree path that exists fails the
+repo. Both errors give the `git worktree remove` and `git branch -D`
+commands. When `git worktree add` fails after it registered the worktree on the
+branch, the run removes that worktree before it deletes the branch. A remote `repo-harness/refresh` with a commit that is not a refresh
+commit by the current git author skips the repo with `refresh_branch_foreign`;
+the push has a lease on the inspected commit. The other `--pr` skips are
+`no_origin_remote`, `fetch_failed`, `push_failed` and `pr_failed`. The managed
+worktree sweep and the legacy worktree cleanup do not run with `--pr`. The
+preview shows for each repo whether `--pr` can refresh it.
+
+`--json` prints one object with `revision`, `apply`, `exitCode` and `repos`,
+plus `pr` for a `--pr` apply. Each repo has `path` and `status` (`ready`,
+`applied`, `skipped` or `failed`), plus `reason`, `detail`, `pending`, `init`,
+`upgrade`, `sweep`, `prRefresh`, `refresh` or `error` when they apply. Preview
+exits 1 when a repo has pending work or failed. Apply exits 1 when a repo
+failed or was skipped as `fetch_failed`, `push_failed` or `pr_failed`. A successful `update` prints one read-only line with the
 number of registered repos that have pending project upgrade work.
 
 The cross-review skill is **harness-owned**; its routing source lives in

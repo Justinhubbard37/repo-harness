@@ -140,6 +140,7 @@ rh upgrade         # check retired leftovers; no writes
 rh upgrade --apply # back up and remove only proven owned leftovers
 rh upgrade decide --keep <path> # record an operator decision for a report-only project item
 rh upgrade --registered # preview project refresh for every registered repo; no writes
+rh upgrade --registered --apply --pr --expected-revision <digest> # one refresh PR per registered repo; never merges
 rh uninstall --dry-run # preview owned user configuration cleanup
 rh uninstall           # remove owned configuration; preserve user changes/history
 ```

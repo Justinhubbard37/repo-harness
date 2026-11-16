@@ -1883,6 +1883,179 @@ describe('upgrade --registered', () => {
     expect(readFileSync(target, 'utf8')).toBe('operator notes\n');
   }), 120_000);
 
+  /**
+   * `--pr` inputs: an operator identity, a caller GH_REPO and GH_HOST that must not reach gh, and a recording gh stub.
+   * origin is `git@github.com:fixture/<repo>.git`; a fake ssh command serves it from the local bare repository `<repo>.git`.
+   */
+  function prFixture(f: RegisteredReposFixture) {
+    const ssh = join(f.root, 'ssh');
+    writeFileSync(ssh, ['#!/bin/sh', 'for cmd; do :; done', 'eval "set -- $cmd"', 'exec git "${1#git-}" "$FIXTURE_REMOTES/${2#fixture/}"', ''].join('\n'));
+    chmodSync(ssh, 0o755);
+    Object.assign(f.env, { GIT_SSH_COMMAND: ssh, FIXTURE_REMOTES: f.root });
+    const env = { ...f.env, GIT_AUTHOR_NAME: 'operator', GIT_AUTHOR_EMAIL: 'operator@example.invalid',
+      GIT_COMMITTER_NAME: 'operator', GIT_COMMITTER_EMAIL: 'operator@example.invalid',
+      REPO_HARNESS_GH_BIN: join(f.root, 'gh'), GH_LOG: join(f.root, 'gh.log'), GH_PR: join(f.root, 'gh.pr'),
+      GH_REPO: 'fixture/elsewhere', GH_HOST: 'github.invalid' };
+    // Logs each call with its last argument, the --repo value, and each edit in full. `pr list` prints the PRs
+    // stored for that repository; `pr create` stores one. A caller GH_REPO or GH_HOST, or any other command, fails.
+    writeFileSync(env.REPO_HARNESS_GH_BIN, ['#!/bin/sh',
+      'for repo; do :; done',
+      'echo "$1 $2 $repo" >> "$GH_LOG"',
+      '[ "$2" != edit ] || echo "$*" >> "$GH_LOG.edit"',
+      '[ -z "$GH_REPO$GH_HOST" ] || exit 3',
+      'state="$GH_PR-${repo##*/}"',
+      'case "$1 $2" in',
+      '  "pr list") if [ -f "$state" ]; then cat "$state"; else echo "[]"; fi ;;',
+      '  "pr create") printf \'[{"url":"https://%s/pull/1","headRepositoryOwner":{"login":"fixture"},"headRepository":{"name":"%s"}}]\' "$repo" "${repo##*/}" > "$state"; echo "https://$repo/pull/1" ;;',
+      '  "pr edit") ;;',
+      '  *) exit 1 ;;',
+      'esac', ''].join('\n'));
+    chmodSync(env.REPO_HARNESS_GH_BIN, 0o755);
+    const withOrigin = (repo: string): string => {
+      const bare = `${repo}.git`;
+      git(f, f.root, 'init', '-q', '--bare', '-b', 'main', bare);
+      git(f, repo, 'remote', 'add', 'origin', `git@github.com:fixture/${basename(repo)}.git`);
+      git(f, repo, 'push', '-q', 'origin', 'main');
+      return bare;
+    };
+    const openPrs = (repo: string, prs: readonly { readonly owner: string; readonly number: number }[]) => writeFileSync(`${env.GH_PR}-${basename(repo)}`,
+      JSON.stringify(prs.map(({ owner, number }) => ({ url: `https://github.com/${owner}/${basename(repo)}/pull/${number}`,
+        headRepositoryOwner: { login: owner }, headRepository: { name: basename(repo) } }))));
+    return { env, withOrigin, openPrs };
+  }
+
+  test('--pr refreshes in a temporary worktree, pushes one commit, opens one PR and leaves the checkout alone', () => registeredSandbox((f) => {
+    const { env, withOrigin } = prFixture(f);
+    const dirty = staleRepo(f, 'dirty');
+    const dirtyRemote = withOrigin(dirty);
+    git(f, dirty, 'checkout', '-q', '-b', 'topic');
+    writeFileSync(join(dirty, 'untracked.txt'), 'operator work\n');
+    writeFileSync(join(dirty, 'AGENTS.md'), 'operator edit\n');
+    const fresh = adoptedRepo(f, 'fresh');
+    const freshRemote = withOrigin(fresh);
+    const noOrigin = staleRepo(f, 'no-origin');
+    const foreign = staleRepo(f, 'foreign');
+    const foreignRemote = withOrigin(foreign);
+    git(f, foreign, 'checkout', '-q', '-b', 'repo-harness/refresh');
+    commitAll(f, foreign, 'chore(harness): refresh repo-harness files for 0.0.0');
+    git(f, foreign, 'push', '-q', 'origin', 'repo-harness/refresh');
+    git(f, foreign, 'checkout', '-q', 'main');
+    git(f, foreign, 'branch', '-q', '-D', 'repo-harness/refresh');
+    const foreignTip = git(f, foreignRemote, 'rev-parse', 'repo-harness/refresh');
+    writeRegistry(f, [dirty, fresh, noOrigin, foreign]);
+    const status = (repo: string) => spawnSync('git', ['status', '--porcelain'], { cwd: repo, env, encoding: 'utf8' }).stdout;
+    const before = { status: status(dirty), files: worktreeSnapshot(dirty), head: git(f, dirty, 'rev-parse', 'HEAD'), branches: git(f, dirty, 'branch', '--list') };
+
+    const preview = runRegisteredUpgrade({ env, callerCwd: f.root });
+    expect(byPath(preview.repos, dirty)).toMatchObject({ status: 'skipped', reason: 'not_default_branch', prRefresh: { ready: true } });
+    expect(byPath(preview.repos, noOrigin)).toMatchObject({ status: 'ready', prRefresh: { ready: false, reason: 'no_origin_remote' } });
+    expect(formatRegisteredUpgradeResult(preview)).toContain(`--apply --pr --expected-revision ${preview.revision}`);
+    expect(cli(f, '--registered', '--pr').status).toBe(2);
+
+    const result = runRegisteredUpgrade({ apply: true, pr: true, expectedRevision: preview.revision!, env, callerCwd: f.root });
+    expect(result.error).toBeUndefined();
+    const refreshed = byPath(result.repos, dirty);
+    expect(refreshed.status, refreshed.error).toBe('applied');
+    expect(refreshed.refresh).toMatchObject({ outcome: 'pushed', branch: 'repo-harness/refresh', pr: 'https://github.com/fixture/dirty/pull/1', prAction: 'created' });
+    expect(git(f, dirtyRemote, 'log', '--format=%s', 'main..repo-harness/refresh')).toMatch(/^chore\(harness\): refresh repo-harness files for \S+$/);
+    const committed = git(f, dirtyRemote, 'diff', '--name-only', 'main', 'repo-harness/refresh').split('\n');
+    expect(committed).toContain('deploy/README.md');
+    expect(committed.filter((path) => path.startsWith('.ai/harness/backups/'))).toEqual([]);
+    expect({ status: status(dirty), files: worktreeSnapshot(dirty), head: git(f, dirty, 'rev-parse', 'HEAD'), branches: git(f, dirty, 'branch', '--list') }).toEqual(before);
+    const worktree = join(f.env.REPO_HARNESS_WORKTREE_ROOT!, 'harness-refresh.dirty');
+    expect(existsSync(worktree)).toBe(false);
+    expect(byPath(result.repos, fresh)).toMatchObject({ status: 'applied', refresh: { outcome: 'up_to_date' } });
+    expect(git(f, freshRemote, 'branch', '--list', 'repo-harness/refresh')).toBe('');
+    expect(byPath(result.repos, noOrigin)).toMatchObject({ status: 'skipped', reason: 'no_origin_remote' });
+    expect(byPath(result.repos, foreign)).toMatchObject({ status: 'skipped', reason: 'refresh_branch_foreign' });
+    expect(git(f, foreignRemote, 'rev-parse', 'repo-harness/refresh')).toBe(foreignTip);
+    expect(formatRegisteredUpgradeResult(result)).not.toContain('Nothing was committed.');
+
+    // The same package version again: the remote branch already holds the refresh, so nothing is pushed.
+    const tip = git(f, dirtyRemote, 'rev-parse', 'repo-harness/refresh');
+    const again = runRegisteredUpgrade({ env, callerCwd: f.root });
+    const second = runRegisteredUpgrade({ apply: true, pr: true, expectedRevision: again.revision!, env, callerCwd: f.root });
+    expect(byPath(second.repos, dirty).refresh).toMatchObject({ outcome: 'unchanged', commit: tip, prAction: 'open' });
+    expect(git(f, dirtyRemote, 'rev-parse', 'repo-harness/refresh')).toBe(tip);
+
+    // main gains the same refresh without the PR: the run reports the open PR and leaves it alone.
+    git(f, dirtyRemote, 'update-ref', 'refs/heads/main', tip);
+    const third = runRegisteredUpgrade({ apply: true, pr: true, expectedRevision: runRegisteredUpgrade({ env, callerCwd: f.root }).revision!, env, callerCwd: f.root });
+    expect(byPath(third.repos, dirty).refresh).toEqual({ outcome: 'up_to_date', stalePr: 'https://github.com/fixture/dirty/pull/1' });
+    expect(readFileSync(env.GH_LOG, 'utf8').trim().split('\n')).toEqual(['pr list', 'pr create', 'pr list', 'pr list']
+      .map((call) => `${call} github.com/fixture/dirty`));
+
+    // An occupied worktree path fails the repo and leaves no local refresh branch behind.
+    git(f, dirtyRemote, 'update-ref', '-d', 'refs/heads/repo-harness/refresh');
+    git(f, dirtyRemote, 'update-ref', 'refs/heads/main', git(f, dirtyRemote, 'rev-parse', 'main~1'));
+    mkdirSync(join(worktree, 'leftover'), { recursive: true });
+    const blocked = runRegisteredUpgrade({ apply: true, pr: true, expectedRevision: runRegisteredUpgrade({ env, callerCwd: f.root }).revision!, env, callerCwd: f.root });
+    expect(byPath(blocked.repos, dirty)).toMatchObject({ status: 'failed', error: expect.stringContaining(`git worktree add ${worktree} exited with status`) });
+    expect(existsSync(join(worktree, 'leftover'))).toBe(true);
+    expect(git(f, dirty, 'branch', '--list', 'repo-harness/refresh')).toBe('');
+    expect(git(f, dirtyRemote, 'branch', '--list', 'repo-harness/refresh')).toBe('');
+  }), 240_000);
+
+  test('--pr publishes only to the one repository that git fetches from and pushes to, and deletes only its own branch', () => registeredSandbox((f) => {
+    const { env, withOrigin, openPrs } = prFixture(f);
+    const hooks = join(f.root, 'concurrent-hooks');
+    mkdirSync(hooks);
+    // Fails `worktree add` after another writer has moved the new branch to a commit of its own.
+    writeFileSync(join(hooks, 'post-checkout'), '#!/bin/sh\ngit -c user.name=other -c user.email=other@example.invalid commit -q --allow-empty -m concurrent\nexit 1\n');
+    chmodSync(join(hooks, 'post-checkout'), 0o755);
+    const cases: readonly { readonly name: string; readonly setup: (repo: string) => void; readonly expected: Partial<RegisteredRepoResult> }[] = [
+      { name: 'fetch-rewrite', setup: (repo) => {
+        git(f, repo, 'config', 'url.git@github.com:fixture/mirror.git.insteadOf', 'git@github.com:fixture/fetch-rewrite.git');
+        git(f, repo, 'config', 'url.git@github.com:fixture/fetch-rewrite.git.pushInsteadOf', 'git@github.com:fixture/fetch-rewrite.git');
+      }, expected: { status: 'skipped', reason: 'remote_target_mismatch' } },
+      { name: 'pushurl', setup: (repo) => git(f, repo, 'config', 'remote.origin.pushurl', 'git@github.com:someone/pushurl.git'),
+        expected: { status: 'skipped', reason: 'remote_target_mismatch' } },
+      { name: 'two-push-urls', setup: (repo) => {
+        git(f, repo, 'remote', 'set-url', '--add', '--push', 'origin', 'git@github.com:fixture/two-push-urls.git');
+        git(f, repo, 'remote', 'set-url', '--add', '--push', 'origin', 'git@github.com:someone/two-push-urls.git');
+      }, expected: { status: 'skipped', reason: 'remote_target_mismatch' } },
+      // Resolved URLs with a token: the detail names only owner/name.
+      { name: 'credentials', setup: (repo) => {
+        git(f, repo, 'remote', 'set-url', '--add', '--push', 'origin', 'https://x-access-token:ghs_SECRET@github.com/someone/credentials.git');
+        git(f, repo, 'remote', 'set-url', '--add', '--push', 'origin', 'https://x-access-token:ghs_SECRET@gitlab.example/x.git');
+      }, expected: { status: 'skipped', reason: 'remote_target_mismatch',
+        detail: 'origin fetches from fixture/credentials and pushes to someone/credentials, a non-github.com URL; every URL must name the same github.com repository' } },
+      { name: 'fork-pr', setup: (repo) => openPrs(repo, [{ owner: 'someone', number: 7 }, { owner: 'fixture', number: 1 }]),
+        expected: { status: 'applied', refresh: expect.objectContaining({ outcome: 'pushed', pr: 'https://github.com/fixture/fork-pr/pull/1', prAction: 'updated' }) } },
+      { name: 'two-prs', setup: (repo) => openPrs(repo, [{ owner: 'fixture', number: 1 }, { owner: 'Fixture', number: 2 }]),
+        expected: { status: 'skipped', reason: 'refresh_pr_ambiguous' } },
+      { name: 'concurrent-branch', setup: (repo) => git(f, repo, 'config', 'core.hooksPath', hooks),
+        expected: { status: 'failed', error: expect.stringContaining('the branch is left') } },
+      // Another run created the branch at the same base commit: this run must neither take it over nor delete it.
+      { name: 'concurrent-create', setup: (repo) => git(f, repo, 'branch', 'repo-harness/refresh', 'main'),
+        expected: { status: 'skipped', reason: 'refresh_branch_exists' } },
+    ];
+    const repos = cases.map(({ name, setup }) => {
+      const repo = staleRepo(f, name);
+      const remote = withOrigin(repo);
+      setup(repo);
+      return { repo, remote };
+    });
+    writeRegistry(f, repos.map(({ repo }) => repo));
+
+    const preview = runRegisteredUpgrade({ env, callerCwd: f.root });
+    expect(byPath(preview.repos, repos[2]!.repo).prRefresh).toMatchObject({ ready: false, reason: 'remote_target_mismatch' });
+    const result = runRegisteredUpgrade({ apply: true, pr: true, expectedRevision: preview.revision!, env, callerCwd: f.root });
+    cases.forEach(({ name, expected }, index) => expect([name, byPath(result.repos, repos[index]!.repo)]).toEqual([name, expect.objectContaining(expected)]));
+    const row = (name: string) => repos[cases.findIndex((entry) => entry.name === name)]!;
+    for (const name of ['fetch-rewrite', 'pushurl', 'two-push-urls', 'credentials', 'concurrent-create']) {
+      expect([name, git(f, row(name).remote, 'branch', '--list', 'repo-harness/refresh')]).toEqual([name, '']);
+    }
+    expect(readFileSync(env.GH_LOG, 'utf8')).not.toMatch(/fetch-rewrite|mirror|pushurl|push-urls|credentials|concurrent-create/);
+    // The update sets only the title of the origin PR; the fork PR and the operator's body stay.
+    expect(readFileSync(`${env.GH_LOG}.edit`, 'utf8').trim().split('\n'))
+      .toEqual([expect.stringMatching(/^pr edit https:\/\/github\.com\/fixture\/fork-pr\/pull\/1 --title chore\(harness\): refresh repo-harness files for \S+ --repo github\.com\/fixture\/fork-pr$/)]);
+    expect(git(f, row('concurrent-branch').repo, 'log', '-1', '--format=%s', 'repo-harness/refresh')).toBe('concurrent');
+    expect(git(f, row('concurrent-branch').repo, 'worktree', 'list', '--porcelain')).not.toContain('harness-refresh.');
+    expect(JSON.stringify(result) + formatRegisteredUpgradeResult(result)).not.toContain('ghs_SECRET');
+    expect(git(f, row('concurrent-create').repo, 'rev-parse', 'repo-harness/refresh')).toBe(git(f, row('concurrent-create').repo, 'rev-parse', 'main'));
+  }), 240_000);
+
   test('preview counts a removable legacy sibling worktree as pending and shows it', () => registeredSandbox((f) => {
     const repo = adoptedRepo(f, 'legacy');
     const sibling = join(f.root, 'legacy-old');

@@ -64,6 +64,8 @@ export interface UpgradeOptions {
   readonly scope?: 'project' | 'global' | 'all';
   readonly apply?: boolean;
   readonly includeStateArtifacts?: boolean;
+  /** False skips the legacy sibling worktree check and removal. Default true. */
+  readonly legacyWorktreeCleanup?: boolean;
   readonly env?: NodeJS.ProcessEnv;
 }
 
@@ -458,7 +460,7 @@ export function runUpgrade(opts: UpgradeOptions = {}, dependencies: UpgradeDepen
     const callerCwd = resolve(opts.callerCwd ?? process.cwd());
     // A failed leftover apply leaves the legacy worktrees in place and reports them.
     const finish = (result: UpgradeResult) => withLegacyWorktrees(result,
-      scope === 'global' ? undefined : runLegacyWorktreeCleanup(cwd, callerCwd, env, apply && !result.error, { beforeRemove: dependencies.beforeLegacyWorktreeRemove }));
+      scope === 'global' || opts.legacyWorktreeCleanup === false ? undefined : runLegacyWorktreeCleanup(cwd, callerCwd, env, apply && !result.error, { beforeRemove: dependencies.beforeLegacyWorktreeRemove }));
     if (!apply || !items.some(removable)) return finish(emptyResult);
     return finish(withRuntimeTransactionLock(globalRuntimeScope(env), (lock) => {
       const underHostLock = planUpgrade(options, decisions).items;
@@ -606,7 +608,7 @@ function buildUpgradeDecideCommand(): Command {
     });
 }
 
-type UpgradeCommandOptions = UpgradeOptions & { json?: boolean; summaryLine?: boolean; registered?: boolean; expectedRevision?: string };
+type UpgradeCommandOptions = UpgradeOptions & { json?: boolean; summaryLine?: boolean; registered?: boolean; expectedRevision?: string; pr?: boolean };
 
 function runRegisteredUpgradeCommand(opts: UpgradeCommandOptions, command: Command): void {
   // Each registered repo always runs at project scope; the global surfaces belong to plain `upgrade`.
@@ -617,7 +619,7 @@ function runRegisteredUpgradeCommand(opts: UpgradeCommandOptions, command: Comma
     process.exitCode = 2;
     return;
   }
-  const result = runRegisteredUpgrade({ apply: opts.apply, expectedRevision: opts.expectedRevision, callerCwd: process.cwd() });
+  const result = runRegisteredUpgrade({ apply: opts.apply, expectedRevision: opts.expectedRevision, pr: opts.pr, callerCwd: process.cwd() });
   process.stdout.write(formatRegisteredUpgradeResult(result, opts.json));
   if (result.error && opts.json) process.stderr.write(`${result.error}\n`);
   process.exitCode = result.exitCode;
@@ -629,8 +631,9 @@ export function buildUpgradeCommand(): Command {
     .option('--scope <scope>', 'project|global|all', 'all')
     .option('--apply', 'Back up and remove verified owned leftovers')
     .option('--include-state-artifacts', 'Include proven owned obsolete state artifacts with --apply')
-    .option('--registered', 'Preview init refresh and project upgrade for every registered repo; never commits')
+    .option('--registered', 'Preview init refresh and project upgrade for every registered repo; commits only with --pr')
     .option('--expected-revision <digest>', 'With --registered --apply: exact plan revision from the preview')
+    .option('--pr', 'With --registered --apply: refresh each repo in a temporary worktree, push repo-harness/refresh and open or update its PR; never merges')
     .option('--json', 'Print JSON')
     .option('--summary-line', 'Print the one-line check summary that rh update shows')
     .action((opts: UpgradeCommandOptions, command: Command) => {
@@ -638,8 +641,8 @@ export function buildUpgradeCommand(): Command {
         runRegisteredUpgradeCommand(opts, command);
         return;
       }
-      if (opts.expectedRevision !== undefined) {
-        process.stderr.write('rh upgrade: --expected-revision needs --registered\n');
+      if (opts.expectedRevision !== undefined || opts.pr === true) {
+        process.stderr.write(`rh upgrade: ${opts.pr === true ? '--pr' : '--expected-revision'} needs --registered\n`);
         process.exitCode = 2;
         return;
       }
