@@ -49,6 +49,8 @@ function withHome(seats: unknown, fn: (home: string) => void) {
     mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
     writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "demo@market": true } }));
     writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "demo@market": [{ scope: "user", installPath: plugin }] } }));
+    mkdirSync(join(home, ".bun", "install", "global", "node_modules", "repo-harness", "src", "pi"), { recursive: true });
+    writeFileSync(join(home, ".bun", "install", "global", "node_modules", "repo-harness", "src", "pi", "extension.ts"), "");
     mkdirSync(join(home, ".pi", "agent"), { recursive: true });
     writeFileSync(join(home, ".pi", "agent", "settings.json"), JSON.stringify({ shellPath: stubShell(home, "good-shell", GOOD_PROBE_OUTPUT) }));
     mkdirSync(join(home, '.quota-bin'));
@@ -269,11 +271,21 @@ describe("rh seats argv", () => {
         const result = argv(home, seat, "--pr", "1928", "--json");
         expect(result.status, result.stderr).toBe(0);
         const value = JSON.parse(result.stdout);
-        expect(bare(value.argv).slice(0, 8)).toEqual(["pi", "--exclude-tools", "edit,write",
-          "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp"]);
+        expect(bare(value.argv).slice(0, 10)).toEqual(["pi", "--exclude-tools", "edit,write",
+          "--no-extensions", "-e", join(home, ".bun", "install", "global", "node_modules", "repo-harness", "src", "pi", "extension.ts"),
+          "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp"]);
         expect(value.limits).toContainEqual({ subject: "edit", level: "common_commands" });
+        expect(value.limits).toContainEqual({ subject: "hook", level: "enforced" });
       });
     }
+  });
+
+  test("a Pi review seat refuses to launch without the installed Pi extension", () => {
+    withHome({ ...DEFAULT_SEATS_CONFIG, reviewer: { ...DEFAULT_SEATS_CONFIG.reviewer, runtime: "pi", model: null, effort: null } }, home => {
+      rmSync(join(home, ".bun"), { recursive: true });
+      const result = argv(home, "reviewer", "--pr", "1928", "--json");
+      expect([result.status, JSON.parse(result.stderr).error]).toEqual([1, "pi_extension_missing"]);
+    });
   });
 
   test("an exhausted gatekeeper account launches the fallback seat as the gatekeeper; gatekeeper-fallback is no launch target", () => {
@@ -299,7 +311,7 @@ describe("rh seats argv", () => {
         expect(result.status, result.stderr).toBe(0);
         const value = JSON.parse(result.stdout);
         expect(bare(value.argv).slice(0, 5)).toEqual(["pi", "--provider", "magpie", "--model", "cursor/deepseek-v41-flash-1017"]);
-        if (seat === "reviewer") expect(bare(value.argv).slice(5, 12)).toEqual(["--exclude-tools", "edit,write", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp"]);
+        if (seat === "reviewer") expect(bare(value.argv).slice(5, 14)).toEqual(["--exclude-tools", "edit,write", "--no-extensions", "-e", join(home, ".bun", "install", "global", "node_modules", "repo-harness", "src", "pi", "extension.ts"), "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp"]);
       });
     }
   });

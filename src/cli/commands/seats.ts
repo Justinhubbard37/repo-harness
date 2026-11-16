@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { dirname } from 'path';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { CLAUDE_BUILTIN_AGENT_TYPES, SeatPaneNameError, buildSeatLaunch, seatPaneName, seatTabName, type SeatLaunchV1 } from '../../core/board/seat-launch';
 import { LAUNCH_SEAT_IDS, SeatsConfigMigrationRequiredError, decodeSeatsConfig, isReviewSeat, isWorkerSeat, unavailablePiSeat, type LaunchSeatId, type SeatConfigV1, type SeatsConfigV1 } from '../../core/board/seats-settings';
@@ -14,6 +15,7 @@ import { githubRemoteRepository } from '../../core/board/source';
 import { ClaudeAgentTypesError, claudeHostAgentTypes } from '../../effects/board/claude-agent-types';
 import { RepoHarnessRegistryStrictError, canonicalRepoPath, readRepoHarnessRegistryStrictSnapshot, repoCheckoutProbeEnv, setRepoHarnessPanePrefix } from '../../effects/repo-registry';
 import { HerdrCoreError, RH_LABEL, hcLabel, hcLabelPairs, type HcLabels } from '../../effects/terminal/herdr-core';
+import { bunGlobalPackageRoot } from '../installer/skill-projection';
 import { PiFleetRolesError, writePiFleetRoles } from '../../effects/board/pi-fleet-roles';
 import { PiShellError, assertPiShell } from '../../effects/board/pi-shell';
 import { MANAGED_AGENTS } from '../../effects/terminal/task-role-profiles';
@@ -23,7 +25,7 @@ import { seatResetAction, seatResetIdentity, seatResetSteps, type SeatResetIdent
 const CLI_ENTRY = fileURLToPath(new URL('../index.ts', import.meta.url));
 
 class SeatsCommandError extends Error {
-  constructor(readonly code: 'seat_unknown' | 'seat_not_configured' | 'seat_quota_exhausted' | 'seat_quota_reserved' | 'seat_provider_unavailable' | 'seat_model_repeats_gatekeeper' | 'owner_exception_invalid' | 'config_invalid' | 'label_value_invalid' | 'repository_id_required' | 'terminal_unknown' | 'seat_identity_missing' | 'seat_session_unknown' | 'seat_context_unknown', message: string) {
+  constructor(readonly code: 'seat_unknown' | 'seat_not_configured' | 'seat_quota_exhausted' | 'seat_quota_reserved' | 'seat_provider_unavailable' | 'seat_model_repeats_gatekeeper' | 'owner_exception_invalid' | 'config_invalid' | 'label_value_invalid' | 'repository_id_required' | 'terminal_unknown' | 'seat_identity_missing' | 'seat_session_unknown' | 'seat_context_unknown' | 'pi_extension_missing', message: string) {
     super(message);
   }
 }
@@ -220,6 +222,16 @@ export async function seatResetLaunch(identity: SeatResetIdentity, env: NodeJS.P
   return { argv: launch.argv, model: effective.model, effort: effective.effort, modeKnown };
 }
 
+/** The rh Pi extension of the installed package. A Pi review seat without it would run with no hook, so a missing file stops the launch. */
+function installedPiExtension(env: NodeJS.ProcessEnv): string {
+  const root = bunGlobalPackageRoot(env);
+  const extension = root === null ? null : join(root, 'src', 'pi', 'extension.ts');
+  if (extension === null || !existsSync(extension)) {
+    throw new SeatsCommandError('pi_extension_missing', 'The installed repo-harness package has no Pi extension (src/pi/extension.ts); a Pi review seat needs it for the hook. Install the package with bun add -g repo-harness.');
+  }
+  return extension;
+}
+
 /** The launch and the effective seat config that it starts; the seat reset compares the config with the session record (#2633). */
 async function effectiveSeatLaunch(seat: string, labels: SeatLabelInput, env: NodeJS.ProcessEnv, cwd: string, planned?: SeatRouteV1): Promise<{
   readonly launch: SeatLaunchResult; readonly effective: SeatConfigV1; readonly modeKnown: boolean;
@@ -254,7 +266,8 @@ async function effectiveSeatLaunch(seat: string, labels: SeatLabelInput, env: No
     ? [...MANAGED_AGENTS, ...CLAUDE_BUILTIN_AGENT_TYPES, ...claudeHostAgentTypes(env)]
     : [];
   const piRoleDirectory = effective.runtime === 'pi' && effective.fleet.length > 0 ? writePiFleetRoles(effective.fleet, env) : undefined;
-  const launch = buildSeatLaunch(id, effective, config.seats === undefined ? 'defaults' : 'seats', agentTypes, name ?? undefined, labels.repositoryId, piRoleDirectory);
+  const piHookExtension = effective.runtime === 'pi' && isReviewSeat(id) ? installedPiExtension(env) : undefined;
+  const launch = buildSeatLaunch(id, effective, config.seats === undefined ? 'defaults' : 'seats', agentTypes, name ?? undefined, labels.repositoryId, piRoleDirectory, piHookExtension);
   return { effective, modeKnown, launch: {
     ...launch,
     argv: labelSet === undefined ? launch.argv : selfLabelingArgv(id, labels, launch.argv),

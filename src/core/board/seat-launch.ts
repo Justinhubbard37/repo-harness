@@ -20,7 +20,7 @@ export type SeatLimitLevel = 'enforced' | 'named_types_only' | 'common_commands'
 type SeatGroup = Exclude<SeatTool, 'read'>;
 
 export interface SeatLimitV1 {
-  readonly subject: SeatGroup | 'fleet';
+  readonly subject: SeatGroup | 'fleet' | 'hook';
   readonly level: SeatLimitLevel;
 }
 
@@ -160,7 +160,7 @@ const KEEP_YOURSELF = {
  */
 function brief(seat: LaunchSeatId, config: SeatConfigV1, fleet: readonly string[], limits: readonly SeatLimitV1[], name: RoleName = role => role): string {
   const kept = (Object.keys(KEEP_YOURSELF) as (keyof typeof KEEP_YOURSELF)[]).flatMap((level) => {
-    const groups = limits.flatMap(limit => (limit.level === level && limit.subject !== 'fleet'
+    const groups = limits.flatMap(limit => (limit.level === level && limit.subject !== 'fleet' && limit.subject !== 'hook'
       ? [GROUP_TEXT[limit.subject]] : []));
     return groups.length === 0 ? [] : [`${KEEP_YOURSELF[level]} ${groups.join(' ')}`];
   });
@@ -247,7 +247,7 @@ function codexLaunch(seat: LaunchSeatId, config: SeatConfigV1): Omit<SeatLaunchV
   };
 }
 
-function piLaunch(seat: LaunchSeatId, config: SeatConfigV1, roleDirectory: string | undefined): Omit<SeatLaunchV1, 'protocol' | 'kind' | 'seat' | 'runtime' | 'source'> {
+function piLaunch(seat: LaunchSeatId, config: SeatConfigV1, roleDirectory: string | undefined, hookExtension: string | undefined): Omit<SeatLaunchV1, 'protocol' | 'kind' | 'seat' | 'runtime' | 'source'> {
   const review = isReviewSeat(seat);
   // Pi's denylist blocks the edit/write tools; shell paths stay open. pi-subagents does not refuse a role outside the fleet.
   const limits: SeatLimitV1[] = [
@@ -256,13 +256,16 @@ function piLaunch(seat: LaunchSeatId, config: SeatConfigV1, roleDirectory: strin
       level: review && group === 'edit' ? pathLevel(group, 'enforced', true) : 'instructions_only' as const,
     })),
     ...(seatTakesFleet(config) ? [{ subject: 'fleet' as const, level: 'instructions_only' as const }] : []),
+    // `--no-extensions` drops the rh hook bridge; the explicit `-e` brings it back, so the PreToolUse routes run in the seat.
+    ...(review ? [{ subject: 'hook' as const, level: 'enforced' as const }] : []),
   ];
   const text = brief(seat, config, config.fleet, limits, piRoleName);
   const slash = config.model?.indexOf('/') ?? -1;
   return {
     argv: [...seatEnv(roleDirectory === undefined ? [] : [`${PI_EXTRA_AGENT_DIRS_ENV}=${roleDirectory}`]), 'pi', ...(config.model === null ? [] : ['--provider', config.model.slice(0, slash), '--model', config.model.slice(slash + 1)]),
       ...(config.effort === null ? [] : ['--thinking', config.effort]),
-      ...(review ? ['--exclude-tools', 'edit,write', '--no-extensions', '--no-skills',
+      ...(review ? ['--exclude-tools', 'edit,write', '--no-extensions',
+      ...(hookExtension === undefined ? [] : ['-e', hookExtension]), '--no-skills',
       '--no-prompt-templates', '--no-context-files', '--no-mcp'] : []), '--append-system-prompt', text],
     brief: text, limits,
   };
@@ -273,11 +276,12 @@ function piLaunch(seat: LaunchSeatId, config: SeatConfigV1, roleDirectory: strin
  * call. A Claude seat with a fleet refuses each of them that is not in the fleet.
  * `paneName` (`seatPaneName`) becomes the Claude session name `-n`. `repositoryId` is the checked label value.
  * `piRoleDirectory` holds the role files of a Pi seat with a fleet; it goes on that seat's argv only.
+ * `piHookExtension` is the installed rh Pi extension that a Pi review seat loads with `-e`; the page, which shows limits only, passes none.
  */
-export function buildSeatLaunch(seat: LaunchSeatId, config: SeatConfigV1, source: SeatLaunchSource, claudeAgentTypes: readonly string[], paneName?: string, repositoryId?: string, piRoleDirectory?: string): SeatLaunchV1 {
+export function buildSeatLaunch(seat: LaunchSeatId, config: SeatConfigV1, source: SeatLaunchSource, claudeAgentTypes: readonly string[], paneName?: string, repositoryId?: string, piRoleDirectory?: string, piHookExtension?: string): SeatLaunchV1 {
   const launch = config.runtime === 'claude'
     ? claudeLaunch(seat, config, claudeAgentTypes, paneName, repositoryId)
-    : config.runtime === 'codex' ? codexLaunch(seat, config) : piLaunch(seat, config, piRoleDirectory);
+    : config.runtime === 'codex' ? codexLaunch(seat, config) : piLaunch(seat, config, piRoleDirectory, piHookExtension);
   return { protocol: 1, kind: 'seat_launch', seat, runtime: config.runtime, source, ...launch };
 }
 
