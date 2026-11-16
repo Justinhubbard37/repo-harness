@@ -394,12 +394,19 @@ test('generic review validates exact domain binding, verdict, stable findings an
   for (const severity of ['P2', 'P3'] as const) {
     const followUp = { ...finding, id: 'f2', severity };
     expect(validateReviewOutput({ ...fail, verdict: 'PASS', findings: [followUp] }, identity).findings).toEqual([followUp]);
+    expect(() => validateReviewOutput({ ...fail, findings: [{ ...followUp, status: 'open' }] }, identity)).toThrow('review_conflicting_verdict');
   }
   expect(() => validateReviewOutput({ ...fail, findings: [finding, finding] }, identity)).toThrow('review_malformed_finding');
   expect(() => validateReviewOutput(fail, identity, [finding])).toThrow('review_previous_finding_unaddressed');
   expect(() => validateReviewOutput({ ...fail, findings: [] }, identity, [finding])).toThrow('review_previous_finding_unaddressed');
   const resolved = { ...finding, status: 'resolved' as const };
   expect(validateReviewOutput({ ...fail, verdict: 'PASS', findings: [resolved] }, identity, [finding]).findings).toEqual([resolved]);
+  for (const findings of [[], [resolved], [{ ...resolved, severity: 'P0' }]]) {
+    expect(() => validateReviewOutput({ ...fail, findings }, identity)).toThrow('review_conflicting_verdict');
+  }
+  for (const severity of ['P0', 'P1']) for (const status of ['new', 'open']) {
+    expect(validateReviewOutput({ ...fail, findings: [{ ...finding, severity, status }] }, identity).verdict).toBe('FAIL');
+  }
 });
 test('three-round accounting survives reopen; pending and duplicate subjects cannot replay', () => {
   const root = tmpWorkspace('generic-review-budget'); roots.push(root); const dir = join(root, 'rounds'); ensureSessionDirectory(root, dir);

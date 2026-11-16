@@ -59,5 +59,9 @@ export function validateReviewOutput(value: unknown, expected: Omit<ReviewOutput
     const current = output.findings.find(finding => finding.id === prior.id);
     if (!current || current.status === 'new') throw new Error('review_previous_finding_unaddressed');
   }
+  if (output.verdict === 'FAIL'
+    && !output.findings.some(finding => finding.status !== 'resolved' && isBlockingSeverity(finding.severity))) {
+    throw new Error('review_conflicting_verdict');
+  }
   return output;
 }
