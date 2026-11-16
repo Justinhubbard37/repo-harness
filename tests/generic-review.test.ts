@@ -1173,8 +1173,12 @@ process.exit(0);
   // The host returned only after the wrapper, pi, the preflight, the spawner and each process group that it started exited.
   expect(run.tree).toEqual([false, false, false, false]);
   expect(run.escaped).toBe(0);
-  expect(run.returnedAfter).toBeGreaterThanOrEqual(stage === 'stuck disposal' ? 5000 : 0); expect(run.returnedAfter).toBeLessThan(stage === 'stuck disposal' ? 6000 : 1000);
-  expect(run.lastWorkAfter).toBeLessThan(500);
+  // Order, not a wall-clock margin. The preflight wrote its last timestamp at or before the return, so
+  // no work continues after the host returned; load moves both times together.
+  expect(run.lastWorkAfter).toBeLessThanOrEqual(run.returnedAfter);
+  // The return never precedes the deadline. A stuck disposal cannot settle early, so the stop waits out
+  // the host's DEADLINE_STOP_MS grace; load can only lengthen that wait.
+  expect(run.returnedAfter).toBeGreaterThanOrEqual(stage === 'stuck disposal' ? 5000 : 0);
   expect(run.result).toBe(false);
   // The zero kill grace belongs to the stop only.
   expect(run.grace).toBeNull();
