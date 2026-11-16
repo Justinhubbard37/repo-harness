@@ -297,8 +297,9 @@ export interface MergedManagedBlock {
 function managedBlockProved(block: string, sourceRoot: string): boolean {
   const lines = block.split('\n');
   const language = isSelfNote(lines[1]) ? decodeReportingLanguage(lines[2]) : null;
-  if (language !== null && block === renderGlobalRulesBlock(sourceRoot, language).trimEnd()) return true;
-  return isReleasedGlobalRulesBlock(block, language?.preset === 'custom' ? language.instruction : null);
+  // The released fingerprints need no template, so a released block is proved even when the template is unreadable.
+  if (isReleasedGlobalRulesBlock(block, language?.preset === 'custom' ? language.instruction : null)) return true;
+  return language !== null && block === renderGlobalRulesBlock(sourceRoot, language).trimEnd();
 }
 
 /**
@@ -644,12 +645,19 @@ export function applyGlobalContextRefresh(plan: GlobalContextRefreshPlan, home: 
 export type ManagedBlockRemoval =
   | { readonly status: 'none' }
   | { readonly status: 'unbalanced' }
+  | { readonly status: 'edited' }
   | { readonly status: 'removed'; readonly content: string };
 
-/** Uninstall: removes only the marked block; the rest of the file keeps its bytes. */
-export function removeManagedBlock(content: string): ManagedBlockRemoval {
+/**
+ * Uninstall: removes only the marked block, and only when install would prove
+ * it managed; an edited block holds user text, so the file is left unchanged.
+ * The rest of the file keeps its bytes.
+ */
+export function removeManagedBlock(content: string, sourceRoot: string): ManagedBlockRemoval {
   const layout = markerLayout(content);
   if (layout.kind !== 'balanced') return { status: layout.kind };
+  const existing = content.slice(layout.start, layout.end + GLOBAL_RULES_END.length).replace(/\r\n/g, '\n');
+  if (!managedBlockProved(existing, sourceRoot)) return { status: 'edited' };
   return {
     status: 'removed',
     content: content.slice(0, layout.start) + content.slice(layout.end + GLOBAL_RULES_END.length),

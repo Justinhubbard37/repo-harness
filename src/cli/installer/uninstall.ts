@@ -2,6 +2,7 @@ import { globalConfigurationPath, mutateGlobalConfiguration } from '../../effect
 import { globalRuntimeScope, withRuntimeTransactionContext, type RuntimeTransactionContext } from '../../effects/locking/runtime-transaction-lock';
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, rmSync, rmdirSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { MANAGED_TAG, isRepoHarnessManagedHookCommand, stripRepoHarnessManagedHooks } from '../../core/adoption/managed-hook-config';
 import { stagedSkillRoot, hostSkillRoot, providerSkillLock, type ProviderSkillLock } from '../../effects/host-skill-roots';
@@ -15,8 +16,11 @@ import { installProfileStatePath } from './install-state';
 import { assertConfigurationPath, configurationPaths, configurationReceiptPath, hostConfigurationRoot, readConfigurationFragment, readConfigurationReceipt, replaceConfigurationFragment, writePrivateConfiguration } from './configuration-ownership';
 
 export interface UninstallOptions { target: 'codex' | 'claude' | 'both'; dryRun?: boolean; recoverInterrupted?: boolean; env?: NodeJS.ProcessEnv; runtimeLock?: RuntimeTransactionContext }
-export interface UninstallItem { path: string; action: 'remove' | 'restore' | 'preserve' | 'unresolved'; reason: string }
+export interface UninstallItem { path: string; action: 'remove' | 'restore' | 'preserve' | 'unresolved' | 'note'; reason: string }
 export interface UninstallResult { exitCode: number; status: 'complete' | 'partial'; dryRun: boolean; items: UninstallItem[]; lines: string[] }
+
+/** The running CLI's package root: its rules template proves which global rules block install wrote. */
+const SOURCE_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 function selected(path: string, target: UninstallOptions['target'], home: string): boolean {
   if (target === 'both') return true;
@@ -144,9 +148,10 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
     try {
       assertConfigurationPath(contextPath, home);
       if (!existsSync(contextPath)) continue;
-      const removal = removeManagedBlock(read(contextPath));
+      const removal = removeManagedBlock(read(contextPath), SOURCE_ROOT);
       if (removal.status === 'none') continue;
       if (removal.status === 'unbalanced') throw new Error('unbalanced managed global rules; preserved');
+      if (removal.status === 'edited') throw new Error('managed rules block was edited; preserved. Move your rules outside the markers, then delete the block.');
       change(contextPath, removal.content.trim() ? removal.content : null, 'managed global working rules');
     } catch (error) { unresolved(contextPath, String((error as Error).message)); }
   }
@@ -219,7 +224,8 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       }
       if (path.endsWith('.toml')) {
         const parsed = Bun.TOML.parse(raw) as Record<string, any>;
-        if (parsed.hooks?.state && Object.keys(parsed.hooks.state).length) unresolved(path, 'host-owned hook trust entries have no verified command mapping; preserved');
+        // Codex writes these after the user trusts the hooks; they never block completion.
+        if (parsed.hooks?.state && Object.keys(parsed.hooks.state).length) items.push({ path, action: 'note', reason: 'Codex keeps its hook trust entries in [hooks.state]; rh does not remove them.' });
       }
     } catch (error) { unresolved(path, String((error as Error).message)); }
   }
@@ -245,6 +251,7 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
         assertConfigurationPath(excludes.path, dirname(excludes.path));
         const removal = removeRuntimeStateIgnoreBlock(read(excludes.path));
         if (removal.status === 'unbalanced') unresolved(excludes.path, 'unbalanced runtime-state ignore block; preserved');
+        else if (removal.status === 'edited') unresolved(excludes.path, 'runtime-state ignore block was edited; preserved. Move your rules outside the markers, then delete the block.');
         else if (removal.status === 'removed') change(excludes.path, removal.content.trim() ? removal.content : null, 'runtime-state ignore block');
       } catch (error) { unresolved(excludes.path, String((error as Error).message)); }
     }

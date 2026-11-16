@@ -120,10 +120,13 @@ export function userExcludesFilePath(callerEnv: NodeJS.ProcessEnv = {}): UserExc
 }
 
 export type RuntimeStateIgnoreRemoval =
-  | { readonly status: "none" | "unbalanced" }
+  | { readonly status: "none" | "unbalanced" | "edited" }
   | { readonly status: "removed"; readonly content: string };
 
-/** Removes the marked block and at most one blank line before it, so a write and removal cycle adds no blank lines; other lines stay byte-equal. */
+/**
+ * Removes the marked block and at most one blank line before it, so a write and removal cycle adds no blank lines; other lines stay byte-equal.
+ * The block goes only under the proof that update uses (the current rendering or a released block); an edited block holds user rules.
+ */
 export function removeRuntimeStateIgnoreBlock(content: string): RuntimeStateIgnoreRemoval {
   const { begin, end } = managedBlockMarker(RUNTIME_STATE_IGNORE_MARKER);
   const lines = content.split(/(?<=\n)/);
@@ -132,6 +135,9 @@ export function removeRuntimeStateIgnoreBlock(content: string): RuntimeStateIgno
   const stop = bare.indexOf(end);
   if (start === -1 && stop === -1) return { status: "none" };
   if (start === -1 || stop < start || bare.indexOf(begin, start + 1) !== -1) return { status: "unbalanced" };
+  const operation = runtimeStateIgnoreOperation("");
+  const block = bare.slice(start, stop + 1).join("\n");
+  if (block !== renderManagedBlock(operation) && !ignoreBlockProof(operation)(block)) return { status: "edited" };
   // One blank line before the block is the write step's separator; drop it, unless it separates user lines.
   const blankBefore = start > 0 && bare[start - 1] === "";
   const blankAfter = stop + 1 < lines.length && bare[stop + 1] === "";

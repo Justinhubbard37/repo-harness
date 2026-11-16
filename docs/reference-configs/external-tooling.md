@@ -49,10 +49,12 @@ for repeated uninstall and reinstall provenance; restored entries become inactiv
 and a no-op reinstall cannot reacquire ownership from history. It does not activate
 a runtime.
 
-Unproven old configuration, malformed configuration and changed owned surfaces are
-reported as `unresolved`; the command exits nonzero with `status: partial` and keeps
-remaining ownership evidence. Opaque Codex hook trust entries cannot yet be mapped
-to commands and are reported for manual resolution. A preserved shared/pre-existing
+Unproven old configuration, malformed configuration, changed owned surfaces and an
+edited managed block (the Global Working Rules block or the runtime-state ignore block)
+are reported as `unresolved`; the file stays unchanged, the command exits nonzero with
+`status: partial` and keeps remaining ownership evidence. Codex hook trust entries in
+`[hooks.state]` give a `note`: rh does not remove them, and they do not block
+completion. A preserved shared/pre-existing
 third-party installation is not claimed as repo-harness-owned.
 
 Standalone CodeGraph configuration and global install/update share one host lock.

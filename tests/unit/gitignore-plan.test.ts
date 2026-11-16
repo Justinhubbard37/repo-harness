@@ -159,9 +159,10 @@ describe("gitignore managed block .repo-harness rule", () => {
     expect(moved.filter((rule) => tracked.has(rule))).toEqual([]);
   });
 
-  test("removing a block between user lines leaves one blank line", () => {
-    const block = `# BEGIN: ${RUNTIME_STATE_IGNORE_MARKER}\nrule/\n# END: ${RUNTIME_STATE_IGNORE_MARKER}\n`;
+  test("removing a block between user lines leaves one blank line, and an edited block stays", () => {
+    const block = `# BEGIN: ${RUNTIME_STATE_IGNORE_MARKER}\n${RUNTIME_STATE_IGNORE_CONTENT}\n# END: ${RUNTIME_STATE_IGNORE_MARKER}\n`;
     expect(removeRuntimeStateIgnoreBlock(`# user\n*.orig\n\n${block}\nuser-tail/\n`)).toEqual({ status: "removed", content: "# user\n*.orig\n\nuser-tail/\n" });
+    expect(removeRuntimeStateIgnoreBlock(`# user\n${block.replace("\n# END:", "\nscratch-*/\n# END:")}`)).toEqual({ status: "edited" });
   });
 
   test("the emitted operation carries the directory-level rule", () => {
