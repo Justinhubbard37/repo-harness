@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { appendFileSync, readFileSync } from 'fs';
+import { resolve } from 'path';
 import {
   TEST_BUDGET_IMPLEMENTATION_VERSION,
   TEST_BUDGET_RESULT_SCHEMA,
@@ -17,9 +18,23 @@ import {
   type TestBudgetException,
   type TestBudgetResult,
 } from '../../core/ci/test-budget';
+import {
+  RULES_LEDGER_PATH,
+  RULES_STATUS_KIND,
+  RULES_STATUS_PROTOCOL,
+  decodeTriageReport,
+  describeRuleStatus,
+  ruleStatus,
+  type RuleLedgerReadV1,
+  type RuleStatusV1,
+} from '../../core/ci/rule-candidates';
 import { RULES } from '../../core/ci/rules';
 import { POLICY_PATH, decodeWorkflowPolicy } from '../../core/workflow/policy-schema';
-import { gitExecFileSync } from '../../effects/git/runner';
+import { githubRemoteRepository } from '../../core/board/source';
+import { sha256Hex } from '../../core/evidence/sha256';
+import { resolveGitCommonDirectory } from '../../effects/git/common-directory';
+import { gitExecFileSync, gitSpawnSync } from '../../effects/git/runner';
+import { runHelper } from '../../effects/runtime/helper-runner';
 
 interface TestBudgetCheckInput {
   /** Any directory inside the repository; the check runs at its top level. */
@@ -141,12 +156,137 @@ export function runTestBudgetCheck(input: TestBudgetCheckInput): { result: TestB
   }
 }
 
+/** A refusal of `rh rules status`: the code is stable, the message names the failed read. */
+export class RulesStatusError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = 'RulesStatusError';
+  }
+}
+
+const COMMIT_SHA = /^[0-9a-f]{40,64}$/u;
+const REPOSITORY_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
+const REMOTE_URL_KEY = /^remote\.(.+)\.url$/u;
+const REMOTE_URL_QUERY = ['config', '--local', '--null', '--get-regexp', '^remote\\..*\\.url$'] as const;
+
+/** A git read of the target checkout. A failure is a named refusal, never an empty value. */
+function statusGit(target: string, args: readonly string[], code: string): string {
+  try {
+    return gitExecFileSync(['-C', target, ...args], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new RulesStatusError(code, `git ${args[0]} failed: ${(error as Error).message.split('\n')[0]}`);
+  }
+}
+
+/**
+ * The local remote URLs as `name -> url` pairs. Exit 1 with no output means that
+ * no remote URL is configured, which is not a failure.
+ */
+function remoteUrls(target: string): [string, string][] {
+  const result = gitSpawnSync(['-C', target, ...REMOTE_URL_QUERY], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status === 1 && result.stdout === '') return [];
+  if (result.error || result.status !== 0) {
+    throw new RulesStatusError('repository_unavailable', `git config failed: ${(result.error?.message ?? result.stderr).split('\n')[0]}`);
+  }
+  // `--null` gives `key LF value NUL`, so a value that holds a newline cannot forge a second key.
+  return result.stdout.split('\0').flatMap((record): [string, string][] => {
+    const split = record.indexOf('\n');
+    const name = split < 0 ? null : REMOTE_URL_KEY.exec(record.slice(0, split))?.[1];
+    return name === undefined || name === null ? [] : [[name, record.slice(split + 1)]];
+  });
+}
+
+/**
+ * The repository identity of the status document. `candidate_id` must be the same
+ * on every host that holds one repository, so this is not the registry id of
+ * `repoHarnessRepoIdFor`, which hashes the absolute checkout path.
+ *
+ * - `github:<owner>/<name>` from the remote URLs. Only the parsed owner/name
+ *   leaves this function: a URL is git config text and can hold a credential (I1).
+ *   The `origin` remote decides; with no `origin`, one distinct GitHub repository
+ *   decides. Two different GitHub repositories with no `origin` give no answer,
+ *   because the command cannot tell which one the checkout is.
+ * - `local:<16 hex>` of the git common directory when no GitHub remote answers.
+ *   Two hosts of such repository get different ids, so their candidates do not
+ *   meet; the id is still stable across two runs on one host.
+ */
+export function repositoryIdentity(target: string): string {
+  const parsed = new Map<string, string>();
+  for (const [name, url] of remoteUrls(target)) {
+    const github = githubRemoteRepository(url);
+    if (github !== null) parsed.set(name, github);
+  }
+  const distinct = new Set(parsed.values());
+  const github = parsed.get('origin') ?? (distinct.size === 1 ? [...distinct][0] : null);
+  if (github) return `github:${github}`;
+  const local = `local:${sha256Hex(resolveGitCommonDirectory(target)).slice(0, 16)}`;
+  if (!REPOSITORY_ID.test(local)) throw new RulesStatusError('repository_unavailable', 'the repository identity is not a usable id');
+  return local;
+}
+
+/**
+ * The ledger read of one checkout: the head commit, the committed blob of the
+ * ledger, and whether the working-tree file differs from that blob. All three
+ * come from git; no ledger text is read here.
+ */
+function readLedger(target: string): RuleLedgerReadV1 {
+  const head = statusGit(target, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'], 'ledger_unreadable').trim();
+  if (!COMMIT_SHA.test(head)) throw new RulesStatusError('ledger_unreadable', 'git rev-parse HEAD gave no commit id');
+  const blob = statusGit(target, ['rev-parse', '--verify', '--end-of-options', `HEAD:${RULES_LEDGER_PATH}`], 'ledger_missing').trim();
+  if (!COMMIT_SHA.test(blob)) throw new RulesStatusError('ledger_unreadable', `git rev-parse HEAD:${RULES_LEDGER_PATH} gave no blob id`);
+  // `status --porcelain` covers a modified, staged, deleted or untracked ledger file.
+  const status = statusGit(target, ['status', '--porcelain', '--untracked-files=all', '--', RULES_LEDGER_PATH], 'ledger_unreadable');
+  return { head, blob, dirty: status.trim() !== '' };
+}
+
+/**
+ * Run the `maintenance-triage` helper in the target and build the status
+ * document. The helper is the one parser of the ledger and the only source of
+ * ledger values; git is the only source of the head, the blob and the dirty flag.
+ */
+export function runRulesStatus(input: { target: string }): RuleStatusV1 {
+  const target = resolve(input.target);
+  const ledger = readLedger(target);
+  const run = runHelper({ helper: 'maintenance-triage', args: ['--json'], cwd: target, stdio: 'pipe' });
+  // Exit 1 with a valid document is a ledger with an error row, not a failed read.
+  if (run.reason !== 'ok' || (run.exitCode !== 0 && run.exitCode !== 1)) {
+    throw new RulesStatusError('triage_failed', (run.stderr ?? '').trim() || `maintenance-triage exited with ${run.exitCode}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(run.stdout ?? '');
+  } catch (error) {
+    throw new RulesStatusError('triage_invalid', `maintenance-triage --json gave no JSON: ${(error as Error).message}`);
+  }
+  let report;
+  try {
+    report = decodeTriageReport(parsed);
+  } catch (error) {
+    throw new RulesStatusError('triage_invalid', (error as Error).message);
+  }
+  return ruleStatus(report, repositoryIdentity(target), ledger);
+}
+
 interface RulesCheckOptions {
   base: string;
   head: string;
   bodyFile: string;
   githubAnnotation?: boolean;
   githubSummary?: string;
+}
+
+interface RulesStatusOptions {
+  target?: string;
+  json?: boolean;
+}
+
+/** The refusal document of `rh rules status`: one error code, no partial status. */
+function statusRefusal(code: string, message: string): void {
+  process.stderr.write(`rh rules status: ${code}: ${message}\n`);
+  process.stdout.write(`${JSON.stringify({ kind: RULES_STATUS_KIND, protocol: RULES_STATUS_PROTOCOL, error: { code } })}\n`);
+  process.exitCode = 1;
 }
 
 export function buildRulesCommand(): Command {
@@ -173,6 +313,25 @@ export function buildRulesCommand(): Command {
       if (options.githubSummary) appendFileSync(options.githubSummary, renderTestBudgetSummary(result));
       process.stderr.write(`${lines.join('\n')}\n`);
       process.exitCode = result.state === 'violation' ? 1 : result.state === 'error' ? 2 : 0;
+    });
+  rules
+    .command('status')
+    .description(`Read ${RULES_LEDGER_PATH} and print the ledger state, every theme and the open promotion actions; exit 1 on an invalid ledger`)
+    .option('--target <path>', 'checkout to read (default: the working directory)')
+    .option('--json', 'print the status document instead of the text lines')
+    .action((options: RulesStatusOptions) => {
+      const target = options.target ?? process.cwd();
+      let status: RuleStatusV1;
+      try {
+        status = runRulesStatus({ target });
+      } catch (error) {
+        if (!(error instanceof RulesStatusError)) throw error;
+        statusRefusal(error.code, error.message);
+        return;
+      }
+      if (options.json) process.stdout.write(`${JSON.stringify(status)}\n`);
+      else process.stdout.write(`${describeRuleStatus(status).join('\n')}\n`);
+      process.exitCode = status.ledger.valid ? 0 : 1;
     });
   return rules;
 }

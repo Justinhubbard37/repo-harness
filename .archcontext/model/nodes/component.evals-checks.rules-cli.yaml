@@ -1,13 +1,14 @@
-schemaVersion: "archcontext.node/v2"
-id: "component.evals-checks.rules-cli"
-kind: "component"
-name: "Rule Check (cli)"
-status: "active"
-parent: "capability.verification.evals-checks"
-layer: "cli"
-summary: "The cli-layer entry of the repository rule checks: `rh rules check <rule>` reads git and the PR body and prints the rule result."
+schemaVersion: archcontext.node/v2
+id: component.evals-checks.rules-cli
+kind: component
+name: Rule Check (cli)
+status: active
+parent: capability.verification.evals-checks
+layer: cli
+summary: "The cli-layer entry of the repository rule checks: `rh rules check <rule>` reads git and the PR body and prints the rule result, and `rh rules status` reads the ledger through the maintenance-triage helper and prints the rules status document."
 responsibilities:
   - "Read the base policy, the merge-base diff and the PR body for a rule check, and print its result document and GitHub notice."
+  - "Read the head, the ledger blob and the dirty flag from git, give the repository identity, and print the ledger state, every theme and the open promotion actions."
 source:
   include:
     - "src/cli/commands/rules.ts"
