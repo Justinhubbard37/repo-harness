@@ -160,7 +160,7 @@ export function createOperatorLanguageSettings(
  * until stdin reaches EOF when `exit_on_stdin_close` is set: a parent that is
  * killed leaves the child one last signal to read, its own closed pipe.
  * `serve` owns the background Dev Activity, setup, notify, Bot access, CLI
- * inventory, docs and tests collectors; the server stops them on close.
+ * inventory, docs, tests and rules collectors; the server stops them on close.
  */
 export async function runOperatorServe(options: OperatorServeOptions): Promise<void> {
   const server = await startOperatorServer({
@@ -173,6 +173,7 @@ export async function runOperatorServe(options: OperatorServeOptions): Promise<v
     bot_access_collector: true,
     docs_collector: true,
     tests_collector: true,
+    rules_collector: true,
     execution_collector: true,
     worktree_collector: true,
     architecture_map_collector: true,

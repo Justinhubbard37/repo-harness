@@ -8,6 +8,7 @@ import {
   OPERATOR_ARCHITECTURE_REVIEW_PROMPT_ROUTE,
   OPERATOR_ARCHITECTURE_HISTORY_ROUTE,
   OPERATOR_TESTS_ROUTE,
+  OPERATOR_RULES_ROUTE,
   OPERATOR_BOARD_SEATS_ROUTE,
   OPERATOR_BOARD_PARENTS_ROUTE,
   OPERATOR_BOARD_ROUTE,
@@ -86,6 +87,7 @@ describe('operator structural write boundary', () => {
       'bot_reviews',
       'cli_inventory',
       'tests',
+      'rules',
       'board',
       'board_seats',
       'board_parents',
@@ -129,6 +131,7 @@ describe('operator structural write boundary', () => {
     expect(OPERATOR_ROUTES.find(route => route.id === 'bot_reviews')).toEqual({ id: 'bot_reviews', method: 'GET', pattern: '/api/v1/bot-reviews', write: false });
     expect(patterns.get('cli_inventory')).toBe(OPERATOR_CLI_INVENTORY_PATH);
     expect(OPERATOR_ROUTES.find(route => route.id === 'cli_inventory')).toEqual({ id: 'cli_inventory', method: 'GET', pattern: '/api/v1/cli-inventory', write: false });
+    expect(OPERATOR_ROUTES.find(route => route.id === 'rules')).toEqual({ id: 'rules', method: 'GET', pattern: OPERATOR_RULES_ROUTE.source, write: false });
     expect(OPERATOR_ROUTES.find(route => route.id === 'tests')).toEqual({ id: 'tests', method: 'GET', pattern: OPERATOR_TESTS_ROUTE.source, write: false });
     expect(OPERATOR_ROUTES.find(route => route.id === 'board')).toEqual({ id: 'board', method: 'GET', pattern: OPERATOR_BOARD_ROUTE.source, write: false });
     expect(OPERATOR_ROUTES.find(route => route.id === 'board_seats')).toEqual({ id: 'board_seats', method: 'GET', pattern: OPERATOR_BOARD_SEATS_ROUTE.source, write: false });
