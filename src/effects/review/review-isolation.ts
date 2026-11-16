@@ -1,158 +1,104 @@
-import { lstatSync, realpathSync, mkdirSync, existsSync, readFileSync, openSync, closeSync, constants, fstatSync, writeFileSync, fsyncSync, unlinkSync, symlinkSync, readlinkSync } from 'node:fs';
+import { lstatSync, realpathSync, mkdirSync, existsSync, readFileSync, openSync, closeSync, constants, writeFileSync, unlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { isAbsolute, relative, sep, join, dirname } from 'node:path';
-import { piAgentDir } from '../pi-agent-dir';
+import { isAbsolute, relative, sep, join } from 'node:path';
 import type { PiModelIdentity } from '../pi-host-probe';
-import { OPERATOR_DEFAULT_PORT } from '../../core/review/operator-console-port';
 import { shellQuote } from '../../core/shell-quote';
 import type { ReviewIsolationAdmission, ReviewIsolationPaths } from '../../core/review/runner-port';
+import { MAGPIE_ACTOR_HEADER, MAGPIE_BASE_URL, MAGPIE_CODEX_WIRE_API, MAGPIE_PI_API, MAGPIE_PLACEHOLDER_KEY, MAGPIE_PORT,
+  MAGPIE_PROVIDER, MAGPIE_REVIEW_EFFORT, MAGPIE_REVIEW_MODEL, MAGPIE_REVIEW_PI_MODEL } from './magpie-endpoint';
 
-
-/** The native auth.json and the canonical provider whose entry pi reads at its session start. */
-export interface PiCredential { readonly auth: string; readonly provider: string }
-/** `model` is the canonical `provider/model` from pi's resolver; the review passes it to pi as `--model`. */
-export interface PiAgentDirectory {
-  readonly directory: string; readonly loopbackPorts: readonly number[]; readonly model: string; readonly credential: PiCredential;
-}
-
-/** pi-ai refreshes an OAuth token that has less than 5 minutes left (auth/resolve.js DEFAULT_OAUTH_MINIMUM_VALIDITY_MS). */
-const PI_OAUTH_REFRESH_MARGIN_MS = 300_000;
-
-const MODEL_URL_DEFAULT_PORTS: Readonly<Record<string, number>> = { 'http:': 80, 'https:': 443 };
-const LOOPBACK_MODEL_HOSTS: readonly string[] = ['127.0.0.1', 'localhost', '[::1]'];
+/** `model` is the `provider/model` reference that the review passes to pi as `--model`. */
+export interface PiAgentDirectory { readonly directory: string; readonly model: string }
 
 /**
- * The loopback ports that models.json names as a provider baseUrl (M82). The
- * review profile allows these ports and no other, so a provider on the console
- * port would reopen the write routes and refuses the session. A remote provider
- * needs no rule.
+ * Write one owner file of the isolated configuration, or verify the file of an earlier round.
+ * The sandbox cannot write these names, so a changed file is not the product's file and refuses the session.
  */
-function piModelLoopbackPorts(bytes: Buffer): readonly number[] {
-  let providers: Record<string, { readonly baseUrl?: unknown } | null> | null | undefined;
-  try { providers = JSON.parse(bytes.toString('utf8'))?.providers; } catch { throw new Error('review_pi_models_invalid'); }
-  const ports = new Set<number>();
-  for (const provider of Object.values(providers ?? {})) {
-    const baseUrl = provider?.baseUrl;
-    if (baseUrl === undefined) continue;
-    if (typeof baseUrl !== 'string' || !URL.canParse(baseUrl)) throw new Error('review_pi_model_base_url_invalid');
-    const url = new URL(baseUrl), defaultPort = MODEL_URL_DEFAULT_PORTS[url.protocol];
-    // "127.0.0.1:3425/v1" parses with the scheme "127.0.0.1:", so the scheme check also refuses a missing scheme.
-    if (defaultPort === undefined) throw new Error('review_pi_model_base_url_invalid');
-    if (!LOOPBACK_MODEL_HOSTS.includes(url.hostname)) continue;
-    const port = url.port === '' ? defaultPort : Number(url.port);
-    if (port === OPERATOR_DEFAULT_PORT) throw new Error('review_pi_model_port_is_operator_console');
-    ports.add(port);
+function writeOwnedFile(path: string, content: string, changed: string): void {
+  let stat;
+  // lstat, not existsSync: a dangling link at the path is a changed file, not an absent one.
+  try { stat = lstatSync(path); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    writeFileSync(path, content, { flag: 'wx', mode: 0o600 });
+    stat = lstatSync(path);
   }
-  return [...ports];
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600
+    || readFileSync(path, 'utf8') !== content) throw new Error(changed);
 }
 
-/**
- * Credentials stay at their source. Only the native model defaults are projected into private settings.
- * Without an explicit model pi falls through to the first provider with auth, so the native
- * settings must name the provider and model in the canonical form that pi's own resolver
- * returns, and auth.json must hold an entry for that provider. pi refreshes the provider's
- * OAuth token when it has less than the refresh margin left, and the sandbox denies the
- * refresh, so the token must outlive the round deadline plus that margin.
- */
-export function preparePiAgentDirectory(output: string, sourceHome: string, deadline: number,
-  resolveModel: (agentDirectory: string, reference: string) => PiModelIdentity,
-  env: Readonly<Record<string, string | undefined>> = process.env): PiAgentDirectory {
-  const directory = join(ownedOutput(output), '.pi-agent');
+/** An owner-only directory in the review output. */
+function ownedDirectory(output: string, name: string, unsafe: string): string {
+  const directory = join(ownedOutput(output), name);
   try { mkdirSync(directory, { mode: 0o700 }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
   }
   const stat = lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.()
-    || (stat.mode & 0o777) !== 0o700) throw new Error('review_pi_agent_directory_unsafe');
-  const source = piAgentDir(realpathSync(sourceHome), env);
-  for (const path of [dirname(source), source]) {
-    if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory())) throw new Error('review_pi_source_unsafe');
-  }
-  const models = join(source, 'models.json'), destination = join(directory, 'models.json');
-  let loopbackPorts: readonly number[] = [];
-  if (existsSync(models)) {
-    const bytes = readNativeConfigBytes(models);
-    try { loopbackPorts = piModelLoopbackPorts(bytes); } finally { bytes.fill(0); }
-    if (!existsSync(destination)) symlinkSync(models, destination);
-    if (!lstatSync(destination).isSymbolicLink() || readlinkSync(destination) !== models) throw new Error('review_pi_models_changed');
-  } else if (existsSync(destination)) throw new Error('review_pi_models_changed');
-  const settings = preparePiSettings(directory, source), settingsPath = join(source, 'settings.json');
-  const provider = settings.defaultProvider, model = settings.defaultModel;
-  if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') {
-    throw new Error(`review_pi_model_unnamed: set defaultProvider and defaultModel in ${settingsPath}`);
-  }
-  let resolved: PiModelIdentity;
-  try { resolved = resolveModel(directory, `${provider}/${model}`); } catch (error) {
-    const message = (error as Error).message;
-    if (!message.startsWith('review_pi_model_unresolved')) throw error;
-    // The resolver child has no remote catalog: a model that only the remote catalog lists stays unresolved.
-    throw new Error(`${message}; set defaultProvider and defaultModel in ${settingsPath} to a model that \`pi --list-models\` lists from the built-in catalog or models.json, then repeat the round`);
-  }
-  if (resolved.provider !== provider || resolved.model !== model) {
-    throw new Error(`review_pi_model_not_canonical: pi resolves ${provider}/${model} to ${resolved.provider}/${resolved.model}; set defaultProvider and defaultModel in ${settingsPath} to that form`);
-  }
-  const credential: PiCredential = { auth: join(source, 'auth.json'), provider }, link = join(directory, 'auth.json');
-  assertPiCredentialWindow(credential, deadline);
-  if (!existsSync(link)) symlinkSync(credential.auth, link);
-  if (!lstatSync(link).isSymbolicLink() || readlinkSync(link) !== credential.auth) throw new Error('review_pi_auth_changed');
-  return { directory, loopbackPorts, model: `${provider}/${model}`, credential };
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw new Error(unsafe);
+  return directory;
 }
 
 /**
- * The one pi credential-window check: at admission, before the host launch, and in the host
- * just before the pi session starts. The deadline does not move, so a start at or after it
- * could find the token inside pi's refresh margin, and the sandbox denies the refresh write.
+ * The pi agent directory of a review: models.json, settings.json and auth.json come from the magpie
+ * constants alone. auth.json is the empty map: pi creates the file before it reads the credential
+ * store, and the sandbox denies that write, so the owner writes it. pi's own resolver must select the
+ * same provider and model from the generated files.
  */
-export function assertPiCredentialWindow(credential: PiCredential, deadline: number): void {
-  const { auth, provider } = credential;
-  const renew = `run pi outside the review and enter /login ${provider}, then repeat the round, or cancel the review and start a new one`;
-  if (Date.now() >= deadline) throw new Error('review_round_deadline_passed: the round deadline passed before the pi session start; repeat the round');
-  if (!existsSync(auth)) throw new Error(`review_pi_auth_missing: ${auth} does not exist; ${renew}`);
-  const bytes = readNativeConfigBytes(auth);
-  try { assertAccessWindow([piAuthExpiry(bytes, credential, renew)], deadline + PI_OAUTH_REFRESH_MARGIN_MS, `${renew} to renew the ${provider} token`); }
-  finally { bytes.fill(0); }
-}
-
-function preparePiSettings(directory: string, source: string): Readonly<Record<string, unknown>> {
-  const native = join(source, 'settings.json'), destination = join(directory, 'settings.json');
-  let settings: Record<string, unknown> = {};
-  if (existsSync(native)) {
-    const bytes = readNativeConfigBytes(native);
-    try {
-      const parsed: unknown = JSON.parse(bytes.toString('utf8'));
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
-      settings = parsed as Record<string, unknown>;
-    } catch { throw new Error('review_pi_settings_source_invalid'); }
-    finally { bytes.fill(0); }
+export function preparePiAgentDirectory(output: string,
+  resolveModel: (agentDirectory: string, reference: string) => PiModelIdentity): PiAgentDirectory {
+  const directory = ownedDirectory(output, '.pi-agent', 'review_pi_agent_directory_unsafe');
+  const models = { providers: { [MAGPIE_PROVIDER]: { baseUrl: MAGPIE_BASE_URL, api: MAGPIE_PI_API, apiKey: MAGPIE_PLACEHOLDER_KEY,
+    models: [{ id: MAGPIE_REVIEW_MODEL, reasoning: true }] } } };
+  const settings = { defaultProvider: MAGPIE_PROVIDER, defaultModel: MAGPIE_REVIEW_MODEL, defaultThinkingLevel: MAGPIE_REVIEW_EFFORT };
+  writeOwnedFile(join(directory, 'models.json'), JSON.stringify(models) + '\n', 'review_pi_models_changed');
+  writeOwnedFile(join(directory, 'settings.json'), JSON.stringify(settings) + '\n', 'review_pi_settings_changed');
+  writeOwnedFile(join(directory, 'auth.json'), '{}', 'review_pi_auth_changed');
+  const resolved = resolveModel(directory, MAGPIE_REVIEW_PI_MODEL);
+  if (resolved.provider !== MAGPIE_PROVIDER || resolved.model !== MAGPIE_REVIEW_MODEL) {
+    throw new Error(`review_pi_model_not_canonical: pi resolves ${MAGPIE_REVIEW_PI_MODEL} to ${resolved.provider}/${resolved.model}`);
   }
-  const projection = Object.fromEntries(['defaultProvider', 'defaultModel', 'defaultThinkingLevel']
-    .filter(key => Object.hasOwn(settings, key)).map(key => [key, settings[key]]));
-  const content = JSON.stringify(projection) + '\n';
-  if (!existsSync(destination)) writeFileSync(destination, content, { flag: 'wx', mode: 0o600 });
-  const stat = lstatSync(destination);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600
-    || readFileSync(destination, 'utf8') !== content) throw new Error('review_pi_settings_changed');
-  return projection;
+  return { directory, model: MAGPIE_REVIEW_PI_MODEL };
 }
 
-/** Unlink only output-local configuration references. Never follow links. */
-export function removePiCredentialReferences(output: string): { status: 'removed' | 'absent' | 'cleanup_pending' } {
-  try {
-    const directory = join(ownedOutput(output), '.pi-agent');
-    let stat;
-    try { stat = lstatSync(directory); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'absent' };
-      throw error;
-    }
-    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(directory) !== directory) return { status: 'cleanup_pending' };
-    let removed = false, pending = false;
-    for (const name of ['models.json', 'settings.json', 'auth.json']) {
-      try { unlinkSync(join(directory, name)); removed = true; } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') pending = true;
-      }
-    }
-    return { status: pending ? 'cleanup_pending' : removed ? 'removed' : 'absent' };
-  } catch { return { status: 'cleanup_pending' }; }
+/** The codex home of a review: config.toml from the magpie constants alone, and no auth.json. */
+export function prepareCodexHome(output: string): { home: string } {
+  const home = ownedDirectory(output, '.codex-home', 'review_codex_home_unsafe');
+  const config = `model = ${JSON.stringify(MAGPIE_REVIEW_MODEL)}\nmodel_provider = ${JSON.stringify(MAGPIE_PROVIDER)}\n\n`
+    + `[model_providers.${MAGPIE_PROVIDER}]\nname = ${JSON.stringify(MAGPIE_PROVIDER)}\nbase_url = ${JSON.stringify(MAGPIE_BASE_URL)}\n`
+    + `wire_api = ${JSON.stringify(MAGPIE_CODEX_WIRE_API)}\nexperimental_bearer_token = ${JSON.stringify(MAGPIE_PLACEHOLDER_KEY)}\n`
+    + `http_headers = { ${JSON.stringify(MAGPIE_ACTOR_HEADER)} = ${JSON.stringify(MAGPIE_PLACEHOLDER_KEY)} }\n`;
+  writeOwnedFile(join(home, 'config.toml'), config, 'review_codex_config_changed');
+  // An earlier version copied the native auth.json here; the sandbox must not read a left copy.
+  const auth = join(home, 'auth.json');
+  if (existsSync(auth)) throw new Error(`review_codex_auth_present: ${auth} exists; cancel the review, which removes it, and start a new one`);
+  return { home };
+}
+
+const LEGACY_CLEANUP_PENDING = 'cleanup_pending: review_legacy_credential_cleanup_failed';
+/** The entry at `path`, or null when it is absent. Never follows a link. */
+function legacyEntry(path: string) {
+  try { return lstatSync(path); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(LEGACY_CLEANUP_PENDING);
+  }
+}
+/**
+ * Review closeout for an output that an earlier version prepared (#2764): it copied the native codex
+ * auth.json into .codex-home and linked the native pi auth.json and models.json into .pi-agent. This
+ * removes those entries without reading or following them; the generated files of this version stay.
+ * An entry that stays, or a directory that is not a real directory, throws cleanup_pending.
+ */
+export function removeLegacyCredentials(output: string): void {
+  if (!isAbsolute(output) || legacyEntry(output) === null) return;
+  let root: string;
+  try { root = ownedOutput(output); } catch { throw new Error(LEGACY_CLEANUP_PENDING); }
+  for (const [directory, name, linksOnly] of [['.codex-home', 'auth.json', false], ['.pi-agent', 'auth.json', true], ['.pi-agent', 'models.json', true]] as const) {
+    const parent = join(root, directory), stat = legacyEntry(parent);
+    if (stat === null) continue;
+    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(parent) !== parent) throw new Error(LEGACY_CLEANUP_PENDING);
+    const path = join(parent, name), entry = legacyEntry(path);
+    if (entry === null || (linksOnly && !entry.isSymbolicLink())) continue;
+    try { unlinkSync(path); } catch { throw new Error(LEGACY_CLEANUP_PENDING); }
+  }
 }
 
 export function inside(path: string, directory: string): boolean {
@@ -164,107 +110,6 @@ function ownedOutput(output: string): string {
   if (!isAbsolute(output) || lstatSync(output).isSymbolicLink() || !lstatSync(output).isDirectory()) throw new Error('review_output_unsafe');
   return realpathSync(output);
 }
-/** A credential expiry in epoch milliseconds, or 'none' for a credential that does not expire (an API key). */
-type CredentialExpiry = number | 'none';
-
-/** The one run-window rule: a sandboxed run cannot refresh a credential, so each one must outlive `until` (epoch ms). */
-function assertAccessWindow(expiries: readonly CredentialExpiry[], until: number, renew?: string): void {
-  const now = Date.now();
-  if (!Number.isSafeInteger(until) || until <= now) throw new Error('review_auth_window_invalid');
-  if (expiries.some(expiry => expiry !== 'none' && expiry <= until)) {
-    throw new Error(`review_access_expires_within_run${renew ? `; the token must stay valid for ${Math.ceil((until - now) / 60_000)} minutes; ${renew}` : ''}`);
-  }
-}
-/** Codex auth.json: the access token JWT carries the expiry in seconds. */
-function codexAuthExpiry(bytes: Buffer): CredentialExpiry[] {
-  let exp: unknown;
-  try {
-    const token = JSON.parse(bytes.toString('utf8')).tokens?.access_token;
-    if (typeof token !== 'string') throw new Error();
-    exp = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8')).exp;
-  } catch { throw new Error('review_access_exp_unverified'); }
-  if (typeof exp !== 'number' || !Number.isFinite(exp)) throw new Error('review_access_exp_unverified');
-  return [exp * 1000];
-}
-/**
- * pi auth.json: a provider map of `api_key` entries (no expiry) and `oauth`
- * entries (`expires` in epoch milliseconds). The run passes one canonical
- * provider to pi, so only its entry counts, and the entry must exist. Another
- * shape fails closed.
- */
-function piAuthExpiry(bytes: Buffer, { auth, provider }: PiCredential, renew: string): CredentialExpiry {
-  const unknownShape = `review_pi_auth_shape_unknown: ${auth} is not a pi auth map with an api_key or oauth entry for ${JSON.stringify(provider)}; ${renew}`;
-  let entries: unknown;
-  try { entries = JSON.parse(bytes.toString('utf8')); } catch { throw new Error(unknownShape); }
-  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error(unknownShape);
-  const map = entries as Record<string, unknown>;
-  if (!Object.hasOwn(map, provider)) throw new Error(`review_pi_auth_missing: ${auth} has no ${provider} entry; ${renew}`);
-  const entry = map[provider] as { type?: unknown; expires?: unknown } | null;
-  if (entry?.type === 'api_key') return 'none';
-  if (entry?.type === 'oauth' && typeof entry.expires === 'number' && Number.isFinite(entry.expires)) return entry.expires;
-  throw new Error(unknownShape);
-}
-/** One bounded read of a native credential or configuration file (auth.json, models.json, settings.json); never follows a link. */
-function readNativeConfigBytes(path: string): Buffer {
-  let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
-  catch { throw new Error('review_auth_source_unavailable'); }
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('review_auth_source_unsafe');
-    return readFileSync(fd);
-  } finally { closeSync(fd); }
-}
-
-/** Owner-only credential preparation. Never called by the sandboxed host. */
-export function prepareCodexHome(output: string, sourceHome: string, runWindowMs: number, reuse = false): { home: string; auth_copied: true; mode: '0600' } {
-  try {
-    const home = join(ownedOutput(output), '.codex-home');
-    try { mkdirSync(home, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error('review_codex_home_create_failed'); }
-    const dir = lstatSync(home);
-    if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o777) !== 0o700) throw new Error('review_codex_home_unsafe');
-    const destination = join(home, 'auth.json');
-    if (reuse) {
-      const stat = lstatSync(destination);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) throw new Error('review_auth_copy_unsafe');
-      const bytes = readNativeConfigBytes(destination);
-      try { assertAccessWindow(codexAuthExpiry(bytes), Date.now() + runWindowMs); } finally { bytes.fill(0); }
-      return { home, auth_copied: true, mode: '0600' };
-    }
-    const sourceDirectory = join(realpathSync(sourceHome), '.codex');
-    if (lstatSync(sourceDirectory).isSymbolicLink() || !lstatSync(sourceDirectory).isDirectory()) throw new Error('review_auth_source_unsafe');
-    const bytes = readNativeConfigBytes(join(sourceDirectory, 'auth.json'));
-    let fd: number | undefined; let created = false;
-    try {
-      assertAccessWindow(codexAuthExpiry(bytes), Date.now() + runWindowMs);
-      fd = openSync(destination, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); created = true;
-      writeFileSync(fd, bytes); fsyncSync(fd);
-    } catch (error) {
-      if (created) {
-        if (fd !== undefined) { closeSync(fd); fd = undefined; }
-        if (removeCopiedAuth(output).status === 'cleanup_pending') throw new Error('cleanup_pending: review_auth_copy_delete_failed');
-      }
-      if (error instanceof Error && /^review_access_/.test(error.message)) throw error;
-      throw new Error('review_auth_copy_failed');
-    } finally { if (fd !== undefined) closeSync(fd); bytes.fill(0); }
-    return { home, auth_copied: true, mode: '0600' };
-  } catch (error) {
-    if (error instanceof Error && /^(review_|cleanup_pending:)/.test(error.message)) throw error;
-    throw new Error('review_auth_preflight_failed');
-  }
-}
-
-/** Delete only the isolated copy; never follow a directory link or touch source. */
-export function removeCopiedAuth(output: string): { status: 'removed' | 'absent' | 'cleanup_pending' } {
-  try {
-    const home = join(ownedOutput(output), '.codex-home');
-    let stat;
-    try { stat = lstatSync(home); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'absent' }; throw error; }
-    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(home) !== home) return { status: 'cleanup_pending' };
-    try { unlinkSync(join(home, 'auth.json')); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'absent' }; throw error; }
-    return { status: 'removed' };
-  } catch { return { status: 'cleanup_pending' }; }
-}
 
 /**
  * The cleanup investigation (#1721) adds one rule to the review profile: the
@@ -274,22 +119,6 @@ export function removeCopiedAuth(output: string): { status: 'removed' | 'absent'
  * the host spec.
  */
 export type CleanupReviewIsolationPaths = ReviewIsolationPaths & { readonly cleanup?: { readonly readDenied: readonly string[] } };
-
-// Seatbelt has no operation name for utimes, so the allow covers every write
-// to a directory at the lock path and these operations are denied again.
-const PI_AUTH_LOCK_DENIED = 'file-write-acl file-write-data file-write-finderinfo file-write-flags file-write-mode file-write-owner file-write-setugid file-write-xattr';
-
-/**
- * pi locks the resolved auth.json (pi #11655): proper-lockfile creates, touches
- * and removes the directory `<native auth.json>.lock` beside the native file.
- * The rule opens only those three operations on that literal directory path.
- */
-function piAuthLockPolicy(directory: string): string {
-  const auth = join(directory, 'auth.json');
-  if (!lstatSync(auth).isSymbolicLink()) throw new Error('review_pi_auth_changed');
-  const lock = JSON.stringify(`${realpathSync(auth)}.lock`);
-  return `(allow file-write* (require-all (literal ${lock}) (vnode-type DIRECTORY)))\n(deny ${PI_AUTH_LOCK_DENIED} (literal ${lock}))\n`;
-}
 
 /** Seatbelt owns enforcement. This emits OS policy, never vendor CLI arguments. */
 export function reviewIsolationPolicy(paths: CleanupReviewIsolationPaths, platform = process.platform): string {
@@ -303,7 +132,8 @@ export function reviewIsolationPolicy(paths: CleanupReviewIsolationPaths, platfo
     const stat = lstatSync(directory);
     if (directory !== join(output, '.pi-agent') || stat.isSymbolicLink() || !stat.isDirectory()
       || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw new Error('review_pi_agent_directory_unsafe');
-    piPolicy = `(deny file-write* (literal ${JSON.stringify(join(directory, 'models.json'))}))\n${piAuthLockPolicy(directory)}`;
+    // settings.json, auth.json and config.toml match the forbidden file names below; models.json does not.
+    piPolicy = `(deny file-write* (literal ${JSON.stringify(join(directory, 'models.json'))}))\n`;
   }
   const readDenied = paths.cleanup?.readDenied ?? [];
   const protectedEntries = [paths.primary, paths.ownerRecord, paths.journal, paths.gitCommonDir, ...readDenied];
@@ -320,16 +150,13 @@ export function reviewIsolationPolicy(paths: CleanupReviewIsolationPaths, platfo
   // Seatbelt "localhost" also matches this host's own addresses. A tcp "localhost"
   // rule lets ::ffff:127.0.0.1 through, so IPv6 TCP is denied whole; remote IPv4 stays open.
   const networkPolicy = '(deny network-outbound (remote tcp4 "localhost:*"))\n(deny network-outbound (remote tcp6 "*:*"))\n';
-  // The last matching rule wins, so each allow follows the deny. A "localhost"
-  // baseUrl can resolve to either family, so the allow names tcp, not tcp4.
-  const modelPortPolicy = (paths.piLoopbackPorts ?? []).map(port => `(allow network-outbound (remote tcp "localhost:${port}"))\n`).join('');
+  // The last matching rule wins, so the allow follows the deny. magpie listens on 127.0.0.1 (MAGPIE_BASE_URL).
+  const modelPortPolicy = paths.magpie ? `(allow network-outbound (remote tcp4 "localhost:${MAGPIE_PORT}"))\n` : '';
   const readPolicy = readDenied.map(path => `(deny file-read* (subpath ${JSON.stringify(path)}))\n`).join('');
   if (platform !== 'darwin') throw new Error('OAR_REVIEW_ISOLATION_UNSUPPORTED_PLATFORM');
   // Output alone is writable; every real CODEX_HOME state grant is retired.
   // Definitions, trust, settings/hooks and credentials stay denied even inside
-  // an otherwise writable tree. The one native path that opens is pi's
-  // auth.json lock directory (piAuthLockPolicy); nothing else in HOME or a
-  // native config root opens.
+  // an otherwise writable tree. Nothing in HOME or a native config root opens.
   const forbiddenFiles = '/(CLAUDE\\.md|AGENTS\\.md|settings[^/]*\\.json|\\.claude\\.json|config\\.toml|auth\\.json|\\.?credentials\\.json|secrets\\.json|token\\.json)$';
   const forbiddenDirectories = '/(\\.?hooks|\\.?agents|\\.?skills|\\.?rules|\\.?plugins)(/|$)';
   const exceptions = `(require-not (subpath ${JSON.stringify(output)}))`;

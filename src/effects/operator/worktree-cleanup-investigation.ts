@@ -2,7 +2,6 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { sha256Prefixed } from '../../core/evidence/sha256';
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,7 +16,7 @@ import {
 } from '../../core/operator/worktree-cleanup-plan';
 import { resolveGitCommonDirectory } from '../git/common-directory';
 import { configuredGitBinary, gitExecFileSync, withoutRepositorySelectingGitEnv } from '../git/runner';
-import { prepareCodexHome, prepareReviewLauncher, removeCopiedAuth, reviewIsolationPolicy, type CleanupReviewIsolationPaths } from '../review/review-isolation';
+import { prepareCodexHome, prepareReviewLauncher, reviewIsolationPolicy, type CleanupReviewIsolationPaths } from '../review/review-isolation';
 import { runSetupProcess, type SetupProcessRunner } from '../setup/collector';
 import { readSessionArtifact, writeSessionArtifact, writeSessionBytes } from '../terminal/task-session-io';
 import { readQuotaReport } from '../board/quota';
@@ -198,7 +197,7 @@ export function prepareCleanupInvestigation(env: NodeJS.ProcessEnv, sessionId: s
   const repository = realpathSync(targets[0]!.repository);
   const paths: CleanupReviewIsolationPaths = { subject: repository, primary: repository, ownerRecord: cleanupSessionDirectory(env, sessionId), journal: control,
     gitCommonDir: resolveGitCommonDirectory(repository, configuredGitBinary(env), 30_000, withoutRepositorySelectingGitEnv(env)), output,
-    cleanup: { readDenied: readDeniedRoots(targets, env) } };
+    magpie: true, cleanup: { readDenied: readDeniedRoots(targets, env) } };
   let policy: string;
   try { policy = reviewIsolationPolicy(paths); } catch (error) {
     if (error instanceof Error && error.message.startsWith('OAR_REVIEW_')) throw new CleanupInvestigationError('isolation_unproven');
@@ -227,43 +226,41 @@ export type CleanupReviewHost = Pick<ReviewerRunner<unknown, unknown, unknown>, 
 /** Production investigator: codex in the review host, with the host's own file request protocol. */
 export const reviewHostInvestigator = (runner: CleanupReviewHost): CleanupInvestigator => async (run, request, context, deadline) => {
   const env = process.env;
-  const home = prepareCodexHome(run.output, env.HOME ?? userInfo().homedir, deadline - Date.now()).home;
+  const home = prepareCodexHome(run.output).home;
+  const installed = await runner.installation('codex');
+  if (installed.kind !== 'available' || installed.via !== 'executable') throw new CleanupInvestigationError('host_failed');
+  const launcher = prepareReviewLauncher(run.control, run.policyFile, installed.command);
+  const isolated = await runner.installation('codex', launcher);
+  if (isolated.kind !== 'available' || isolated.via !== 'executable' || isolated.command !== launcher) throw new CleanupInvestigationError('host_failed');
+  const spec: ReviewHostSpec = { mode: 'review', isolation: { paths: run.paths, policyFile: run.policyFile }, kind: 'codex', installation: isolated, launcher,
+    vendorExecutable: realpathSync(installed.command), options: runner.sessionOptions('codex', run.output, home),
+    requestDirectory: run.control, output: run.output, controlDirectory: run.control, timeoutMs: TURN_TIMEOUT_MS };
+  const specFile = join(run.control, 'host.json');
+  writeSessionArtifact(specFile, spec);
+  const [node, ...args] = runner.hostCommand(specFile, false);
+  const log = openSync(join(run.control, 'host.log'), 'wx', 0o600);
+  const host = spawn(node!, args, { cwd: run.control, env, stdio: ['ignore', log, log] });
+  closeSync(log);
+  let alive = true;
+  const exited = new Promise<void>(resolve => host.once('close', () => { alive = false; resolve(); }));
   try {
-    const installed = await runner.installation('codex');
-    if (installed.kind !== 'available' || installed.via !== 'executable') throw new CleanupInvestigationError('host_failed');
-    const launcher = prepareReviewLauncher(run.control, run.policyFile, installed.command);
-    const isolated = await runner.installation('codex', launcher);
-    if (isolated.kind !== 'available' || isolated.via !== 'executable' || isolated.command !== launcher) throw new CleanupInvestigationError('host_failed');
-    const spec: ReviewHostSpec = { mode: 'review', isolation: { paths: run.paths, policyFile: run.policyFile }, kind: 'codex', installation: isolated, launcher,
-      vendorExecutable: realpathSync(installed.command), options: runner.sessionOptions('codex', run.output, home),
-      requestDirectory: run.control, output: run.output, controlDirectory: run.control, timeoutMs: TURN_TIMEOUT_MS };
-    const specFile = join(run.control, 'host.json');
-    writeSessionArtifact(specFile, spec);
-    const [node, ...args] = runner.hostCommand(specFile, false);
-    const log = openSync(join(run.control, 'host.log'), 'wx', 0o600);
-    const host = spawn(node!, args, { cwd: run.control, env, stdio: ['ignore', log, log] });
-    closeSync(log);
-    let alive = true;
-    const exited = new Promise<void>(resolve => host.once('close', () => { alive = false; resolve(); }));
-    try {
-      await waitFor(join(run.control, 'ready.json'), Math.min(deadline, Date.now() + HOST_READY_TIMEOUT_MS), () => alive);
-      const claim = readSessionArtifact<ProcessProof>(join(run.control, 'host-claim.json'));
-      if (claim.pid !== host.pid || readSessionArtifact<{ pid: number }>(join(run.control, 'ready.json')).pid !== host.pid) throw new CleanupInvestigationError('host_failed');
-      // The started file is the host's publication fence: request and context are durable before it.
-      writeSessionArtifact(join(run.control, 'request-1.json'), request);
-      writeSessionBytes(request.context_ref, context);
-      writeSessionArtifact(join(run.control, 'started-1.json'), { request_id: request.request_id, provider: claim });
-      await waitFor(join(run.control, 'observed-1.json'), deadline - HOST_DISPOSE_TIMEOUT_MS, () => alive);
-      const observed = readSessionArtifact<{ kind: string; outcome: string | null }>(join(run.control, 'observed-1.json'));
-      if (observed.kind !== 'ended' || observed.outcome !== 'completed') throw new CleanupInvestigationError('host_failed');
-    } finally {
-      if (alive) {
-        if (!existsSync(join(run.control, 'close.request'))) writeSessionArtifact(join(run.control, 'close.request'), { close: true });
-        await Promise.race([exited, Bun.sleep(HOST_DISPOSE_TIMEOUT_MS)]);
-        if (alive) host.kill('SIGTERM');
-      }
+    await waitFor(join(run.control, 'ready.json'), Math.min(deadline, Date.now() + HOST_READY_TIMEOUT_MS), () => alive);
+    const claim = readSessionArtifact<ProcessProof>(join(run.control, 'host-claim.json'));
+    if (claim.pid !== host.pid || readSessionArtifact<{ pid: number }>(join(run.control, 'ready.json')).pid !== host.pid) throw new CleanupInvestigationError('host_failed');
+    // The started file is the host's publication fence: request and context are durable before it.
+    writeSessionArtifact(join(run.control, 'request-1.json'), request);
+    writeSessionBytes(request.context_ref, context);
+    writeSessionArtifact(join(run.control, 'started-1.json'), { request_id: request.request_id, provider: claim });
+    await waitFor(join(run.control, 'observed-1.json'), deadline - HOST_DISPOSE_TIMEOUT_MS, () => alive);
+    const observed = readSessionArtifact<{ kind: string; outcome: string | null }>(join(run.control, 'observed-1.json'));
+    if (observed.kind !== 'ended' || observed.outcome !== 'completed') throw new CleanupInvestigationError('host_failed');
+  } finally {
+    if (alive) {
+      if (!existsSync(join(run.control, 'close.request'))) writeSessionArtifact(join(run.control, 'close.request'), { close: true });
+      await Promise.race([exited, Bun.sleep(HOST_DISPOSE_TIMEOUT_MS)]);
+      if (alive) host.kill('SIGTERM');
     }
-  } finally { removeCopiedAuth(run.output); }
+  }
 };
 
 /** The agent result file: a regular file in output, never followed through a link. */

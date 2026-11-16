@@ -3,7 +3,6 @@ import { reviewCampaignKey, validateTaskClaimReference } from '../../core/review
 import type { ReviewAdmissionSource, TaskSessionAuthority } from '../admission/admission-source';
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { join, relative, resolve } from 'path';
-import { userInfo } from 'os';
 import { canonicalize } from '../../core/evidence/canonical-json';
 import { shellQuote } from '../../core/shell-quote';
 import { REVIEW_MAX_ROUNDS, REVIEW_TIMEOUT_MS, validateReviewOutput, type ReviewOutput } from '../../core/review/generic-review';
@@ -14,7 +13,8 @@ import type { ReviewerRunner, TaskClaimReference, TaskCleanupResult, TaskRequest
 import { acquireExclusiveDirectoryLock, ExclusiveLockContentionError, withCallerLock } from '../locking/exclusive-directory-lock';
 import { taskRepository } from '../git/task-repository';
 import { ensureSessionDirectory, nextSessionRound, readSessionArtifact, writeSessionArtifact } from '../terminal/task-session-io';
-import { reviewIsolationPolicy, prepareReviewLauncher, prepareCodexHome, removeCopiedAuth, preparePiAgentDirectory, removePiCredentialReferences, assertPiCredentialWindow, type PiCredential } from './review-isolation';
+import { reviewIsolationPolicy, prepareReviewLauncher, prepareCodexHome, preparePiAgentDirectory, removeLegacyCredentials } from './review-isolation';
+import { assertMagpieReachable } from './magpie-endpoint';
 import { acceptanceContext, acceptanceReviewContextDigest, authorityFingerprint, GENERIC_REVIEW_ROLE,
   projectAcceptance, recordAcceptance, verifyAcceptance, type AcceptancePullRequestSelection,
   type AcceptanceReceipt } from './acceptance-receipt';
@@ -76,7 +76,7 @@ function completedModel(session: Pick<ReviewSession<unknown>, 'control_directory
   return observation.actual_model;
 }
 /** Review-owned effects. A fixture may replace each one. */
-const reviewEffects = { model: completedModel, piExecutable, piReviewLaunchBlocker, resolvePiModel };
+const reviewEffects = { model: completedModel, piExecutable, piReviewLaunchBlocker, resolvePiModel, assertMagpieReachable };
 /** The reviewer runner and optional replacements of the review-owned effects. */
 export type ReviewEffects<Session, Endpoint> = ReviewerRunner<Session, Endpoint, TaskSessionAuthority> & Partial<typeof reviewEffects>;
 
@@ -130,8 +130,6 @@ export async function runReviewRound<Session, Endpoint>(options: ReviewOptions<E
   const endpoint = options.endpoint ?? null, parentPane = options.parentPane ?? null;
   const { root, primary, campaign, key, dir } = reviewLocation(options.repoRoot, options.authority);
   const lock = acquireExclusiveDirectoryLock(primary, relative(primary, join(dir, 'caller.lock')), { waitTimeoutMs: 1, reclaimStaleOwner: true });
-  let authOutput: string | undefined;
-  let piOutput: string | undefined;
   try {
     if (existsSync(join(dir, 'closed.json'))) throw new Error('review_session_closed');
     if (existsSync(join(dir, 'close.request'))) throw new Error('review_session_closing; finish the same cancel or close');
@@ -209,30 +207,18 @@ export async function runReviewRound<Session, Endpoint>(options: ReviewOptions<E
       const hostTimeout = readSessionArtifact<ReviewHostSpec>(specPath).timeoutMs;
       if (hostTimeout !== timeout) throw new Error(`review_timeout_changed_for_live_host: the host runs with --timeout-ms ${hostTimeout}; repeat the round with that value, or cancel the review and start a new one`);
     }
-    // The one absolute round deadline: the credential window, the host turn and this wait all end at it.
+    // The one absolute round deadline: the host turn and this wait both end at it.
     const deadline = Date.now() + timeout;
-    let runtimeHome: string | undefined;
-    let piLoopbackPorts: readonly number[] = [];
-    let piModel: string | undefined;
-    let piCredential: PiCredential | undefined;
-    if (session.actual_harness === 'codex') {
-      authOutput = outbox;
-      const marker = join(dir, 'auth-copy.json');
-      const prepared = prepareCodexHome(outbox, client.endpointHome(options.endpoint) ?? process.env.HOME ?? userInfo().homedir, timeout * REVIEW_MAX_ROUNDS + 120_000, existsSync(marker));
-      runtimeHome = prepared.home;
-      if (!existsSync(marker)) writeSessionArtifact(marker, { auth_copied: true, mode: prepared.mode });
-    }
-    if (session.actual_harness === 'pi') {
-      piOutput = outbox;
-      const prepared = preparePiAgentDirectory(outbox, client.endpointHome(options.endpoint) ?? process.env.HOME ?? userInfo().homedir, deadline,
-        (agentDirectory, reference) => client.resolvePiModel(piCommand(), agentDirectory, reference));
-      runtimeHome = prepared.directory; piLoopbackPorts = prepared.loopbackPorts; piModel = prepared.model; piCredential = prepared.credential;
-    }
+    // Codex and pi reach a model only through magpie with the placeholder key; no native credential enters the sandbox.
+    const magpie = session.actual_harness === 'codex' || session.actual_harness === 'pi';
+    const runtimeHome = session.actual_harness === 'codex' ? prepareCodexHome(outbox).home
+      : session.actual_harness === 'pi' ? preparePiAgentDirectory(outbox, (agentDirectory, reference) => client.resolvePiModel(piCommand(), agentDirectory, reference)).directory
+      : undefined;
     // Isolation admission precedes any SDK/native Session creation.
     const repository = taskRepository(root);
     const isolationPaths = { subject: root, primary, ownerRecord: dir, journal: dir,
       gitCommonDir: repository.repository_id, output: outbox,
-      ...(session.actual_harness === 'pi' ? { piAgentDirectory: runtimeHome, piLoopbackPorts } : {}) };
+      ...(session.actual_harness === 'pi' ? { piAgentDirectory: runtimeHome } : {}), ...(magpie ? { magpie } : {}) };
     const policy = reviewIsolationPolicy(isolationPaths);
     const profilePath = join(dir, 'isolation.sb');
     if (!existsSync(profilePath)) writeFileSync(profilePath, policy, { flag: 'wx', mode: 0o600 });
@@ -251,16 +237,14 @@ export async function runReviewRound<Session, Endpoint>(options: ReviewOptions<E
       }
       const spec: ReviewHostSpec = { mode: 'review', isolation: { paths: isolationPaths, policyFile: profilePath }, kind: session.actual_harness,
         installation: isolatedInstallation, launcher, vendorExecutable: realpathSync(vendorExecutable),
-        options: client.sessionOptions(session.actual_harness, outbox, runtimeHome, piModel),
+        options: client.sessionOptions(session.actual_harness, outbox, runtimeHome),
         requestDirectory: client.requestDirectory(primary, session.task, GENERIC_REVIEW_ROLE), output: outbox, controlDirectory: dir, timeoutMs: timeout };
       writeSessionArtifact(specPath, spec);
     }
     const command = client.hostCommand(specPath, false);
-    // pi reads the credential when its session starts. The host repeats this check against the
-    // launch file just before that start, so a late operator launch cannot pass the deadline.
-    if (piCredential) assertPiCredentialWindow(piCredential, deadline);
+    if (magpie) await client.assertMagpieReachable();
     // Replaced on each attempt: a launch_required round keeps its number. The reviewer cannot write the control directory.
-    const launch: ReviewHostLaunch = { deadline, pi: piCredential ? { model: piModel!, ...piCredential } : null };
+    const launch: ReviewHostLaunch = { deadline };
     writeSessionArtifact(join(dir, REVIEW_HOST_LAUNCH_FILE), launch, false);
     let binding: Session;
     if (session.endpoint === null) {
@@ -346,10 +330,6 @@ export async function runReviewRound<Session, Endpoint>(options: ReviewOptions<E
     projectAcceptance(projection, receipt);
     return { status: output.verdict === 'PASS' ? 'accepted' as const : 'rejected' as const, round, output, receipt,
       projection, requested_harness: session.requested_harness, actual_harness: session.actual_harness, fallback_reason: session.fallback_reason };
-  } catch (error) {
-    if (authOutput && removeCopiedAuth(authOutput).status === 'cleanup_pending') throw new Error('cleanup_pending: review_auth_copy_delete_failed');
-    if (piOutput && removePiCredentialReferences(piOutput).status === 'cleanup_pending') throw new Error('cleanup_pending: review_pi_credential_cleanup_failed');
-    throw error;
   } finally { lock.release(); }
 }
 
@@ -381,48 +361,42 @@ export async function closeReview<Session, Endpoint>(repoRoot: string, authority
     try { writeSessionArtifact(join(dir, 'close.request'), { close: true }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   }
-  let authOutput: string | undefined;
-  let piOutput: string | undefined;
   try {
     return await withCallerLock(primary, dir, async () => {
-      if (existsSync(join(dir, 'session.json'))) {
-        const owned = readSessionArtifact<ReviewSession<Endpoint>>(join(dir, 'session.json'));
-        if (owned.actual_harness === 'codex' || owned.actual_harness === 'pi') {
-          const output = effects.outputDirectory(owned.reviewer_repo, primary, owned.task, GENERIC_REVIEW_ROLE);
-          if (owned.actual_harness === 'codex') authOutput = output;
-          else piOutput = output;
+      // Every close path removes the credential copy and links of an earlier version: the normal close,
+      // the saved closed result and a launch with no binding. The cleanup needs only the saved session.
+      const owned = existsSync(join(dir, 'session.json')) ? readSessionArtifact<ReviewSession<Endpoint>>(join(dir, 'session.json')) : null;
+      const legacyOutput = owned && (owned.actual_harness === 'codex' || owned.actual_harness === 'pi')
+        ? effects.outputDirectory(owned.reviewer_repo, primary, owned.task, GENERIC_REVIEW_ROLE) : null;
+      const removeLegacy = () => { if (legacyOutput) removeLegacyCredentials(legacyOutput); };
+      try {
+        if (existsSync(join(dir, 'closed.json'))) return readSessionArtifact<{ cleanup: TaskCleanupResult }>(join(dir, 'closed.json')).cleanup;
+        const session = readSessionArtifact<ReviewSession<Endpoint>>(join(dir, 'session.json'));
+        if (!cancel) {
+          const receipt = await verifyAcceptance({ root, authorityHome, authority });
+          const completed = acceptedRounds(dir);
+          if (!completed.length) throw new Error('review_no_accepted_round');
+          const last = readSessionArtifact<{ output: ReviewOutput; receipt: AcceptanceReceipt }>(join(dir, `accepted-${completed.at(-1)}.json`));
+          if (last.output.verdict !== 'PASS' || JSON.stringify(last.receipt) !== JSON.stringify(receipt)) throw new Error('review_acceptance_mismatch');
         }
-      }
-      if (existsSync(join(dir, 'closed.json'))) return readSessionArtifact<{ cleanup: TaskCleanupResult }>(join(dir, 'closed.json')).cleanup;
-      const session = readSessionArtifact<ReviewSession<Endpoint>>(join(dir, 'session.json'));
-      if (!cancel) {
-        const receipt = await verifyAcceptance({ root, authorityHome, authority });
-        const completed = acceptedRounds(dir);
-        if (!completed.length) throw new Error('review_no_accepted_round');
-        const last = readSessionArtifact<{ output: ReviewOutput; receipt: AcceptanceReceipt }>(join(dir, `accepted-${completed.at(-1)}.json`));
-        if (last.output.verdict !== 'PASS' || JSON.stringify(last.receipt) !== JSON.stringify(receipt)) throw new Error('review_acceptance_mismatch');
-      }
-      // An ambiguous launch without a disposal acknowledgement remains pending;
-      // never kill a host whose OAR children may still be alive.
-      await effects.dispose(session.reviewer_repo, session.task, session.control_directory, session.endpoint === null);
-      const cleanup = await (cancel ? effects.cancel : effects.close)(session.reviewer_repo, session.task, GENERIC_REVIEW_ROLE);
-      // The round's final close.request read is not atomic with the acceptance
-      // write. A cancel that lands in that window still closes the session,
-      // and the durable receipt is reported here rather than discarded.
-      const accepted = cancel ? acceptedRounds(dir) : [];
-      const piCredentials = piOutput;
-      piOutput = undefined;
-      if (piCredentials && removePiCredentialReferences(piCredentials).status === 'cleanup_pending') throw new Error('cleanup_pending: review_pi_credential_cleanup_failed');
-      if (cleanup.status === 'closed') writeSessionArtifact(join(dir, 'closed.json'), { cancelled: cancel, cleanup, ...(accepted.length ? { accepted_rounds: accepted } : {}) });
-      return accepted.length ? { ...cleanup, accepted_rounds: accepted } : cleanup;
+        // An ambiguous launch without a disposal acknowledgement remains pending;
+        // never kill a host whose OAR children may still be alive.
+        await effects.dispose(session.reviewer_repo, session.task, session.control_directory, session.endpoint === null);
+        const cleanup = await (cancel ? effects.cancel : effects.close)(session.reviewer_repo, session.task, GENERIC_REVIEW_ROLE);
+        // The round's final close.request read is not atomic with the acceptance
+        // write. A cancel that lands in that window still closes the session,
+        // and the durable receipt is reported here rather than discarded.
+        const accepted = cancel ? acceptedRounds(dir) : [];
+        // closed.json follows only a complete cleanup.
+        removeLegacy();
+        if (cleanup.status === 'closed') writeSessionArtifact(join(dir, 'closed.json'), { cancelled: cancel, cleanup, ...(accepted.length ? { accepted_rounds: accepted } : {}) });
+        return accepted.length ? { ...cleanup, accepted_rounds: accepted } : cleanup;
+      } finally { removeLegacy(); }
     }, undefined, cancel ? REVIEW_CANCEL_LOCK_WAIT_MS : 0);
   } catch (error) {
     if (cancel && error instanceof ExclusiveLockContentionError && error.kind === 'timeout') {
       throw new Error('review_cancel_pending; close.request is durable; run cancel again', { cause: error });
     }
     throw error;
-  } finally {
-    if (authOutput && removeCopiedAuth(authOutput).status === 'cleanup_pending') throw new Error('cleanup_pending: review_auth_copy_delete_failed');
-    if (piOutput && removePiCredentialReferences(piOutput).status === 'cleanup_pending') throw new Error('cleanup_pending: review_pi_credential_cleanup_failed');
   }
 }

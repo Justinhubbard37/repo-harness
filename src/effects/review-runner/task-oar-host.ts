@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { processIdentity, readSessionArtifact, writeSessionArtifact } from '../terminal/task-session-io';
 import { HOST_DEADLINE_STOP, REVIEW_HOST_LAUNCH_FILE, type HostRoundObservation, type ProcessProof, type ReviewHostLaunch, type ReviewHostSpec, type ReviewIsolationAdmission, type TaskRequest } from '../../core/review/runner-port';
 import { dirname } from 'node:path';
-import { reviewHostTemporaryDirectory, reviewIsolationPolicy, prepareReviewLauncher, assertReviewIsolation, assertPiCredentialWindow } from '../review/review-isolation';
+import { reviewHostTemporaryDirectory, reviewIsolationPolicy, prepareReviewLauncher, assertReviewIsolation } from '../review/review-isolation';
 import { promptWithOarObservation, oarActualModel, oarObservationFile, type OarObservationSink } from '../terminal/task-runtime-observation';
 
 /** OAR owns RPC arguments and its explicit extension. Disable all ambient Pi resources. */
@@ -168,7 +168,7 @@ export async function runHostFileRequest(host: OarReviewHost, spec: ReviewHostSp
   if (sha256Prefixed(content) !== request.context_sha256) throw new Error('OAR_HOST_CONTEXT_MISMATCH');
   const started = readSessionArtifact<{ request_id: string; provider: ProcessProof }>(join(spec.requestDirectory, `started-${request.round}.json`));
   if (started.request_id !== request.request_id || started.provider?.pid !== process.pid || !started.provider.identity) throw new Error('OAR_HOST_REQUEST_IDENTITY_MISMATCH');
-  // The owner's absolute round deadline bounds the turn, so the credential window that admission checked covers it.
+  // The owner's absolute round deadline bounds the turn.
   const round = readSessionArtifact<{ request_id: string; deadline: number }>(join(spec.controlDirectory, `deadline-${request.round}.json`));
   if (round.request_id !== request.request_id || !Number.isSafeInteger(round.deadline)) throw new Error('OAR_HOST_DEADLINE_INVALID');
   const consumed_at = Date.now();
@@ -183,7 +183,7 @@ export async function runHostFileRequest(host: OarReviewHost, spec: ReviewHostSp
       recordPrePromptInboxAccepted({ request, requestDirectory: spec.requestDirectory, native_session_id: host.sessionId,
         host: spec.kind, consumed_at, observation: snapshot });
     }, {});
-  // OAR arms its own limits only after the prompt ack, and native pi can use its credential
+  // OAR arms its own limits only after the prompt ack, and the native child can call the model
   // before that ack, so the deadline stops the native process tree itself.
   const run = await untilDeadline(round.deadline, turn);
   if (run === HOST_DEADLINE_STOP) {
@@ -235,21 +235,17 @@ export async function serveHostFileRequests(host: OarReviewHost, spec: ReviewHos
 }
 
 /**
- * The owner admitted this launch until its round deadline. A native session that starts later
- * can find the pi token inside pi's refresh margin, so the host checks just before the start.
+ * The owner admitted this launch until its round deadline, so the host checks just before the start.
  * `claimed`: the host already wrote host-claim.json, so a repeated round cannot launch again.
  * Returns the admitted round deadline.
  */
 export function assertHostLaunchAdmitted(spec: ReviewHostSpec, claimed: boolean): number {
   const launch = readSessionArtifact<ReviewHostLaunch>(join(spec.controlDirectory, REVIEW_HOST_LAUNCH_FILE));
-  if (!Number.isSafeInteger(launch.deadline) || (spec.kind === 'pi' ? launch.pi?.model !== spec.options.model : launch.pi !== null)) {
-    throw new Error('OAR_HOST_LAUNCH_DEADLINE_INVALID');
-  }
+  if (!Number.isSafeInteger(launch.deadline)) throw new Error('OAR_HOST_LAUNCH_DEADLINE_INVALID');
   if (Date.now() >= launch.deadline) {
     throw new Error(`OAR_HOST_LAUNCH_DEADLINE_PASSED: the round deadline passed before this launch; ${claimed
       ? 'this host holds the claim, so cancel the review and start a new one' : 'repeat the round, then run its launch command'}`);
   }
-  if (launch.pi) assertPiCredentialWindow(launch.pi, launch.deadline);
   return launch.deadline;
 }
 

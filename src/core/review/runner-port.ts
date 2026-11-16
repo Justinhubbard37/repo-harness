@@ -62,8 +62,8 @@ export interface ReviewIsolationPaths {
   readonly gitCommonDir: string;
   readonly output: string;
   readonly piAgentDirectory?: string;
-  /** Loopback ports of the Pi model providers, from models.json. The policy allows only these. */
-  readonly piLoopbackPorts?: readonly number[];
+  /** Set for a codex or pi review: the policy allows the magpie port on loopback and no other local port. */
+  readonly magpie?: boolean;
 }
 /** The isolation policy as data. The host applies it and refuses a session it cannot isolate. */
 export interface ReviewIsolationAdmission {
@@ -86,16 +86,11 @@ export interface ReviewHostSpec {
   timeoutMs: number;
 }
 /**
- * The owner writes this file to the control directory before each launch or bind, after its
- * credential check. The host refuses a native session that starts at or after `deadline`, and
- * a pi host repeats the credential-window check for `pi` there.
+ * The owner writes this file to the control directory before each launch or bind. The host
+ * refuses a native session that starts at or after `deadline`.
  */
 export const REVIEW_HOST_LAUNCH_FILE = 'launch-deadline.json';
-export interface ReviewHostLaunch {
-  deadline: number;
-  /** The canonical `provider/model` of the admission, the native auth.json and the provider of its entry. */
-  pi: { model: string; auth: string; provider: string } | null;
-}
+export interface ReviewHostLaunch { deadline: number }
 /**
  * The observation kind of a turn that the host stopped at its round deadline. The host writes it
  * only after the native reviewer process tree has exited; the owner accepts no Result from it.
@@ -124,13 +119,11 @@ export interface ReviewAuthorQuery<Endpoint> {
 export interface ReviewerRunner<Session, Endpoint, Authority> {
   /** Validates launch addressing before any admission. */
   validateEndpoint(endpoint: Endpoint): unknown;
-  /** The home that holds the provider credentials for this endpoint, if the endpoint names one. */
-  endpointHome(endpoint: Endpoint | undefined): string | undefined;
   /** The fixed host command for a host spec file. A terminal launch also proves that the command reads back. */
   hostCommand(specFile: string, terminal: boolean): readonly string[];
   installation(kind: ReviewRuntimeId, executable?: string): Promise<InstallationSnapshot>;
-  /** Session options from the reviewer profile; review passes the role's harness and output, and for pi the admitted `provider/model`. */
-  sessionOptions(kind: ReviewRuntimeId, output: string, runtimeHome?: string, piModel?: string): SessionOptions;
+  /** Session options from the reviewer profile; review passes the role's harness, its output and, for codex and pi, the isolated runtime home. */
+  sessionOptions(kind: ReviewRuntimeId, output: string, runtimeHome?: string): SessionOptions;
   /** The directory where the implementation writes the session's requests. */
   requestDirectory(primaryRoot: string, task: string, role: string): string;
   /** The reviewer output directory in the reviewer checkout. */

@@ -248,7 +248,8 @@ routeTest('the investigation start refuses an exhausted or unknown chatgpt quota
 
 routeTest('the investigation routes start one job, refuse a second while it runs, and record a failure when the child stops before its own record', async f => {
   const ui = join(f.parent, 'ui'); mkdirSync(ui); writeFileSync(join(ui, 'index.html'), '<!doctype html><title>fixture</title>');
-  const childEnv = { ...f.env, REPO_HARNESS_HOME: f.home, REPO_HARNESS_WORKTREE_ROOT: f.parent };
+  // A missing codex executable stops the real job child before any model call.
+  const childEnv = { ...f.env, REPO_HARNESS_HOME: f.home, REPO_HARNESS_WORKTREE_ROOT: f.parent, OAR_CODEX_BIN: join(f.parent, 'missing-codex') };
   let stop: (code: 'timeout' | 'failed') => void = () => {};
   const run_process: typeof runSetupProcess = () => new Promise(resolve => { stop = code => resolve({ ok: false, code }); });
   const server = await startOperatorServer({ port: 0, static_root: ui, env: childEnv,
@@ -278,11 +279,12 @@ routeTest('the investigation routes start one job, refuse a second while it runs
     const record = loadCleanupInvestigation(f.env, first.session_id)!;
     saveCleanupInvestigation(f.env, { ...record, state: 'running', failure: null, deadline_at: '2026-11-04T00:00:00.000Z' });
     expect(readCleanupInvestigationStatus(f.env, first.session_id)).toMatchObject({ state: 'failed', failure: 'interrupted' });
-    // The real job child is the hidden CLI subcommand. Without codex credentials (macOS) or Seatbelt (other hosts) it records its own typed failure.
+    // The real job child is the hidden CLI subcommand. Without a codex executable (macOS) or Seatbelt (other hosts) it records its own typed failure.
     const real = await startCleanupInvestigation(first.session_id, { env: childEnv, read_quota: quota('normal') });
     for (let turn = 0; turn < 600 && loadCleanupInvestigation(f.env, first.session_id)?.state === 'running'; turn++) await Bun.sleep(100);
     expect(loadCleanupInvestigation(f.env, first.session_id)).toMatchObject({ job_id: real.job_id, state: 'failed', failure: process.platform === 'darwin' ? 'host_failed' : 'isolation_unproven' });
-    if (process.platform === 'darwin') expect(readFileSync(join(f.home, 'operator/worktree-cleanup-investigation', `${real.job_id}-error.txt`), 'utf8')).toContain('review_auth');
+    // The codex home of the job holds the generated magpie config and no auth.json.
+    if (process.platform === 'darwin') expect(readdirSync(join(f.home, 'operator/worktree-cleanup-investigation', real.job_id, 'output/.codex-home'))).toEqual(['config.toml']);
     expect(loadCleanupSession(f.env, first.session_id).plan).toEqual(first);
     const audit = readFileSync(join(f.home, 'operator/audit.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
     expect(audit.filter(entry => entry.phase === 'intent').map(entry => [entry.operation, entry.target])).toEqual([

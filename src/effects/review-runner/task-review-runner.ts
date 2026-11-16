@@ -16,7 +16,8 @@ import { piExecutable } from '../pi-executable';
 import { reviewHostCommand } from '../review/review-isolation';
 import { processProofAlive, readTaskAgent, taskSessionDirectory, TASK_SESSIONS_PATH, type HerdrCoreEndpoint, type TaskPaneBinding } from '../terminal/task-session-record';
 import { bindNativeTaskSession } from '../terminal/native-task-session';
-import { parseFrontmatter, validateFrontmatter, AGENT_TARGET_OVERRIDES } from '../terminal/task-role-profiles';
+import { parseFrontmatter, validateFrontmatter } from '../terminal/task-role-profiles';
+import { MAGPIE_REVIEW_EFFORT, MAGPIE_REVIEW_MODEL, MAGPIE_REVIEW_PI_MODEL } from '../review/magpie-endpoint';
 import { assertTerminalHostCommand, bindTerminalApplicationHost, collectTaskResult,
   sendTaskRequest, startTaskApplicationHost, taskAgentStatus } from '../terminal/task-session';
 import { assertTaskBinding, cancelTaskAgent, closeTaskAgent, validateHerdrCoreEndpoint } from '../terminal/runtime-closeout';
@@ -122,24 +123,22 @@ async function probeReviewInstallation(kind: ReviewRuntimeId, executable?: strin
   return JSON.parse(execFileSync(node, [entry, '--installation', kind, ...(pi ? [pi] : [])], { encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024,
     env: executable && variable ? { ...process.env, [variable]: executable } : process.env })) as InstallationSnapshot;
 }
-/** Fleet owns review instructions. Pi runs the `provider/model` that review admission read from the native settings. */
-export function reviewSessionOptions(kind: ReviewRuntimeId, output: string, runtimeHome?: string, piModel?: string): SessionOptions {
+/** Fleet owns review instructions. Codex and pi run the review role's magpie model; claude runs the fleet model. */
+export function reviewSessionOptions(kind: ReviewRuntimeId, output: string, runtimeHome?: string): SessionOptions {
   const fleet = parseFrontmatter(readFileSync(fileURLToPath(new URL('../../../agents/fleet/deep-reasoner.md', import.meta.url)), 'utf8'));
   if (!fleet || !validateFrontmatter(fleet, GENERIC_REVIEW_ROLE).ok) throw new Error('review_fleet_invalid');
-  const target = AGENT_TARGET_OVERRIDES[GENERIC_REVIEW_ROLE]!;
-  if (kind === 'pi' && !runtimeHome) throw new Error('review_pi_agent_directory_required');
-  if (kind === 'pi' && !piModel) throw new Error('review_pi_model_required');
+  // Without its isolated home a codex or pi child would read the native configuration and credential.
+  if ((kind === 'pi' || kind === 'codex') && !runtimeHome) throw new Error('review_runtime_home_required');
   return { cwd: output,
-    ...(kind === 'pi' ? { model: piModel!, env: { PI_CODING_AGENT_DIR: runtimeHome!, OAR_PI_AGENT_DIR: runtimeHome! } }
-      : { model: kind === 'codex' ? target.model : fleet.model!, effort: kind === 'codex' ? target.effort : fleet.effort!,
-        ...(kind === 'codex' && runtimeHome ? { env: { CODEX_HOME: runtimeHome } } : {}) }),
+    ...(kind === 'pi' ? { model: MAGPIE_REVIEW_PI_MODEL, env: { PI_CODING_AGENT_DIR: runtimeHome!, OAR_PI_AGENT_DIR: runtimeHome! } }
+      : kind === 'codex' ? { model: MAGPIE_REVIEW_MODEL, effort: MAGPIE_REVIEW_EFFORT, env: { CODEX_HOME: runtimeHome! } }
+      : { model: fleet.model!, effort: fleet.effort! }),
     appendSystemPrompt: `${fleet.body}\nReview communication exception: writing the final JSON once to this request's exact result_ref is the only authorized mutation. No temporary file, rename, other edits or permission workarounds. This is communication, not production editing.` };
 }
 
 /** The one reviewer runner. An hc or app-terminal launch is an option of each session, not a second implementation. */
 export const taskReviewRunner: ReviewerRunner<TaskPaneBinding, HerdrCoreEndpoint, TaskSessionAuthority> = {
   validateEndpoint: validateHerdrCoreEndpoint,
-  endpointHome: endpoint => endpoint?.home,
   hostCommand(specFile, terminal) {
     const { node, entry } = hostExecutable();
     const command = reviewHostCommand(node, entry, specFile);
