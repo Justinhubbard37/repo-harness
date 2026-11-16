@@ -31,7 +31,7 @@ ledger="tasks/lessons.md"
 
 if [[ ! -f "$ledger" ]]; then
   if [[ "$output_mode" == "json" ]]; then
-    printf '{"judgment":[],"field_errors":[],"evidence_errors":[]}\n'
+    printf '{"judgment":[],"themes":[],"field_errors":[],"evidence_errors":[]}\n'
   else
     echo "[Maintenance] No tasks/lessons.md found."
   fi
@@ -125,7 +125,8 @@ consolidation_json="$(consolidation_refs | jq -R . | jq -s 'map(select(length > 
 
 # Seen is the cumulative event count of a theme, so the latest entry of a theme
 # carries its count and its current enforcement. A later repeat does not copy
-# Promoted, so the theme keeps the last Promoted that any entry records.
+# Promoted, so the theme keeps the last Promoted that any entry records. Each
+# theme also keeps the Date line of every entry, in file order.
 report_json="$(
   jq -nc --argjson entries "[${entries_json}]" --argjson consolidation "${consolidation_json}" '
     def value($entry; $field): $entry.fields[$field] // "";
@@ -157,22 +158,33 @@ report_json="$(
 
     | (if ($field_errors | length) > 0 then null else
         reduce $entries[] as $entry ({};
-          (value($entry; "Mistake pattern") | keyify) as $key
+          . as $acc
+          | (value($entry; "Mistake pattern") | keyify) as $key
           | value($entry; "Promoted") as $promoted
-          | .[$key] += {
+          | .[$key] = (($acc[$key] // {lines: []}) + {
               theme: value($entry; "Mistake pattern"),
               name: (value($entry; "Name") | if . == "" then null else . end),
               seen: (value($entry; "Seen") | rtrimstr("×") | tonumber),
-              enforced_by: value($entry; "Enforced by")
-            }
+              enforced_by: value($entry; "Enforced by"),
+              lines: ((($acc[$key].lines) // []) + [$entry.line])
+            })
           | if $promoted != "" then .[$key].promoted = $promoted else . end
         )
-        | to_entries
+      end) as $themes
+
+    | (if $themes == null then null else
+        $themes | to_entries
         | map(select(.value.seen >= 3 and .value.enforced_by == "judgment")
             | {key, theme: .value.theme, name: .value.name, seen: .value.seen, promoted: (.value.promoted // null)})
       end) as $judgment
 
-    | {judgment: $judgment, field_errors: $field_errors, evidence_errors: $evidence_errors}
+    | (if $themes == null then null else
+        $themes | to_entries | sort_by(.key)
+        | map({key, theme: .value.theme, name: .value.name, seen: .value.seen,
+               enforced_by: .value.enforced_by, promoted: (.value.promoted // null), lines: .value.lines})
+      end) as $theme_list
+
+    | {judgment: $judgment, themes: $theme_list, field_errors: $field_errors, evidence_errors: $evidence_errors}
   '
 )"
 
