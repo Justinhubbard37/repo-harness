@@ -48,13 +48,15 @@ interface Issue {
   readonly body: string;
   readonly state: 'open' | 'closed';
   readonly labels: readonly string[];
+  readonly parent_issue_url: string | null;
 }
 
 function decodeIssue(value: unknown): Issue {
   if (!isRecord(value) || !Number.isSafeInteger(value.id) || (value.id as number) <= 0
     || !Number.isSafeInteger(value.number) || (value.number as number) <= 0
     || typeof value.html_url !== 'string' || (value.body !== null && typeof value.body !== 'string')
-    || (value.state !== 'open' && value.state !== 'closed') || !Array.isArray(value.labels)) {
+    || (value.state !== 'open' && value.state !== 'closed') || !Array.isArray(value.labels)
+    || (value.parent_issue_url != null && typeof value.parent_issue_url !== 'string')) {
     throw new RulesPromoteError('github_invalid_response');
   }
   const labels = value.labels.map(label => {
@@ -62,7 +64,7 @@ function decodeIssue(value: unknown): Issue {
     return label.name;
   });
   return { id: value.id as number, number: value.number as number, html_url: value.html_url,
-    body: value.body ?? '', state: value.state, labels };
+    body: value.body ?? '', state: value.state, labels, parent_issue_url: value.parent_issue_url ?? null };
 }
 
 /** All requests use the status document's repository, never gh's working directory. */
@@ -106,6 +108,10 @@ class PromotionGithub {
 
   children(parent: number): Issue[] {
     return this.list(`${this.path}/${parent}/sub_issues`);
+  }
+
+  existingParent(issue: Issue): Issue | null {
+    return issue.parent_issue_url ? this.read(`${this.path}/${issue.number}/parent`, decodeIssue) : null;
   }
 
   parent(issues: readonly Issue[]): Issue {
@@ -172,6 +178,6 @@ export function reconcileRules(input: {
   if (selected.length > 1) throw new RulesPromoteError('candidate_ambiguous');
   const issue = selected[0]!;
   const marker = promptMarker(issue.body)!;
-  const parent = github.parent(issues);
+  const parent = github.existingParent(issue) ?? github.parent(issues);
   return github.complete(issue, parent, input.candidate_id, marker.route, 'found');
 }

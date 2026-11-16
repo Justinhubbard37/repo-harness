@@ -23,7 +23,7 @@ function status(): RuleStatusV1 {
   }] }, REPOSITORY, { head: 'a'.repeat(40), blob: BLOB, dirty: false });
 }
 
-type RemoteIssue = { id: number; number: number; html_url: string; title: string; body: string; state: 'open' | 'closed'; labels: { name: string }[] };
+type RemoteIssue = { id: number; number: number; html_url: string; title: string; body: string; state: 'open' | 'closed'; labels: { name: string }[]; parent_issue_url?: string };
 function issue(number: number, body: string): RemoteIssue {
   return { id: 1000 + number, number, html_url: `https://github.com/acme/app/issues/${number}`, title: 'task', body, state: 'open', labels: [] };
 }
@@ -32,7 +32,8 @@ function issue(number: number, body: string): RemoteIssue {
 function github(initial: RemoteIssue[] = [issue(10, RULES_PARENT_MARKER)], links: number[] = []) {
   const issues = initial;
   const calls: string[][] = [];
-  const linked = new Set(links);
+  const linked = new Map(links.map(id => [id, 10]));
+  for (const row of issues) if (linked.has(row.id)) row.parent_issue_url = 'https://api.github.com/repos/acme/app/issues/10';
   let fail: 'labels' | 'sub_issues' | null = null;
   const runner: GithubCommandRunner = args => {
     calls.push([...args]);
@@ -48,13 +49,13 @@ function github(initial: RemoteIssue[] = [issue(10, RULES_PARENT_MARKER)], links
     if (method === 'GET' && args.includes('--paginate')) {
       expect(args).toContain('--slurp');
       expect(args).toContain('per_page=100');
-      const rows = path.endsWith('/sub_issues') ? issues.filter(row => linked.has(row.id))
+      const rows = path.endsWith('/sub_issues') ? issues.filter(row => linked.get(row.id) === number)
         : issues.filter(row => field('state') === 'all' || row.state === 'open');
       // More than one page, even for two rows, catches a first-page-only reader.
       result = rows.length === 0 ? [[]] : rows.map(row => [row]);
     } else if (method === 'GET') {
       if (!current) throw new Error(`Unexpected issue read: ${path}`);
-      result = current;
+      result = path.endsWith('/parent') ? issues.find(row => row.number === linked.get(current.id)) : current;
     } else if (path.endsWith('/labels')) {
       if (fail === 'labels') { fail = null; throw new GithubAdapterError('network', 'label request failed'); }
       current!.labels.push({ name: field('labels[]')! });
@@ -63,8 +64,10 @@ function github(initial: RemoteIssue[] = [issue(10, RULES_PARENT_MARKER)], links
       if (fail === 'sub_issues') { fail = null; throw new GithubAdapterError('network', 'link request failed'); }
       const id = Number(field('sub_issue_id'));
       expect(issues.some(row => row.id === id)).toBe(true);
-      linked.add(id);
-      result = issues.find(row => row.id === id);
+      linked.set(id, number);
+      const child = issues.find(row => row.id === id)!;
+      child.parent_issue_url = `https://api.github.com/repos/acme/app/issues/${number}`;
+      result = child;
     } else if (method === 'POST' && path === 'repos/acme/app/issues') {
       const created = issue(Math.max(0, ...issues.map(row => row.number)) + 1, field('body')!);
       created.title = field('title')!;
@@ -128,6 +131,19 @@ describe('rules promotion and recovery', () => {
     expect(remote.writes()).toHaveLength(0);
     remote.issues.push(issue(13, RULES_PARENT_MARKER));
     refusal(() => promote(remote), 'rules_parent_ambiguous');
+    expect(remote.writes()).toHaveLength(0);
+  });
+
+  test.each([0, 1, 2])('reconcile retains a closed parent with %s open batches and writes nothing', openBatches => {
+    const parent = issue(10, RULES_PARENT_MARKER);
+    const task = issue(11, candidateMarker(CANDIDATE, ROUTE));
+    parent.state = task.state = 'closed';
+    task.labels.push({ name: `route:${ROUTE}` });
+    const remote = github([parent, task,
+      ...Array.from({ length: openBatches }, (_, index) => issue(12 + index, RULES_PARENT_MARKER))], [task.id]);
+    const result = reconcileRules({ repository_id: REPOSITORY, candidate_id: CANDIDATE }, remote.runner);
+    expect(result).toMatchObject({ parent: 10, issue: 11, prompt_sha256: sha256Hex(task.body),
+      steps: { issue: 'found', label: 'present', sub_issue: 'present' } });
     expect(remote.writes()).toHaveLength(0);
   });
 
