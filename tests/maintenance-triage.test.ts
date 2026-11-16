@@ -15,13 +15,19 @@ function git(repo: string, args: string[]): string {
   return res.stdout;
 }
 
-function entry(theme: string, trigger: string): string {
+function entry(
+  theme: string,
+  trigger: string,
+  { seen = "1×", enforcedBy = "judgment", promoted }: { seen?: string; enforcedBy?: string; promoted?: string } = {},
+): string {
   return [
     "- Date: 2026-10-01",
     `- Mistake pattern: ${theme}`,
     "- Prevention rule: Keep the failure evidence.",
+    `- Enforced by: ${enforcedBy}`,
     `- Triggered by correction: ${trigger}`,
-    "- Seen: 1×",
+    `- Seen: ${seen}`,
+    ...(promoted ? [`- Promoted: ${promoted}`] : []),
     "",
   ].join("\n");
 }
@@ -93,6 +99,44 @@ describe("maintenance triage lesson evidence", () => {
       expect(res.status).toBe(1);
       expect(res.stdout).toContain("consolidation commit");
       expect(res.stdout).toContain("theme-a: #20");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("maintenance triage judgment themes", () => {
+  test("lists the themes whose latest cumulative Seen is 3 or more and that judgment enforces", () => {
+    const repo = ledgerRepo([
+      entry("counted-by-seen", "#10", { seen: "4×", promoted: "#30" }),
+      entry("below-three", "#11", { seen: "1×" }),
+      entry("below-three", "#12", { seen: "2×" }),
+      entry("migrated-to-check", "#13", { seen: "3×" }),
+      entry("migrated-to-check", "#13, #14", { seen: "3×", enforcedBy: "tests/maintenance-triage.test.ts" }),
+      entry("repeat-after-promotion", "#15", { seen: "3×", promoted: "#31" }),
+      entry("repeat-after-promotion", "#16", { seen: "4×" }),
+    ].join("\n"));
+    try {
+      const res = triage(repo, ["--json"]);
+      expect(res.status).toBe(0);
+      const report = JSON.parse(res.stdout) as { judgment: { key: string; seen: number; promoted: string | null }[] };
+      expect(report.judgment.map(({ key, seen, promoted }) => ({ key, seen, promoted }))).toEqual([
+        { key: "counted-by-seen", seen: 4, promoted: "#30" },
+        { key: "repeat-after-promotion", seen: 4, promoted: "#31" },
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("fails closed on a malformed Seen and does not compute the judgment themes", () => {
+    const repo = ledgerRepo(entry("theme-a", "#10", { seen: "three" }));
+    try {
+      const res = triage(repo, ["--json"]);
+      expect(res.status).toBe(1);
+      const report = JSON.parse(res.stdout) as { judgment: unknown; field_errors: { field: string; value: string }[] };
+      expect(report.judgment).toBeNull();
+      expect(report.field_errors.map(({ field, value }) => ({ field, value }))).toEqual([{ field: "Seen", value: "three" }]);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

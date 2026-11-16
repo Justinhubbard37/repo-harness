@@ -174,7 +174,7 @@
       "check-context-files": "Scan AGENTS.md and CLAUDE.md files for risky embedded instructions",
       "check-skill-version": "Check repo-harness version consistency and project migration status",
       "select-agent-context-blocks": "List capability-prefix directories to load as agent context blocks",
-      "maintenance-triage": "Scan tasks/lessons.md for recurring themes needing guard, eval, or skill action",
+      "maintenance-triage": "List tasks/lessons.md themes that judgment enforces at a cumulative Seen of 3 or more",
       "heartbeat-triage": "Run a scheduled heartbeat check and record findings to the triage inbox",
       "evidence-gc": "Reclaim superseded evidence checkpoints and Stop run summaries beyond retention",
       "workflow-contract": "Load and print the resolved workflow contract as JSON",

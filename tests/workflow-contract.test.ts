@@ -223,8 +223,8 @@ describe("workflow contract manifest", () => {
     const fieldsOf = (lines: readonly string[]) => lines.flatMap((line) => line.match(/^- ([A-Z][A-Za-z ]*):/)?.[1] ?? []);
     const recordFields = fieldsOf(recordBlock.split("\n"));
 
-    // maintenance-triage reads the first four fields; the retro ladder needs Name and Enforced by.
-    for (const field of ["Date", "Mistake pattern", "Prevention rule", "Triggered by correction", "Name", "Enforced by"]) {
+    // maintenance-triage reads Mistake pattern, Enforced by, Triggered by correction and Seen; the retro ladder needs Name.
+    for (const field of ["Date", "Mistake pattern", "Prevention rule", "Triggered by correction", "Name", "Enforced by", "Seen"]) {
       expect(recordFields).toContain(field);
     }
     expect(
