@@ -1013,7 +1013,7 @@ export function buildProgram(): Command {
   program.addCommand(pluginCommand(buildWorktreesCommand(), 'operator'));
   program.addCommand(pluginCommand(buildCatchUpCommand(), 'operator'));
   program.addCommand(buildQuotaCommand());
-  program.addCommand(buildRulesCommand());
+  program.addCommand(buildRulesCommand(boardHostPorts()));
   program.addCommand(pluginCommand(buildRefactorCommand(), 'architecture'));
   program.addCommand(pluginCommand(buildArchCommand(), 'architecture'));
   program.addCommand(pluginCommand(buildArchitectureProjectionCommand(), 'architecture'));

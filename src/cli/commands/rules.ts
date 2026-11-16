@@ -34,6 +34,8 @@ import {
   promotionCandidate, renderPromotionPrompt,
 } from '../../core/ci/rule-prompt';
 import { promoteRules, promotionRoute, reconcileRules, type RulesPromoteResult } from '../../effects/rules/promote';
+import { collectRulesTasks } from '../../effects/rules/tasks';
+import type { BoardHostPortsV1 } from '../../core/board/board';
 import type { GithubCommandRunner } from '../../effects/github/issues';
 import { POLICY_PATH, decodeWorkflowPolicy } from '../../core/workflow/policy-schema';
 import { githubRemoteRepository } from '../../core/board/source';
@@ -289,6 +291,7 @@ interface RulesCheckOptions {
 interface RulesStatusOptions {
   target?: string;
   json?: boolean;
+  tasks?: boolean;
 }
 
 export interface RulesPromoteOptions {
@@ -331,7 +334,7 @@ function statusRefusal(code: string, message: string): void {
   process.exitCode = 1;
 }
 
-export function buildRulesCommand(): Command {
+export function buildRulesCommand(host: BoardHostPortsV1): Command {
   const rules = new Command('rules').description('Run a repository rule check');
   rules
     .command('check')
@@ -361,11 +364,13 @@ export function buildRulesCommand(): Command {
     .description(`Read ${RULES_LEDGER_PATH} and print the ledger state, every theme and the open promotion actions; exit 1 on an invalid ledger`)
     .option('--target <path>', 'checkout to read (default: the working directory)')
     .option('--json', 'print the status document instead of the text lines')
+    .option('--tasks', 'read promotion task progress from GitHub')
     .action((options: RulesStatusOptions) => {
       const target = options.target ?? process.cwd();
       let status: RuleStatusV1;
       try {
         status = runRulesStatus({ target });
+        if (options.tasks) status = collectRulesTasks(status, { repo_root: resolve(target), host });
       } catch (error) {
         if (!(error instanceof RulesStatusError)) throw error;
         statusRefusal(error.code, error.message);

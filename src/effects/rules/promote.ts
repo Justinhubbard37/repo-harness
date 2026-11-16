@@ -29,7 +29,7 @@ export function promotionRoute(value: string): RoutingClass {
 }
 
 /** A final newline is allowed. The body itself is never trimmed or rewritten. */
-function promptMarker(body: string): { candidate_id: string; route: RoutingClass } | null {
+export function promptMarker(body: string): { candidate_id: string; route: RoutingClass } | null {
   const lastLine = body.replace(/\r?\n$/u, '').split(/\r?\n/u).at(-1) ?? '';
   const match = /^<!-- repo-harness\.rules\.candidate:([a-f0-9]{64}) route:([a-z_]+) -->$/u.exec(lastLine);
   if (!match || !ROUTING_CLASSES.includes(match[2] as RoutingClass)) return null;

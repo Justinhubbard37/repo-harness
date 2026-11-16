@@ -67,9 +67,38 @@ export interface TriageReportV1 {
   readonly evidence_errors: readonly TriageEvidenceErrorV1[];
 }
 
+export type RuleTaskProgress = 'waiting_orchestration' | 'in_progress' | 'ready_for_go' | 'merged'
+  | 'closed_unfinished' | 'pr_rejected' | 'failed' | 'unknown';
+
+export interface RuleTaskV1 {
+  /** Null identity fields mean discovery failed, not that no task exists. */
+  readonly issue: number | null;
+  readonly url: string | null;
+  /** The effects boundary supplies the route validated by the promotion marker parser. */
+  readonly route: string | null;
+  readonly progress: RuleTaskProgress;
+  /** A stable code, never provider stderr or an exception message. */
+  readonly reason?: string;
+  readonly seat: string | null;
+  readonly pull_request: {
+    readonly number: number;
+    readonly url: string;
+    readonly head_sha: string;
+    readonly base_sha: string;
+  } | null;
+}
+
+export interface RuleOrchestrationV1 {
+  readonly parent: number | null;
+  readonly plan_comment: boolean;
+  readonly coordinator_claim: boolean;
+}
+
 export interface RuleCandidateActionV1 {
   readonly kind: RuleActionKind;
   readonly candidate_id: string;
+  /** Present only with --tasks. Null means the complete read found no task. */
+  readonly task?: RuleTaskV1 | null;
 }
 
 export interface RuleThemeV1 extends TriageThemeV1 {
@@ -98,6 +127,8 @@ export interface RuleStatusV1 {
     readonly evidence_errors: readonly TriageEvidenceErrorV1[];
   };
   readonly themes: readonly RuleThemeV1[];
+  /** Present only with --tasks; governance still comes only from the ledger. */
+  readonly orchestration?: RuleOrchestrationV1;
 }
 
 const TEXT_LIMIT = 500;
@@ -290,7 +321,13 @@ export function describeRuleStatus(status: RuleStatusV1): string[] {
       theme.key,
       `Seen ${theme.seen}×`,
       theme.governance,
-      theme.actions.length === 0 ? 'no action' : theme.actions.map((action) => action.kind).join(', '),
+      theme.actions.length === 0 ? 'no action' : theme.actions.map((action) => {
+        if (action.task === undefined) return action.kind;
+        if (action.task === null) return `${action.kind}: no task`;
+        const task = action.task;
+        return `${action.kind}: ${task.issue === null ? 'task' : `#${task.issue}`} ${task.progress}${task.reason ? ` (${task.reason})` : ''}`;
+      }).join(', '),
     ].join(' · ')),
+    ...(status.orchestration ? [`orchestration · parent ${status.orchestration.parent ?? 'none'} · plan ${status.orchestration.plan_comment} · coordinator ${status.orchestration.coordinator_claim}`] : []),
   ];
 }
