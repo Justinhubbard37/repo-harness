@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { runTestBudgetCheck } from '../src/cli/commands/rules';
-import { parseTestBudgetException, testBudgetExceptionDigest } from '../src/core/ci/test-budget';
+import { parseTestBudgetException, renderTestBudgetSummary, testBudgetExceptionDigest } from '../src/core/ci/test-budget';
 import { tmpWorkspace } from './helpers/repo-fixture';
 
 const ROOT = join(import.meta.dir, '..');
@@ -160,6 +160,8 @@ describe('TestBudget evaluation', () => {
     expect(offResult.state).toBe('skipped');
     expect(absentResult.measured).toBeNull();
     expect(absentResult.bound.policy_digest).not.toBe(offResult.bound.policy_digest);
+    expect(renderTestBudgetSummary(absentResult)).toStartWith('### TestBudget: skipped (no configuration');
+    expect(renderTestBudgetSummary(offResult)).toStartWith('### TestBudget: skipped (rule off');
   });
 
   test('an invalid configuration is an error, not skipped', () => {
@@ -171,6 +173,7 @@ describe('TestBudget evaluation', () => {
       expect(result.error?.code).toBe('policy_invalid');
       expect(result.measured).toBeNull();
       expect(result.bound.policy_digest).toBeNull();
+      expect(renderTestBudgetSummary(result)).toStartWith('### TestBudget: not checked (invalid configuration)');
     }
   });
 
@@ -199,6 +202,12 @@ describe('TestBudget exception', () => {
       counts: { added_test_lines: 30, added_product_lines: 3, added_test_files: 1 },
       reason: 'The parser has no test that reaches the CRLF branch.',
     });
+    // The summary keeps the measured numbers and never reads as within budget.
+    const summary = renderTestBudgetSummary(result);
+    expect(summary).toStartWith('### TestBudget: pass with exception (over budget, exception valid)');
+    expect(summary).toContain('| Measured | 30 | 3 | 1 |');
+    expect(summary).not.toContain('within budget');
+    expect(summary).not.toContain('CRLF branch');
     const indented = exceptionBody(30, 3, 1).replace('## Test budget exception', '   ##\tTest budget exception');
     expect(check(repo, base, head, indented).state).toBe('pass');
     const afterBreaks = '## Test budget exception\n\n- Added test lines: 30\n- Added product lines: 3\n- Added test files: 1\n\n'
@@ -247,14 +256,17 @@ describe('TestBudget exception', () => {
   });
 });
 
-test('the CLI prints the document as a one-line notice and exits 1 on a violation', () => {
+test('the CLI prints the document as a one-line notice, appends the summary and exits 1 on a violation', () => {
   const { repo, base } = repository(ENABLED);
   const head = commit(repo, { 'src/app.ts': lines(13), 'tests/new.test.ts': lines(30) });
   const bodyFile = join(repo, '..', `${repo.split('/').pop()}-cli-body.md`);
   workspaces.push(bodyFile);
   writeFileSync(bodyFile, exceptionBody(30, 3, 2, '100% of the cases\nneed a fixture.'));
+  const summaryFile = `${bodyFile}.summary.md`;
+  workspaces.push(summaryFile);
+  writeFileSync(summaryFile, '');
   const run = spawnSync('bun', [join(ROOT, 'src/cli/index.ts'), 'rules', 'check', 'TestBudget', '--base', base, '--head', head,
-    '--body-file', bodyFile, '--github-annotation'], { cwd: repo, encoding: 'utf8' });
+    '--body-file', bodyFile, '--github-annotation', '--github-summary', summaryFile], { cwd: repo, encoding: 'utf8' });
   expect(run.status).toBe(1);
   const [document, notice] = run.stdout.trimEnd().split('\n');
   expect(JSON.parse(document!).state).toBe('violation');
@@ -262,4 +274,8 @@ test('the CLI prints the document as a one-line notice and exits 1 on a violatio
   const message = notice!.slice(notice!.indexOf('::', 2) + 2);
   expect(message.replace(/%0A/g, '\n').replace(/%0D/g, '\r').replace(/%25/g, '%')).toBe(document!);
   expect(run.stderr).not.toContain('need a fixture');
+  const summary = readFileSync(summaryFile, 'utf8');
+  expect(summary).toStartWith('### TestBudget: violation (over budget, exception invalid)');
+  expect(summary).toContain('| Exception states | 30 | 3 | 2 |');
+  expect(summary).not.toContain('need a fixture');
 });

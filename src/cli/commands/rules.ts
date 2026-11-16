@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { readFileSync } from 'fs';
+import { appendFileSync, readFileSync } from 'fs';
 import {
   TEST_BUDGET_IMPLEMENTATION_VERSION,
   TEST_BUDGET_RESULT_SCHEMA,
@@ -8,6 +8,7 @@ import {
   githubNoticeCommand,
   parseTestBudgetException,
   readTestBudgetConfig,
+  renderTestBudgetSummary,
   testBudgetError,
   testBudgetExceptionDigest,
   testBudgetPolicyDigest,
@@ -145,6 +146,7 @@ interface RulesCheckOptions {
   head: string;
   bodyFile: string;
   githubAnnotation?: boolean;
+  githubSummary?: string;
 }
 
 export function buildRulesCommand(): Command {
@@ -157,6 +159,7 @@ export function buildRulesCommand(): Command {
     .requiredOption('--head <rev>', 'PR head commit')
     .requiredOption('--body-file <path>', 'file with the PR body text')
     .option('--github-annotation', `also print the result as a GitHub Actions notice titled ${TEST_BUDGET_RESULT_SCHEMA}`)
+    .option('--github-summary <path>', 'also append the human summary as Markdown to this file ($GITHUB_STEP_SUMMARY in a job)')
     .action((rule: string, options: RulesCheckOptions) => {
       if (rule !== RULES.TestBudget.id) {
         process.stderr.write(`unknown rule id: ${rule}\n`);
@@ -167,6 +170,7 @@ export function buildRulesCommand(): Command {
       const document = JSON.stringify(result);
       process.stdout.write(`${document}\n`);
       if (options.githubAnnotation) process.stdout.write(`${githubNoticeCommand(TEST_BUDGET_RESULT_SCHEMA, document)}\n`);
+      if (options.githubSummary) appendFileSync(options.githubSummary, renderTestBudgetSummary(result));
       process.stderr.write(`${lines.join('\n')}\n`);
       process.exitCode = result.state === 'violation' ? 1 : result.state === 'error' ? 2 : 0;
     });

@@ -365,10 +365,62 @@ export function testBudgetError(
   return { schema: TEST_BUDGET_RESULT_SCHEMA, state: 'error', bound, measured: null, over_budget: null, exception: null, error: { code, message } };
 }
 
+const NO_CONFIGURATION_DIGEST = testBudgetPolicyDigest({ status: 'absent' });
+
+/** A `skipped` result binds the digest of `null` for no configuration and of the config for an explicit off. */
+function skippedCause(result: Extract<TestBudgetResult, { state: 'skipped' }>): string {
+  return result.bound.policy_digest === NO_CONFIGURATION_DIGEST
+    ? 'no configuration: the base policy has no rules.TestBudget'
+    : 'rule off: rules.TestBudget.enabled is false in the base policy';
+}
+
+/** A fenced block keeps any text literal; the fence is longer than each backtick run in the text. */
+function fenced(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}text\n${text}\n${fence}`;
+}
+
+/**
+ * The job summary (Markdown) of one result document. It is a projection of the
+ * document only and never repeats PR body text: the exception reason is not
+ * shown. Over budget with a valid exception keeps the measured numbers and says
+ * so; it never reads as "within budget".
+ */
+export function renderTestBudgetSummary(result: TestBudgetResult): string {
+  if (result.state === 'error') {
+    const title = result.error.code === 'policy_invalid' ? 'invalid configuration' : `error ${result.error.code}`;
+    return `### TestBudget: not checked (${title})\n\nNothing is measured.\n\n${fenced(result.error.message)}\n`;
+  }
+  if (result.state === 'skipped') return `### TestBudget: skipped (${skippedCause(result)})\n\nNothing is measured.\n`;
+  const { measured, exception } = result;
+  const title = result.state === 'violation'
+    ? `violation (over budget, exception ${exception.present ? 'invalid' : 'missing'})`
+    : result.over_budget ? 'pass with exception (over budget, exception valid)' : 'pass (within budget)';
+  const rows = [
+    '| | Added test lines | Added product lines | Added test files |',
+    '| --- | --- | --- | --- |',
+    `| Measured | ${measured.added_test_lines} | ${measured.added_product_lines} | ${measured.added_test_files} |`,
+  ];
+  if (exception.counts !== null) {
+    const stated = exception.counts;
+    rows.push(`| Exception states | ${stated.added_test_lines} | ${stated.added_product_lines} | ${stated.added_test_files} |`);
+  }
+  const ratio = measured.ratio === null ? 'none (no added product line)' : String(measured.ratio);
+  return [
+    `### TestBudget: ${title}`,
+    '',
+    ...rows,
+    '',
+    `Ratio ${ratio}, cap ${measured.ratio_cap}. Test files cap ${measured.file_cap}. Head \`${result.bound.head_sha}\`, diff start \`${result.bound.diff_start}\`.`,
+    '',
+  ].join('\n');
+}
+
 /** Human lines for the job log. They never repeat PR body text. */
 export function describeTestBudget(result: TestBudgetResult, exception: TestBudgetException): string[] {
   if (result.state === 'error') return [`TestBudget error (${result.error.code}): ${result.error.message}`];
-  if (result.state === 'skipped') return ['TestBudget skipped: the base policy does not enable the rule.'];
+  if (result.state === 'skipped') return [`TestBudget skipped: ${skippedCause(result)}.`];
   const { measured } = result;
   const lines = [`TestBudget ${result.state}: ${measured.added_test_lines} added test lines, ${measured.added_product_lines} added product lines, `
     + `${measured.added_test_files} added test files (ratio cap ${measured.ratio_cap}, file cap ${measured.file_cap}).`];

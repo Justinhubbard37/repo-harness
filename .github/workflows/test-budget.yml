@@ -29,11 +29,11 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
-      # The policy comes from the base commit; the result document is the notice annotation.
+      # The policy comes from the base commit; the result document is the notice annotation and the job summary is its human view.
       - name: Check the test budget
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           jq -j '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-body.md"
-          bun src/cli/index.ts rules check TestBudget --base "$BASE_SHA" --head "$HEAD_SHA" --body-file "$RUNNER_TEMP/pr-body.md" --github-annotation
+          bun src/cli/index.ts rules check TestBudget --base "$BASE_SHA" --head "$HEAD_SHA" --body-file "$RUNNER_TEMP/pr-body.md" --github-annotation --github-summary "$GITHUB_STEP_SUMMARY"
