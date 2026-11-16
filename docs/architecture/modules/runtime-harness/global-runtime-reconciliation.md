@@ -1,6 +1,6 @@
 # runtime-harness/global-runtime-reconciliation 架構文檔
 
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-global-runtime-reconciliation" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:eb3aaf70581b1c6b33d43690fab74787348d9c7f2ac3b840d452e3fe48035877" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-global-runtime-reconciliation" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:5bf2515856d57b09d736928f38b17fe696147608814f0ed7cade4c66480480c4" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.global-runtime-reconciliation`(kind `capability`)
 > **Matched Prefixes**:`package.json`、`bun.lock`、`scripts/check-managed-runtime.ts`、`scripts/sync-codex-installed-copies.sh`、`assets/reference-configs/external-tooling.md`、`docs/reference-configs/external-tooling.md`、`docs/reference-configs/install-profiles.md`、`src/effects/upgrade/**`、`src/effects/runtime/node-candidates.ts`、`src/effects/runtime/protected-helper-platform.ts`、`src/effects/skill-tree-integrity.ts`、`src/effects/host-skill-roots.ts`、`src/effects/configuration/**`、`src/core/release/**`、`src/effects/release/**`、`scripts/check-npm-release.sh`、`scripts/check-release-published.sh`、`scripts/check-tarball-install-smoke.sh`、`scripts/check-pi-package-smoke.ts`、`scripts/runtime-evidence-receipt.ts`、`install.sh`、`install.ps1`、`tsconfig.json`、`src/effects/runtime/node-runtime.ts`
@@ -110,7 +110,7 @@ flowchart LR
   - `calls` → `component.action-commands.skill-surface-catalog` — Parse the skill surface catalog to check the projected host skills
   - `calls` → `capability.workflow-engine.workflow-state` — Read the workflow policy and the capability registry authority for the doctor report
 - `component.global-runtime-reconciliation.cli-layer`:
-  - 無。
+  - `calls` → `component.hook-adapters.host-config` — Request a host file change through the write gate
 - `component.global-runtime-reconciliation.cli-root`:
   - `deployed-on` → `process.cli` — The CLI root dispatches commands in the per-command process.
   - `calls` → `capability.verification.acceptance-review` — Register the review command

@@ -1,8 +1,8 @@
 # verification/evals-checks 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-evals-checks" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:50e02e788aa32c2f380dddfb520094c237af7d4de21bf1ca4cb7603864c3f541" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-evals-checks" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:a7ec193c2512007f43af431c821877c28e890f5d8ba4a44eb7a06aaacbba3e48" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.verification.evals-checks`(kind `capability`)
-> **Matched Prefixes**:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`
+> **Matched Prefixes**:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`、`src/cli/commands/rules.ts`
 > **Local Contracts**:`AGENTS.md`、`CLAUDE.md`
 > **事實優先級**:倉庫當前狀態 > 本文檔機器區 > 本文檔人工區。機器區(引言、§1、§2)由 ArchContext 從架構模型與源碼度量投影生成,手改會在下次投影被覆蓋。本文檔不記錄出處;本次投影所驗證的 commit 見 `docs/architecture/.projection-manifest.json`。
 
@@ -20,6 +20,7 @@ flowchart LR
   p1_component_evals_checks_evals_and_benchmarks_d3fc3d88["Evals And Benchmarks"]:::component
   p1_component_evals_checks_evals_and_benchmarks_tests_35f650fc["Evals And Benchmarks (tests)"]:::component
   p1_component_evals_checks_primary_dcf800ce["Verification Check Execution"]:::component
+  p1_component_evals_checks_rules_cli_e4084886["Rule Check (cli)"]:::component
   p1_component_evals_checks_test_suite_c0118bc1["Test Suite"]:::component
   p1_component_evals_checks_workflow_gates_ac14cbe4["Workflow Gates"]:::component
   p1_component_evals_checks_ci_selection_1676883f -->|"Select affected test files and run them in isolated file jobs"| p1_component_evals_checks_test_suite_c0118bc1
@@ -31,8 +32,8 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:95c6256e16d01ed065119fc1dcd50d9a67f053940a0b26fde091a313c115c969`).
-- Semantic nodes: `8`; declared relations: `3`.
+- Proof: `proven` (`sha256:906b2e8e7caabe59def15bd3a8c60e15f5d55cfeac339d3111d304f1a54adc40`).
+- Semantic nodes: `9`; declared relations: `3`.
 
 ### 1.2 模組職責表
 
@@ -48,7 +49,7 @@ flowchart LR
 ### 1.3 規模信號
 
 - 規模量級:`500–1000` 個文件 / `100k–200k` 行
-- 匹配前綴:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`
+- 匹配前綴:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`、`src/cli/commands/rules.ts`
 - 排除前綴:`tests/cli/adoption-plan.test.ts`、`tests/fixtures/adoption/**`、`tests/architecture-projection-provider.test.ts`、`tests/cli/global-runtime-init.test.ts`、`tests/cli/global-runtime.test.ts`、`tests/cli/mcp-codegraph-contract.test.ts`、`tests/cli/mcp-policy.test.ts`、`tests/cli/mcp-reader-tools.test.ts`、`tests/cli/mcp-tools.test.ts`、`tests/cli/codegraph-resolver.test.ts`
 - 推導:掃描 `source.include` 減 `source.exclude`,跳過 `.git/` 與 `node_modules/`,再按 1–2–5 階梯分桶。精確計數不入本文檔:量級足以回答「這個能力有多大」,而逐行計數會讓覆蓋範圍內任何一次源碼改動都改寫本文檔。
 
@@ -97,6 +98,8 @@ flowchart LR
 - `component.evals-checks.primary`:
   - `calls` → `capability.workflow-engine.contract-assets` — Consume trusted PR checks for a base ref through the merge gate without rerunning commands
   - `calls` → `capability.runtime-harness.evidence-ledger` — Validate and execute verification plans through the evidence verification modules
+- `component.evals-checks.rules-cli`:
+  - 無。
 - `component.evals-checks.test-suite`:
   - 無。
 - `component.evals-checks.workflow-gates`:
@@ -106,17 +109,18 @@ flowchart LR
 
 | 組件 | 名稱 | 規模量級 | 宣告入口 |
 | --- | --- | --- | --- |
-| `component.evals-checks.ci-report-core` | CI Report Core | `2–5` 個文件 / `200–500` 行 | 未宣告 |
+| `component.evals-checks.ci-report-core` | CI Report Core | `2–5` 個文件 / `500–1000` 行 | 未宣告 |
 | `component.evals-checks.ci-selection` | CI Selection And Report | `10–20` 個文件 / `2000–5000` 行 | 未宣告 |
 | `component.evals-checks.evals-and-benchmarks` | Evals And Benchmarks | `2–5` 個文件 / `2000–5000` 行 | 未宣告 |
 | `component.evals-checks.evals-and-benchmarks-tests` | Evals And Benchmarks (tests) | `50–100` 個文件 / `10k–20k` 行 | 未宣告 |
 | `component.evals-checks.primary` | Verification Check Execution | `2–5` 個文件 / `100–200` 行 | 未宣告 |
+| `component.evals-checks.rules-cli` | Rule Check (cli) | `1–2` 個文件 / `100–200` 行 | 未宣告 |
 | `component.evals-checks.test-suite` | Test Suite | `500–1000` 個文件 / `100k–200k` 行 | 未宣告 |
 | `component.evals-checks.workflow-gates` | Workflow Gates | `1–2` 個文件 / `2000–5000` 行 | 未宣告 |
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:95c6256e16d01ed065119fc1dcd50d9a67f053940a0b26fde091a313c115c969`); selectors `2/2`.
+> **Proof**: `proven` (`sha256:906b2e8e7caabe59def15bd3a8c60e15f5d55cfeac339d3111d304f1a54adc40`); selectors `2/2`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%

@@ -1,5 +1,5 @@
 # runtime-harness/hook-adapters 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-hook-adapters" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:cc6cf62c6cab938b11a4f9d07af292792b474000f90696f05c73381a27e6aa86" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-hook-adapters" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:2d65b0074c18acd3eabe215b86ada7e7494d523770b44d92623cbf421db85ca7" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.hook-adapters`(kind `capability`)
 > **Matched Prefixes**:`src/cli/hook/**`、`src/cli/installer/**`、`src/pi/**`、`src/effects/managed-tree.ts`、`src/cli/hook-entry.ts`、`src/effects/loop/**`、`src/effects/segmented-log.ts`、`src/effects/run-summary-retention.ts`、`src/cli/commands/install.ts`、`src/cli/commands/status.ts`、`src/cli/commands/security.ts`
@@ -20,6 +20,8 @@ flowchart LR
   p1_component_action_commands_skill_surface_catalog_a72c29bc["Skill Surface Catalog"]:::component
   p1_component_hook_adapters_edit_guards_019fd22c["Edit Guard Handlers"]:::component
   p1_component_hook_adapters_hook_root_4ed4a0fc["Hook Composition Root"]:::component
+  p1_component_hook_adapters_host_config_adc84962["Host Config Write Gate"]:::component
+  p1_component_hook_adapters_host_config_effects_d6b76f0a["Host Config Write Gate (effects)"]:::component
   p1_component_hook_adapters_host_installer_cd378e80["Host Adapter Installer"]:::component
   p1_component_hook_adapters_host_installer_effects_dc42059a["Host Adapter Installer (effects)"]:::component
   p1_component_hook_adapters_primary_1659ffb9["Hook Route Runtime"]:::component
@@ -30,6 +32,7 @@ flowchart LR
   p1_component_hook_adapters_edit_guards_019fd22c -->|"Implement the typed handler contract and read hook input through the shared parsers"| p1_component_hook_adapters_primary_1659ffb9
   p1_component_hook_adapters_hook_root_4ed4a0fc -->|"Run the hook route runtime for one host event"| p1_component_hook_adapters_primary_1659ffb9
   p1_component_hook_adapters_host_installer_cd378e80 -->|"Read the shared host skill roots for install projections and report architecture projection readiness in status"| p1_capability_runtime_harness_global_runtime_reconciliation_401730e8
+  p1_component_hook_adapters_host_installer_cd378e80 -->|"Request a host file change through the write gate"| p1_component_hook_adapters_host_config_adc84962
   p1_component_hook_adapters_host_installer_cd378e80 -->|"Project Claude and Codex adapter entries and map Pi events through the bounded Bun protocol to the shared route runtime"| p1_component_hook_adapters_primary_1659ffb9
   p1_component_hook_adapters_host_installer_cd378e80 -->|"Read skill names and plugin owners from the skill surface catalog"| p1_component_action_commands_skill_surface_catalog_a72c29bc
   p1_capability_runtime_harness_hook_adapters_75a11743 -->|"Dispatch a host hook route to its typed handler"| p1_component_hook_adapters_primary_1659ffb9
@@ -44,8 +47,8 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:4c6698680545c6383de9dda1b2bb11ad9a41fa8428fac90f032ef5c27d65749b`).
-- Semantic nodes: `12`; declared relations: `12`.
+- Proof: `proven` (`sha256:200caf416ff4b37103194050d6d556e148e73d319d71cfb3f3f9877ed9983b25`).
+- Semantic nodes: `14`; declared relations: `13`.
 
 ### 1.2 模組職責表
 
@@ -106,11 +109,17 @@ flowchart LR
   - `calls` → `component.global-runtime-reconciliation.archctx-closure` — Register the archctx ownership, display and runtime providers
   - `calls` → `component.contract-assets.architecture-contracts` — Register the architecture providers after the contract version check
   - `calls` → `component.hook-adapters.primary` — Run the hook route runtime for one host event
+- `component.hook-adapters.host-config`:
+  - 無。
+- `component.hook-adapters.host-config-effects`:
+  - `calls` → `capability.workflow-engine.execution-primitives` — Take the runtime transaction lock before it applies a host file change
+  - `calls` → `component.global-runtime-reconciliation.global-configuration` — Read the global configuration store paths
 - `component.hook-adapters.host-installer`:
   - `calls` → `capability.public-surface.adoption` — Share the managed hook command fingerprints with the adoption migration
   - `reads` → `capability.workflow-engine.contract-assets` — Resolve the managed fleet role list during host installation
   - `calls` → `capability.workflow-engine.execution-primitives` — Hold the runtime host transaction lock and resolve the Pi opt-in repository through the bounded shared Git runner
   - `calls` → `capability.runtime-harness.global-runtime-reconciliation` — Read the shared host skill roots for install projections and report architecture projection readiness in status
+  - `calls` → `component.hook-adapters.host-config` — Request a host file change through the write gate
   - `calls` → `external.pi` — Use Pi list, install and remove for the exact package source, without writing Pi settings or bypassing trust.
   - `calls` → `component.hook-adapters.primary` — Project Claude and Codex adapter entries and map Pi events through the bounded Bun protocol to the shared route runtime
   - `calls` → `component.action-commands.skill-surface-catalog` — Read skill names and plugin owners from the skill surface catalog
@@ -140,6 +149,8 @@ flowchart LR
 | --- | --- | --- | --- |
 | `component.hook-adapters.edit-guards` | Edit Guard Handlers | `5–10` 個文件 / `1000–2000` 行 | 未宣告 |
 | `component.hook-adapters.hook-root` | Hook Composition Root | `1–2` 個文件 / `50–100` 行 | 未宣告 |
+| `component.hook-adapters.host-config` | Host Config Write Gate | 未宣告 `source.include` | 未宣告 |
+| `component.hook-adapters.host-config-effects` | Host Config Write Gate (effects) | 未宣告 `source.include` | 未宣告 |
 | `component.hook-adapters.host-installer` | Host Adapter Installer | `20–50` 個文件 / `5000–10000` 行 | `entrypoint.hook-adapters.managed-entries`、`entrypoint.hook-adapters.pi-extension`、`entrypoint.hook-adapters.skill-projection` |
 | `component.hook-adapters.host-installer-effects` | Host Adapter Installer (effects) | `5–10` 個文件 / `200–500` 行 | 未宣告 |
 | `component.hook-adapters.primary` | Hook Route Runtime | `5–10` 個文件 / `1000–2000` 行 | `entrypoint.hook-adapters.handler-bindings` |
@@ -149,7 +160,7 @@ flowchart LR
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:4c6698680545c6383de9dda1b2bb11ad9a41fa8428fac90f032ef5c27d65749b`); selectors `7/7`.
+> **Proof**: `proven` (`sha256:200caf416ff4b37103194050d6d556e148e73d319d71cfb3f3f9877ed9983b25`); selectors `7/7`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%

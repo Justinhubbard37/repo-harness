@@ -1,6 +1,6 @@
 # workflow-engine/execution-primitives 架構文檔
 
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-execution-primitives" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:0070273973d0e2267ae38316953b0941ca782177f90efbfa5e4f4726f1b41fb7" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-execution-primitives" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:d590e922f4a0f12c443864a8a3f6f0891ebf98d1bbe903c81b0a57b7b32bca66" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.workflow-engine.execution-primitives`(kind `capability`)
 > **Matched Prefixes**:`src/effects/process-runner.ts`、`src/effects/process-supervisor.ts`、`src/effects/process-group-launcher.ts`、`src/effects/process-group-termination.ts`、`src/effects/process-group-registry.ts`、`src/effects/expensive-run-lock.ts`、`src/effects/readonly-observation.ts`、`src/core/shell-quote.ts`、`src/effects/path-containment.ts`、`src/effects/atomic-append.ts`、`src/effects/locking/**`、`src/effects/git/**`
@@ -87,6 +87,7 @@ flowchart LR
 - `calls` ← `component.global-runtime-reconciliation.primary` — Run processes and read lock owners during runtime reconciliation
 - `calls` ← `component.global-runtime-reconciliation.release-packaging` — Run installed binaries to read back runtime evidence
 - `calls` ← `component.hook-adapters.edit-guards` — Lock the circuit breaker records
+- `calls` ← `component.hook-adapters.host-config-effects` — Take the runtime transaction lock before it applies a host file change
 - `calls` ← `component.hook-adapters.host-installer` — Hold the runtime host transaction lock and resolve the Pi opt-in repository through the bounded shared Git runner
 - `calls` ← `component.hook-adapters.primary` — Run the process supervisor and group launcher entries
 - `calls` ← `component.hook-adapters.session-lifecycle` — Hold the native role evidence lock

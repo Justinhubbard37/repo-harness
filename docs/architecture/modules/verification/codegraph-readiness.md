@@ -1,5 +1,5 @@
 # verification/codegraph-readiness 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-codegraph-readiness" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:963be33d044e7d0a1529798856c228946573b6b20574e9153cdd5638d497d8e7" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-codegraph-readiness" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:7dc7d5e7ba3f95e1f7badfe368a8618c585e1bba063c4f9a0cb786b89ecd5e9d" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.verification.codegraph-readiness`(kind `capability`)
 > **Matched Prefixes**:`src/cli/tools/codegraph.ts`、`src/cli/tools/codegraph-reader.ts`、`src/cli/commands/tools.ts`
@@ -69,7 +69,7 @@ flowchart LR
 - `component.codegraph-readiness.mcp-adapter`:
   - 無。
 - `component.codegraph-readiness.primary`:
-  - 無。
+  - `calls` → `component.hook-adapters.host-config` — Request a host file change through the write gate
 - `component.codegraph-readiness.scripts-layer`:
   - 無。
 - `component.codegraph-readiness.tests-layer`:
