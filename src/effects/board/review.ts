@@ -99,11 +99,6 @@ export async function executeReview(decisions: readonly ReviewDecisionV1[], cont
     for (const start of decision.seats) {
       // The launch is read before the marker: a configuration error then leaves no marker, so a retry works once it is fixed.
       const launch = await ports.launch(start.seat, { repositoryId: context.repositoryId, pr: String(decision.pr), parent: String(context.parent) }, worktree.path, context.gatekeeper);
-      // Only a Claude review records the verdict that the board waits for, so another runtime would leave the head pending behind its own marker.
-      if (start.seat === 'reviewer' && launch.runtime !== 'claude') {
-        refuse(decision.pr, `reviewer_not_claude: the reviewer seat launches ${launch.runtime}; set its runtime to claude`);
-        continue;
-      }
       const markerUrl = ports.comment(decision.pr, markerBody(decision, start));
       try {
         ports.openTab({ ...(launch.tab === null ? {} : { name: launch.tab }), space: context.space, folder: worktree.path, argv: launch.argv, task: reviewPacket(decision, start, launch.runtime) });

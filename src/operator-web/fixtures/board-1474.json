@@ -1,5 +1,5 @@
 {
-  "protocol": 10,
+  "protocol": 11,
   "kind": "repo-harness.board",
   "observed_at": "2026-11-02T23:29:42.936Z",
   "repository": "Ancienttwo/repo-harness",
@@ -7,7 +7,7 @@
   "acceptance_merge": "off",
   "parent": {
     "number": 1474,
-    "title": "herdr-core \u8fc1\u79fb\uff1a\u9000\u5f79 classic herdr CLI\uff08G37\uff09",
+    "title": "herdr-core 迁移：退役 classic herdr CLI（G37）",
     "url": "https://github.com/Ancienttwo/repo-harness/issues/1474",
     "state": "open",
     "labels": [
@@ -26,7 +26,7 @@
   "items": [
     {
       "number": 1475,
-      "title": "herdr-core \u8fc1\u79fb 1\uff5ctransport\uff1ahc \u4e0e herdr-app \u4f20\u8f93\u5c42",
+      "title": "herdr-core 迁移 1｜transport：hc 与 herdr-app 传输层",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1475",
       "state": "open",
       "labels": [
@@ -67,7 +67,7 @@
     },
     {
       "number": 1476,
-      "title": "herdr-core \u8fc1\u79fb 2\uff5csessions\uff1a\u4efb\u52a1\u4f1a\u8bdd\u6539\u5230 herdr-app \u548c hc",
+      "title": "herdr-core 迁移 2｜sessions：任务会话改到 herdr-app 和 hc",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1476",
       "state": "open",
       "labels": [
@@ -103,7 +103,7 @@
     },
     {
       "number": 1477,
-      "title": "herdr-core \u8fc1\u79fb 3\uff5creview\uff1a\u8bc4\u5ba1\u5bbf\u4e3b\u5728 herdr-core \u4e0a\u542f\u52a8",
+      "title": "herdr-core 迁移 3｜review：评审宿主在 herdr-core 上启动",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1477",
       "state": "open",
       "labels": [
@@ -129,7 +129,7 @@
     },
     {
       "number": 1478,
-      "title": "herdr-core \u8fc1\u79fb 4\uff5coperator\uff1a\u4ece hc \u8bfb\u8fd0\u884c\u72b6\u6001",
+      "title": "herdr-core 迁移 4｜operator：从 hc 读运行状态",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1478",
       "state": "open",
       "labels": [
@@ -155,7 +155,7 @@
     },
     {
       "number": 1479,
-      "title": "herdr-core \u8fc1\u79fb 5\uff5cnotify\uff1ablocked/done \u901a\u77e5\u7684\u6295\u9012\u4f4d\u7f6e",
+      "title": "herdr-core 迁移 5｜notify：blocked/done 通知的投递位置",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1479",
       "state": "open",
       "labels": [
@@ -200,7 +200,7 @@
     },
     {
       "number": 1480,
-      "title": "herdr-core \u8fc1\u79fb 6\uff5creadiness\uff1a\u53ea\u8ba4 herdr-core\uff0c\u5220\u9664 classic pin",
+      "title": "herdr-core 迁移 6｜readiness：只认 herdr-core，删除 classic pin",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1480",
       "state": "open",
       "labels": [
@@ -226,7 +226,7 @@
     },
     {
       "number": 1481,
-      "title": "herdr-core \u8fc1\u79fb 7\uff5cci\uff1a\u5b89\u88c5 pin \u4f4f\u7684 herdr-core",
+      "title": "herdr-core 迁移 7｜ci：安装 pin 住的 herdr-core",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1481",
       "state": "open",
       "labels": [
@@ -252,7 +252,7 @@
     },
     {
       "number": 1482,
-      "title": "herdr-core \u8fc1\u79fb 8\uff5cdocs\uff1a\u6280\u80fd\u4e0e\u6307\u5f15\u53ea\u8bb2 herdr-core",
+      "title": "herdr-core 迁移 8｜docs：技能与指引只讲 herdr-core",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1482",
       "state": "open",
       "labels": [
@@ -278,7 +278,7 @@
     },
     {
       "number": 1483,
-      "title": "herdr-core \u8fc1\u79fb 9\uff5carchitecture\uff1a\u6a21\u578b\u6362\u6210 herdr-core \u8282\u70b9",
+      "title": "herdr-core 迁移 9｜architecture：模型换成 herdr-core 节点",
       "url": "https://github.com/Ancienttwo/repo-harness/issues/1483",
       "state": "open",
       "labels": [
@@ -347,9 +347,8 @@
       "review_fail": null,
       "review_records": {
         "status": "observed",
-        "claude": "2026-11-02T19:47:57Z",
-        "codex": "2026-11-02T19:20:22Z",
-        "pi": null
+        "gatekeeper": "2026-11-02T19:20:22Z",
+        "reviewer": "2026-11-02T19:47:57Z"
       },
       "open_questions": {
         "status": "observed",
@@ -369,7 +368,8 @@
       },
       "merge_hold": {
         "status": "none"
-      }
+      },
+      "second_review": "not_required"
     },
     {
       "number": 1494,
@@ -464,9 +464,8 @@
       "review_fail": null,
       "review_records": {
         "status": "observed",
-        "claude": "2026-11-02T21:11:11Z",
-        "codex": "2026-11-02T21:10:40Z",
-        "pi": null
+        "gatekeeper": "2026-11-02T21:10:40Z",
+        "reviewer": "2026-11-02T21:11:11Z"
       },
       "open_questions": {
         "status": "observed",
@@ -491,7 +490,8 @@
       },
       "merge_hold": {
         "status": "none"
-      }
+      },
+      "second_review": "not_required"
     },
     {
       "number": 1499,
@@ -565,9 +565,8 @@
       "review_fail": null,
       "review_records": {
         "status": "observed",
-        "claude": "2026-11-02T20:52:14Z",
-        "codex": "2026-11-02T20:56:58Z",
-        "pi": null
+        "gatekeeper": "2026-11-02T20:56:58Z",
+        "reviewer": "2026-11-02T20:52:14Z"
       },
       "open_questions": {
         "status": "observed",
@@ -592,7 +591,8 @@
       },
       "merge_hold": {
         "status": "none"
-      }
+      },
+      "second_review": "not_required"
     }
   ],
   "path_owners": {
@@ -1115,5 +1115,6 @@
     "herdr_app": {
       "status": "not_pinned"
     }
-  }
+  },
+  "reviewer_family": "anthropic"
 }

@@ -1,6 +1,6 @@
 import { planIssues } from './plan-block';
 import { boardMergeDecisions, planSkipReason } from './merge';
-import type { BoardItemV1, BoardPullRequestV1, BoardReviewHarness, BoardTerminalV1, BoardV1 } from './board';
+import type { BoardItemV1, BoardPullRequestV1, BoardTerminalV1, BoardV1 } from './board';
 import { hcStatusClass, liveSeats, seatItem, seatPullRequest } from './desk';
 import { pathHazardHits, pathHighHits } from './hazards';
 import { compareHcVersions } from '../terminal/herdr-pin';
@@ -43,8 +43,6 @@ export const R6_READY_MIN = 2;
 const WORKER_SEATS = new Set<string>(WORKER_SEAT_IDS);
 /** The review seat ids of the seats config; the gatekeeper-fallback seat launches under the gatekeeper label (#2253). */
 const REVIEW_SEATS = new Set<string>(SEAT_IDS.filter(isReviewSeat));
-/** The hc agent name of each review runtime. */
-const AGENT_HARNESS: ReadonlyMap<string, BoardReviewHarness> = new Map([['claude-code', 'claude'], ['codex', 'codex'], ['pi', 'pi']]);
 const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure']);
 
 export type BoardRuleId = 'A1' | 'A3' | 'A4' | 'A5' | 'A6' | 'A7' | 'A8' | 'A9' | 'A10' | 'A11' | 'A12' | 'A13' | 'A14' | 'A15' | 'A16' | 'A17' | 'A18' | 'A19' | 'A20' | 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7';
@@ -293,11 +291,11 @@ function a9(context: Context): void {
   }
 }
 
-/** A10: an open High pull request whose head does not meet the High acceptance rule has no Claude reviewer row for its head (`claude_review: pending`). No merge gate holds it, so the board does. */
+/** A10: an open High pull request whose head does not meet the High acceptance rule has no reviewer row for its head (`second_review: pending`). No merge gate holds it, so the board does. */
 function a10(context: Context): void {
-  for (const pr of openPullRequests(context.board).filter(entry => !entry.is_draft && entry.claude_review === 'pending')) {
+  for (const pr of openPullRequests(context.board).filter(entry => !entry.is_draft && entry.second_review === 'pending')) {
     find(context, 'A10', { issues: itemsOf(context.board, pr), pull_requests: [pr.number] },
-      `#${pr.number} is ${pr.tier === null ? 'of unknown tier (counted as High)' : 'High tier'} and has no Claude review of ${pr.head_sha.slice(0, 9)}; start the Claude reviewer seat`);
+      `#${pr.number} is ${pr.tier === null ? 'of unknown tier (counted as High)' : 'High tier'} and has no review of ${pr.head_sha.slice(0, 9)} from the reviewer seat (${context.board.reviewer_family === null ? 'family unknown' : `family ${context.board.reviewer_family}`}); start the reviewer seat`);
   }
 }
 
@@ -375,16 +373,11 @@ function a19(context: Context): void {
       continue;
     }
     if (context.now - terminal.status_ms <= A13_IDLE_MS) continue;
-    const harness = terminal.agent === null ? undefined : AGENT_HARNESS.get(terminal.agent);
-    if (harness === undefined) {
-      skip(context, 'A19', 'harness_unknown', terminal.address);
-      continue;
-    }
     if (pr.review_records.status === 'unknown') {
       skip(context, 'A19', pr.review_records.reason, `#${pr.number}`);
       continue;
     }
-    const recorded = pr.review_records[harness];
+    const recorded = pr.review_records[terminal.seat === 'reviewer' ? 'reviewer' : 'gatekeeper'];
     if (recorded !== null && Date.parse(recorded) > terminal.status_ms) continue;
     find(context, 'A19', { issues: itemsOf(context.board, pr), pull_requests: [pr.number], terminals: [terminal.address] },
       `review seat ${terminal.address} is ${terminal.status} for ${minutes(context.now - terminal.status_ms)} min and #${pr.number} has no record from it; read the pane and publish`);

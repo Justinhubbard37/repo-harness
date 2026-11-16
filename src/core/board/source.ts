@@ -559,6 +559,8 @@ export interface AcceptanceRowV1 {
   readonly verdict: 'PASS' | 'FAIL';
   /** The review runtime that the Role cell starts with (`review publish` writes `<harness> (<model>), read-only`); null when the cell names no known runtime. */
   readonly harness: 'claude' | 'codex' | 'pi' | null;
+  /** The model in the Role cell's parentheses; null when the cell names none or `unobserved`. Its family says which review seat wrote the row. */
+  readonly model: string | null;
   /** The issue comment id of the record's `Claim:` URL, which identifies one review; null when the line is missing or is not a comment URL. */
   readonly claim: string | null;
   /** True only when the record's `Model relation:` line is `different-family`: the reviewer's recorded `modelRelation` verdict against the writer. */
@@ -585,7 +587,11 @@ export function parseAcceptanceRecord(comment: BoardCommentV1): readonly Accepta
   const record = { claim: commentId(field(comment.body, 'Claim') ?? ''), different_family: field(comment.body, 'Model relation') === 'different-family' };
   for (const line of comment.body.replace(/\r\n/gu, '\n').split('\n')) {
     const table = RECORD_TABLE_ROW.exec(line);
-    if (table) rows.push(Object.freeze({ round: Number(table[1]), subject_sha: table[4]!, verdict: table[5] as 'PASS' | 'FAIL', harness: /^\s*(claude|codex|pi)\b/u.exec(table[2]!)?.[1] as AcceptanceRowV1['harness'] ?? null, ...record }));
+    if (table) {
+      const role = /^\s*(claude|codex|pi)\b(?: \(([^)]*)\))?/u.exec(table[2]!);
+      const model = role?.[2]?.trim() ?? '';
+      rows.push(Object.freeze({ round: Number(table[1]), subject_sha: table[4]!, verdict: table[5] as 'PASS' | 'FAIL', harness: role?.[1] as AcceptanceRowV1['harness'] ?? null, model: model === '' || model === 'unobserved' ? null : model, ...record }));
+    }
   }
   return rows.length === 0 ? null : Object.freeze(rows);
 }

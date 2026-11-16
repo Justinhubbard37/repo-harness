@@ -37,8 +37,8 @@ const CI_PASSED = { name: CI, status: 'success' } as const;
 function pullRequest(number: number, head_ref: string, required_check: BoardPullRequestV1['required_check'], acceptance: BoardPullRequestV1['acceptance'], at: string): BoardPullRequestV1 {
   return {
     number, url: url('pull', number), state: 'open', is_draft: false, base_ref: 'main', base_sha: 'a'.repeat(40), head_ref, head_sha: 'b'.repeat(40),
-    head_committed_at: at, merged_at: null, closes: [], refs: [OFFICE_PARENT], files: [], required_check, acceptance, merge_readiness: null, merge_readiness_observed_at: null, tier: 'medium', claude_review: 'not_required', writer_family: null, merge_hold: { status: 'none' },
-    review_fail: null, review_records: { status: 'observed', claude: null, codex: null, pi: null }, open_questions: { status: 'observed', questions: [] },
+    head_committed_at: at, merged_at: null, closes: [], refs: [OFFICE_PARENT], files: [], required_check, acceptance, merge_readiness: null, merge_readiness_observed_at: null, tier: 'medium', second_review: 'not_required', writer_family: null, merge_hold: { status: 'none' },
+    review_fail: null, review_records: { status: 'observed', gatekeeper: null, reviewer: null }, open_questions: { status: 'observed', questions: [] },
   };
 }
 
@@ -57,7 +57,7 @@ export function officeBoard(now: number): BoardV1 {
   const done = { status: 'success', completed_at: ago(9), contexts: [CI_PASSED] } as const;
   const terminals = officeWorkers(now);
   return decodeBoard({
-    protocol: BOARD_PROTOCOL, kind: 'repo-harness.board', observed_at: ago(0), repository: REPOSITORY, default_branch: 'main', acceptance_merge: 'on',
+    protocol: BOARD_PROTOCOL, kind: 'repo-harness.board', observed_at: ago(0), repository: REPOSITORY, default_branch: 'main', acceptance_merge: 'on', reviewer_family: 'anthropic',
     parent: { number: OFFICE_PARENT, title: 'Operator console', url: url('issues', OFFICE_PARENT), state: 'open', labels: [], milestone: null },
     plan: {
       status: 'observed', comment_url: `${url('issues', OFFICE_PARENT)}#issuecomment-3`, created_at: ago(8), revision: 7,
@@ -154,7 +154,7 @@ function sampleBoard(room: SampleRoom, repository: string, now: number): BoardV1
   const accepted = Array.from({ length: room.plan?.accepted ?? 0 }, (_, index) => 200 + index);
   const members = [...accepted, ...desks.map(entry => entry.number)];
   return decodeBoard({
-    protocol: BOARD_PROTOCOL, kind: 'repo-harness.board', observed_at: new Date(now).toISOString(), repository, default_branch: 'main', acceptance_merge: 'on',
+    protocol: BOARD_PROTOCOL, kind: 'repo-harness.board', observed_at: new Date(now).toISOString(), repository, default_branch: 'main', acceptance_merge: 'on', reviewer_family: 'anthropic',
     parent: { number: room.parent, title: room.name, url: link('issues', room.parent), state: 'open', labels: [], milestone: null },
     plan: room.plan === null ? { status: 'none' } : {
       status: 'observed', comment_url: `${link('issues', room.parent)}#issuecomment-1`, created_at: at, revision: 1,

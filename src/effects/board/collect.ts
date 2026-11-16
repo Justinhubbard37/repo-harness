@@ -14,6 +14,9 @@ import { parsePublicationPolicy, policyFileFromContents, PUBLICATION_POLICY_PATH
 import type { PullRequestReadinessV2, PullRequestSelectionV2 } from '../../core/publication/merge-readiness';
 import { GitExecError, gitExecFile, gitSpawnSync, withoutRepositorySelectingGitEnv } from '../git/runner';
 import { collectPullRequestMergeReadiness } from '../publication/merge-readiness';
+import type { SeatsConfigV1 } from '../../core/board/seats-settings';
+import { modelFamily } from '../../core/review/model-family';
+import { readSeatsConfiguration } from './seats-configuration';
 import { createKeyedSources, readinessKey, type GhRunner, type KeyedSources } from './keyed-sources';
 
 const GH_TIMEOUT_MS = 30_000;
@@ -121,6 +124,8 @@ export interface BoardCollectInput {
   readonly archctx?: ArchctxProviderOptions;
   readonly host: BoardHostPortsV1;
   readonly now?: () => Date;
+  /** Effect seam for tests: the seats config; the default reads the host's global configuration. */
+  readonly seats?: SeatsConfigV1;
 }
 
 export type GhInput = Pick<BoardCollectInput, 'repo_root' | 'gh_bin' | 'gh_runner'>;
@@ -439,6 +444,16 @@ function readPullRequests(input: GhInput, owner: string, name: string, numbers: 
   return decodePullRequestsRead({ repository }, numbers);
 }
 
+/** The model family of the configured `reviewer` seat; an unreadable seats config is a refused read, not a guessed family. */
+function reviewerFamily(input: BoardCollectInput): string | null {
+  let seats: SeatsConfigV1;
+  try { seats = input.seats ?? readSeatsConfiguration(process.env).seats; } catch (error) {
+    throw new BoardCollectError(`seats_config_unreadable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const { model } = seats.reviewer;
+  return model === null ? null : modelFamily(model);
+}
+
 /** One board read through a fresh keyed source store: the path of every act. */
 export function collectBoard(input: BoardCollectInput): BoardV1 {
   return collectBoardThrough(input, createKeyedSources());
@@ -469,6 +484,7 @@ export function collectBoardThrough(input: BoardCollectInput, sources: KeyedSour
     observed_at: observedAt,
     parent,
     acceptance_merge: acceptanceMerge(input, repository, parent.repository.default_branch),
+    reviewer_family: reviewerFamily(input),
     pull_requests: reads,
     readiness,
     required_contexts: new Map([...new Set(linked.map(read => read.base_ref))].map(base => [base, requiredContexts(input, repository, base)] as const)),
