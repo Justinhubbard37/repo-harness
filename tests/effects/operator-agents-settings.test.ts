@@ -15,6 +15,7 @@ import {
 import { DEFAULT_SEATS_CONFIG, ROUTING_CLASSES, SEAT_IDS, decodeSeatsConfig, decodeSeatsSettings, type SeatRoutingV1 } from '../../src/core/board/seats-settings';
 import { readSeatsSettings, seatsSettingsWriteRoute, SEATS_CONFIGURATION_FAILURES } from '../../src/effects/operator/seats-settings-route';
 import { applySeatsSettings, readSeatsConfiguration } from '../../src/effects/board/seats-configuration';
+import { buildSeatLaunch } from '../../src/core/board/seat-launch';
 import { migrateSeatsConfiguration } from '../../src/cli/commands/global-runtime';
 import { buildQuotaReport, OPERATOR_QUOTA_PATH, unknownQuotaReading } from '../../src/core/board/quota';
 import { probeAgentRuntimes, registryRuntimes } from '../../src/effects/setup/agent-runtime-probe';
@@ -528,7 +529,7 @@ describe('seat settings contract without transport', () => {
     writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS, seats: { ...DEFAULT_SEATS_CONFIG, worker } }));
     const env = { HOME: home }, before = readSeatsSettings(env), route = seatsSettingsWriteRoute(env);
     const addedModels = ['magpie/opencode-go/deepseek-v4.1-flash', 'magpie/group/deepseek-v4.1-flash', 'magpie/zcode/GLM-5.3', 'magpie/zcode/GLM-5.3-Flash'];
-    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, ...addedModels.slice(0, 2), 'zai/glm-5.3', ...addedModels.slice(2), ...['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'].map(m => `magpie/codex/${m}`)]);
+    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, ...addedModels.slice(0, 2), 'zai/glm-5.3', ...addedModels.slice(2), 'magpie/agy-cli/gemini-4-carbon', ...['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'].map(m => `magpie/codex/${m}`)]);
     const { revision, ...section } = before.config;
     const saved = await route.decode({ expected_revision: revision, seats: { ...section, advisor: { ...section.advisor, effort: 'medium' } } }, []).execute();
     expect(saved.status).toBe(200);
@@ -546,6 +547,26 @@ describe('seat settings contract without transport', () => {
     expect(readSeatsSettings(env).config.reviewer).toMatchObject({ runtime: 'pi', model: 'zai/glm-5.3' });
     await expect(route.decode({ expected_revision: readSeatsSettings(env).config.revision, seats: { ...section, worker: { ...worker, model: 'magpie/other' } } }, []).execute())
       .rejects.toMatchObject({ status: 422, code: 'seat_model_invalid' });
+  });
+
+  test('the Pi model magpie/agy-cli/gemini-4-carbon saves on the advisor seat and becomes its pi provider and model', async () => {
+    const model = 'magpie/agy-cli/gemini-4-carbon';
+    const advisor = { ...DEFAULT_SEATS_CONFIG.advisor, runtime: 'pi' as const, model, effort: 'high', fleet: [] };
+    const home = mkdtempSync(join(tmpdir(), 'seats-pi-agy-cli-'));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    mkdirSync(join(home, '.repo-harness'));
+    writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS, seats: { ...DEFAULT_SEATS_CONFIG, advisor } }));
+    const env = { HOME: home }, before = readSeatsSettings(env), route = seatsSettingsWriteRoute(env);
+    const { revision, ...section } = before.config;
+    const saved = await route.decode({ expected_revision: revision, seats: { ...section, advisor } }, []).execute();
+    expect(saved.status).toBe(200);
+    expect(readSeatsSettings(env).config.advisor).toMatchObject({ runtime: 'pi', model, effort: 'high', fleet: [] });
+    // The argv that `rh seats argv advisor` prints, built by the same function that the command projects.
+    const launch = buildSeatLaunch('advisor', readSeatsSettings(env).config.advisor, 'seats', []);
+    expect(launch.runtime).toBe('pi');
+    const start = launch.argv.indexOf('pi');
+    expect(launch.argv.slice(start, start + 6)).toEqual(['pi', '--provider', 'magpie', '--model', 'agy-cli/gemini-4-carbon', '--thinking']);
+    expect(launch.argv[start + 6]).toBe('high');
   });
 
   test('Pi models require a provider and model id', () => {

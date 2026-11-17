@@ -84,7 +84,7 @@ const CODEX_MODELS = [...new Set([...Object.values(AGENT_TARGET_OVERRIDES).map(t
 const RUNTIME_RANGES: Readonly<Record<SeatRuntime, Omit<SeatRuntimeRangeV1, 'id' | 'enabled'>>> = {
   claude: { models: Object.keys(MODEL_FAMILY_LABELS), effort: true, fleet: true },
   codex: { models: CODEX_MODELS, effort: true, fleet: true },
-  pi: { models: ['magpie/cursor/deepseek-v41-flash-1017', 'magpie/opencode-go/deepseek-v4.1-flash', 'magpie/group/deepseek-v4.1-flash', 'zai/glm-5.3', 'magpie/zcode/GLM-5.3', 'magpie/zcode/GLM-5.3-Flash', ...CODEX_MODELS.map(model => `${PI_CODEX_MODEL_PREFIX}${model}`)], effort: true, fleet: true },
+  pi: { models: ['magpie/cursor/deepseek-v41-flash-1017', 'magpie/opencode-go/deepseek-v4.1-flash', 'magpie/group/deepseek-v4.1-flash', 'zai/glm-5.3', 'magpie/zcode/GLM-5.3', 'magpie/zcode/GLM-5.3-Flash', 'magpie/agy-cli/gemini-4-carbon', ...CODEX_MODELS.map(model => `${PI_CODEX_MODEL_PREFIX}${model}`)], effort: true, fleet: true },
 };
 
 export function seatsRanges(enabledRuntimes: readonly string[]): SeatsRangesV1 {
