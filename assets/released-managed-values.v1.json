@@ -98,7 +98,8 @@
     "v0.32.0",
     "v0.33.0",
     "v0.33.1",
-    "v0.33.2"
+    "v0.33.2",
+    "v0.34.0"
   ],
   "packageScripts": {
     "check:architecture-sync": [
