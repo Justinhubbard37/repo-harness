@@ -9,6 +9,8 @@ summary: "The cli-layer entry of the repository rule checks: `rh rules check <ru
 responsibilities:
   - "Read the base policy, the merge-base diff and the PR body for a rule check, and print its result document and GitHub notice."
   - "Read the head, the ledger blob and the dirty flag from git, give the repository identity, and print the ledger state, every theme and the open promotion actions."
+  - "Expose rh rules promote to print a prompt, file a task or reconcile a partial filing; bind the target repository, candidate and committed ledger blob before filing."
+  - "Expose rh rules status --tasks through the existing board reader; keep task progress separate from ledger governance and report unavailable task evidence as unknown."
 source:
   include:
     - "src/cli/commands/rules.ts"

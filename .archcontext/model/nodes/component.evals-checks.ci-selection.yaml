@@ -11,7 +11,9 @@ responsibilities:
   - "Plan the affected-test shards once in the selection job, weighted by the durations that the daily run on main caches."
   - "Run the affected, governance, functional and daily architecture lanes and report CI results."
   - "Check that the archimap module document links match the measured modules[].docs paths."
-  - "Check tasks/lessons.md and its PR change against the Lessons Retro contract (LedgerEnforcement)."
+  - "Run LedgerEnforcement on every PR and require its success in Required / CI, including documentation-only changes."
+  - "Check immutable Mistake pattern keys, cumulative Seen and promotion obligations against the Lessons Retro contract; a consolidation preserves the obligations of the replaced entries."
+  - "Run TestBudget in its own workflow on PR open, head update and body edit; store the result as a check annotation and append the same measured values to the job summary."
 source:
   include:
     - scripts/ci-edge-audit.ts

@@ -5,9 +5,9 @@ name: Execution Primitives (cli)
 status: active
 parent: capability.workflow-engine.execution-primitives
 layer: cli
-summary: The cli-layer file of Execution Primitives. Responsibilities stay with the parent node.
+summary: Registers Bot records and exposes sorted list and single-record reads through rh bots.
 responsibilities:
-  - Hold the bots command so layer direction is checked per directory.
+  - Expose rh bots register, list and show through the existing Bot registry; registration grants no access.
 source:
   include:
     - src/cli/commands/bots.ts

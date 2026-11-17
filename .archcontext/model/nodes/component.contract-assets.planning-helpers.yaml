@@ -9,7 +9,7 @@ summary: Runs contract-listed spec, triage and factor-lab helpers through the pr
 responsibilities:
   - Resolve only helper ids that the workflow contract lists and run them as bounded children with a protected environment.
   - Own the spec, workflow triage and factor-lab helper scripts.
-  - Own the run and brain CLI commands.
+  - Own the rh run CLI command for public helpers.
 source:
   include:
     - scripts/new-*.sh

@@ -11,6 +11,7 @@ responsibilities:
   - "Use the shared explicit provider identity, facts and reobservation collector for readiness and integration evidence with typed unavailable results."
   - "Provide provider merge proof to exact worktree cleanup and product integration consumers."
   - "Define the typed contracts of the publication writes that plugins use."
+  - "Project TestBudget observations into readiness blockers with the rule parser and bound-input contract; keep the accepted inputs for the final merge check."
 source:
   include:
     - src/core/publication/**

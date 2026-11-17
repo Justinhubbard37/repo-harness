@@ -8,6 +8,9 @@ summary: "Runs repository verification, contract gates, benchmarks, and evaluati
 responsibilities:
   - "Own machine-verifiable checks, bounded verifier execution, and evaluation evidence."
   - "Own the test suite, CI coverage selection and the CI report."
+  - "Own the rule registry, TestBudget evaluation and its Actions result annotation and human summary; read rule parameters only from the base policy."
+  - "Run LedgerEnforcement on every PR, including documentation-only changes, and feed its result to Required / CI."
+  - "Project ledger themes and promotion actions, file one promotion issue per candidate and reconcile its route label and parent link; report task progress without changing ledger governance."
   - "Own the workflow gate scripts that check the contract files, agent tooling and protected paths."
 source:
   include:

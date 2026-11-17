@@ -9,6 +9,8 @@ responsibilities:
   - "Provide the canonical publication JSON and SHA-256 helpers that integration evidence digests use; no publication receipt or lifecycle store reader or writer remains."
   - "Derive PullRequestReadinessV2 from explicit canonical REST repository identity, PR number and exact expected head/base through provider identity, facts and reobservation."
   - "Bind registry-scoped readiness to the local GitHub origin before provider reads; preserve the standalone explicit PR CLI capability."
+  - "Read the stored TestBudget result from the current Actions check attempt; compare head, merge-base, effective base policy, rule version and parsed exception with live inputs."
+  - "Block readiness on missing, stale, error or violation results; recheck the accepted TestBudget inputs before the merge request (ADR-0004)."
   - "Store immutable provider feedback facts and separate delivery receipts; Task Fleet owns admitted feedback intake."
   - "Provide live provider merge commit/tree evidence for exact integration candidates and guarded worktree cleanup without changing GitHub issue or PR authority."
   - "Own the GitHub writes that plugins use: push one commit to a new remote ref, find or create a Draft PR for one exact head, and set the GitHub App hook config. A lost or invalid response after a write stays unknown."

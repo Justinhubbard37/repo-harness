@@ -9,7 +9,10 @@ summary: Builds the repo-harness command tree from the core and plugin command m
 responsibilities:
   - Register every top-level command module in one commander program.
   - Parse the mcp commands, load the mcp serve and doctor actions by dynamic import and set repository access grants for mcp access set.
-  - Parse the operator, worktrees and catch-up commands and load their actions by dynamic import after the plugin guard.
+  - Parse operator and catch-up commands and load their actions by dynamic import after the plugin guard.
+  - Expose the core worktree lifecycle through internal helpers; guard only worktrees list, clean and path with the operator selection.
+  - Publish the registered command manifest through rh commands and check documented command paths against that tree.
+  - Compose projection, debt, module, refactor and codegraph under the architecture-selected rh arch command.
   - Guard review round, status, close and cancel, herdr, events and the Operator cleanup investigation child with peer-runtime before loading their runtime bodies.
   - Run the plugin selection projection and runtime refresh inside one host transaction with configuration restores.
 extensions:

@@ -5,9 +5,10 @@ name: PR Readiness and Integration Evidence (effects)
 status: active
 parent: capability.organization.publication
 layer: effects
-summary: The effects-layer files of PR Readiness and Integration Evidence. Responsibilities stay with the parent node.
+summary: Collects live PR readiness and reads the stored TestBudget result from GitHub Actions.
 responsibilities:
-  - Hold the effects-layer source files of PR Readiness and Integration Evidence so layer direction is checked per directory.
+  - Collect provider facts and the newest completed Test budget attempt for the current PR head and base.
+  - Read exactly one typed result annotation, compute the live bound inputs from the base policy and PR body, and preserve unavailable results.
 source:
   include:
     - src/effects/publication/merge-readiness.ts

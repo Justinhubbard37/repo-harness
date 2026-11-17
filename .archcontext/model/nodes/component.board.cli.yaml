@@ -5,9 +5,10 @@ name: "Board (cli)"
 status: "active"
 parent: "capability.organization.board"
 layer: "cli"
-summary: "The cli-layer files of Board. Responsibilities stay with the parent node."
+summary: "Exposes board reads, seat commands and typed protocol comment posts."
 responsibilities:
-  - "Hold the cli-layer source files of Board so layer direction is checked per directory."
+  - "Expose board, attention, seats and quota commands."
+  - "Post plan, hold, release, disposition and question comments only after field validation and a round trip through the existing parser; dry-run writes nothing."
 source:
   include:
     - "src/cli/commands/board.ts"

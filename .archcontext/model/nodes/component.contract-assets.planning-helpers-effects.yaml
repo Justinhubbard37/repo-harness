@@ -5,9 +5,10 @@ name: Planning Helpers (effects)
 status: active
 parent: capability.workflow-engine.contract-assets
 layer: effects
-summary: The effects-layer files of Planning Helpers. Responsibilities stay with the parent node.
+summary: Runs public and internal contract helpers through one protected executor.
 responsibilities:
-  - Hold the effects-layer source files of Planning Helpers so layer direction is checked per directory.
+  - Read public and internal helper ids from one workflow contract and refuse internal ids on the public rh run path.
+  - Run worktree lifecycle helpers through runInternalHelper with the same executor, environment and timeout as public helpers.
 source:
   include:
     - src/effects/runtime/helper-runner.ts

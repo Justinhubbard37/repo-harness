@@ -7,6 +7,7 @@ layer: cli
 summary: Routes repository-level product and agent context into capability-specific contracts.
 responsibilities:
   - Own the root public contract, product entry documentation, and top-level agent routing.
+  - Route root instruction readers to .ai/harness/policy.json#rules for enabled rules and parameter values, and to src/core/ci/rules.ts for rule meanings and repair steps.
 source:
   include:
     - "agents/openai.yaml"

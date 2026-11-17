@@ -4,11 +4,14 @@ kind: capability
 name: Architecture
 status: active
 layer: effects
-summary: "The Architecture plugin: the package-local archctx closure, the architecture reads, the projection, debt and setup commands, the hook notice, the architecture Checks and the architecture skills."
+summary: "The Architecture plugin: the rh arch command tree, the pinned archctx closure, architecture reads and checks, the task posture notice and the architecture skills."
 responsibilities:
   - "Run the pinned package-local archctx on a trusted Node runtime, and apply and check the architecture projection."
   - "Provide the ownership, display, notice, runtime, setup and CodeGraph doctor ports that core reads; the roots register them only when the install selection includes architecture."
-  - "Own the rh arch projection and rh arch debt commands, the archctx part of the managed runtime readback and the global architecture projection configuration."
+  - "Own rh arch: pass commands to the pinned package-local archctx by disposition, and expose projection, debt, module, refactor and codegraph under one command tree."
+  - "Run rh arch verify over validate, flows, state machines, constraints, document anchors, projection and debt; retain each check result in one verdict."
+  - "Read task posture at SessionStart from the local issue branch within the shared notice deadline; emit only complete blocks and record only delivered notices."
+  - "Own the archctx part of the managed runtime readback and the global architecture projection configuration."
   - Resolve path ownership under capability_source archcontext and keep the resolve answer cache of a worktree.
   - "Own the state-boundaries Check, the test capability projection Check and the standalone capability resolver projection."
   - Own the repo-harness-architecture and repo-harness-archimap skills.
@@ -31,6 +34,22 @@ source:
   exclude:
     - src/effects/architecture/capability-resolver.ts
   entrypoints:
+    - id: entrypoint.architecture.command
+      path: src/cli/commands/arch-actions.ts
+      symbols:
+        - name: runArch
+          sinks:
+            - id: sink.architecture.command
+              path: src/effects/architecture/archctx-provider.ts
+              symbol: runArchctxPassThrough
+    - id: entrypoint.architecture.verify
+      path: src/cli/commands/arch-verify.ts
+      symbols:
+        - name: archVerify
+          sinks:
+            - id: sink.architecture.verify
+              path: src/effects/architecture/architecture-read.ts
+              symbol: readArchVerification
     - id: entrypoint.architecture.helper-projection
       path: scripts/sync-helper-sources.ts
       symbols:
