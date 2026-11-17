@@ -92,7 +92,7 @@ describe('pure Effective State projection', () => {
     expect(state.phase).toBe('blocked');
     // The capability blocker keeps its cause and fix in next_action (#676 finding 1).
     expect(state.next_action).toBe(
-      'resolve blockers: capability_registry:invalid INVALID_JSON: invalid JSON: Unexpected token; fix: rh run capability-resolver validate',
+      'resolve blockers: capability_registry:invalid INVALID_JSON: invalid JSON: Unexpected token; fix: rh capability resolve validate',
     );
     expect(state.blockers).toEqual([
       'conflict:worktree_owner',

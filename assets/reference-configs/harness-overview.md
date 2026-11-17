@@ -111,7 +111,7 @@ root context files. `assets/workflow-contract.v1.json` is the contract.
   with evidence or a user request; see [Document generation](document-generation.md).
 - Capability context: the architecture model or the capability registry
   declares each capability. Keep paired contract files aligned with
-  `rh capability-context status|sync`.
+  `rh capability context status|sync`.
 - Evidence and retention: the PR and CI hold current proof.
   `rh retention` archives ignored local evidence after a window.
   `docs/researches/` and `tasks/lessons.md` are advisory memory.

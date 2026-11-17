@@ -31,19 +31,25 @@ describe("capability-config helper", () => {
     try {
       mkdirSync(join(cwd, "apps/agent"), { recursive: true });
 
-      const res = runCapabilityConfig(cwd, [
-        "add",
-        "--prefix",
-        "apps/agent",
-        "--verification-hint",
-        "bun test apps/agent",
-      ]);
+      const args = ["add", "--prefix", "apps/agent", "--verification-hint", "bun test apps/agent"];
+      const res = spawnSync("bun", [join(ROOT, "src/cli/index.ts"), "capability", "register", ...args], {
+        cwd, encoding: "utf-8",
+      });
 
       expect(res.status).toBe(0);
       expect(res.stdout).toContain("[CapabilityConfig] Added apps-agent -> apps/agent");
       expect(existsSync(join(cwd, "scripts/migrate-project-template.sh"))).toBe(false);
 
       const registry = JSON.parse(readFileSync(join(cwd, ".ai/context/capabilities.json"), "utf-8"));
+      const directCwd = tmpWorkspace("capability-config-direct");
+      try {
+        mkdirSync(join(directCwd, "apps/agent"), { recursive: true });
+        const direct = runCapabilityConfig(directCwd, args);
+        expect(direct.status, direct.stderr).toBe(res.status);
+        expect(direct.stdout).toBe(res.stdout);
+        expect(direct.stderr).toBe(res.stderr);
+        expect(JSON.parse(readFileSync(join(directCwd, ".ai/context/capabilities.json"), "utf-8"))).toEqual(registry);
+      } finally { rmSync(directCwd, { recursive: true, force: true }); }
       expect(registry.capabilities).toHaveLength(1);
       expect(registry.capabilities[0]).toMatchObject({
         id: "apps-agent",

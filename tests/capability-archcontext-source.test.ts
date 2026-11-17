@@ -269,7 +269,7 @@ describe("capability source: archcontext file-source parity", () => {
         const refused = runStandaloneResolver(projectedCwd, [...command]);
         expect(refused.status, command.join(" ")).toBe(2);
         expect(refused.stdout).toBe("");
-        expect(refused.stderr).toContain('capability_source "archcontext" needs the packaged resolver; run rh run capability-resolver');
+        expect(refused.stderr).toContain('capability_source "archcontext" needs the packaged resolver; run rh capability resolve');
       }
     } finally {
       rmSync(projectedCwd, { recursive: true, force: true });
@@ -457,7 +457,7 @@ describe("capability source: no fallback in either direction", () => {
       const { checkArchitectureProjectionSelection, codegraphDoctorChecks } = await import(${JSON.stringify(join(ROOT, "src/cli/commands/doctor.ts"))});
       const { pathOwners } = await import(${JSON.stringify(join(ROOT, "src/effects/board/collect.ts"))});
       const { capabilityOwnersForPaths } = await import(${JSON.stringify(join(ROOT, "src/effects/state/resolve-effective-state.ts"))});
-      const { runCapabilityContextStatus } = await import(${JSON.stringify(join(ROOT, "src/cli/commands/capability-context.ts"))});
+      const { runCapabilityContextStatus } = await import(${JSON.stringify(join(ROOT, "src/cli/commands/capability.ts"))});
       const { collectArchitectureNotice } = await import(${JSON.stringify(join(ROOT, "src/cli/hook/hook-protocol.ts"))});
       const message = (run) => { try { run(); return "returned"; } catch (error) { return error.message; } };
       const ownership = (await import(${JSON.stringify(join(ROOT, "src/effects/architecture/providers.ts"))})).ARCHITECTURE_PROVIDERS.ownership;

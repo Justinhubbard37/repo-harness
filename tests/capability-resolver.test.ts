@@ -96,6 +96,20 @@ describe("capability resolver", () => {
       const match = JSON.parse(standalone.stdout);
       expect(match.capability_id).toBe("apps-web-account");
       expect(match.matched_prefix).toBe("apps/web/src/routes/account");
+      const cli = join(ROOT, "src/cli/index.ts");
+      for (const inputPath of ["apps/web/src/routes/account/page.tsx", "unowned/file.ts"]) {
+        const args = ["match", "--path", inputPath, "--format", "json", "--repo", cwd];
+        const direct = runResolver(cwd, args);
+        const routed = run("bun", [cli, "capability", "resolve", ...args], cwd);
+        expect(routed.status, routed.stderr).toBe(direct.status);
+        expect(routed.stdout).toBe(direct.stdout);
+        expect(routed.stderr).toBe(direct.stderr);
+      }
+      const blocks = run("bun", [cli, "capability", "blocks"], cwd);
+      const directBlocks = run("bash", [join(ROOT, "scripts/select-agent-context-blocks.sh")], cwd);
+      expect(blocks.status, blocks.stderr).toBe(directBlocks.status);
+      expect(blocks.stdout).toBe(directBlocks.stdout);
+      expect(blocks.stderr).toBe(directBlocks.stderr);
       for (const { text, status } of [
         { text: undefined, status: 0 },
         { text: '{}', status: 0 },
@@ -200,7 +214,7 @@ describe("capability resolver", () => {
       expect(res.status).toBe(1);
       expect(res.stdout).toBe("");
       expect(res.stderr).toContain("missing capability registry: .ai/context/capabilities.json");
-      expect(res.stderr).toContain("rh run capability-config add --prefix <existing-path>");
+      expect(res.stderr).toContain("rh capability register add --prefix <existing-path>");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

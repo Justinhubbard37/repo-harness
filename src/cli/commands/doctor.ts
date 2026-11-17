@@ -572,7 +572,7 @@ function checkCapabilityRegistry(cwd: string): DoctorCheckResult {
   // A declared newer minimum explains a parse error before the parser reports it.
   const gate = inspectWorkflowMarker(repoRoot);
   if (gate) return { id, describe, status: 'fail', detail: gate.message };
-  const next = `Next: run rh run capability-resolver validate --repo ${repoRoot} --format text; fix the model, or run rh update when the model uses a shape that this runtime cannot read.`;
+  const next = `Next: run rh capability resolve validate --repo ${repoRoot} --format text; fix the model, or run rh update when the model uses a shape that this runtime cannot read.`;
   try {
     const policy = readWorkflowPolicy(repoRoot);
     const mode = capabilitySourceMode(policy);

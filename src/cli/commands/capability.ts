@@ -13,6 +13,7 @@ import type { Capability, CapabilityRegistry, ContractFiles } from '../../core/c
 import type { ArchcontextCapabilityOwners } from '../../core/capabilities/registry';
 import { architecturePort, isArchitectureUnavailable, type ArchitectureOwnershipPort } from '../../core/architecture/contracts';
 import { gitToplevel } from '../../effects/git/runner';
+import { runInternalHelper } from '../../effects/runtime/helper-runner';
 
 export type { Capability, ContractFiles };
 
@@ -425,11 +426,31 @@ function printResult(value: unknown, lines: string[], json?: boolean): void {
   else for (const line of lines) console.log(line);
 }
 
-export function buildCapabilityContextCommand(): Command {
-  const command = new Command('capability-context')
+export function buildCapabilityCommand(): Command {
+  const command = new Command('capability')
+    .description('Resolve, register and manage capability context');
+
+  for (const [name, helper, description] of [
+    ['resolve', 'capability-resolver', 'List, match, validate or export capabilities'],
+    ['register', 'capability-config', 'Register a capability prefix'],
+    ['blocks', 'select-agent-context-blocks', 'List capability context blocks'],
+  ]) {
+    command.command(name)
+      .description(description)
+      .helpOption(false)
+      .allowUnknownOption(true)
+      .argument('[args...]', 'Arguments passed to the helper unchanged')
+      .action((args: string[]) => {
+        const result = runInternalHelper({ helper, args });
+        if (result.stderr && result.reason !== 'ok') console.error(result.stderr);
+        process.exit(result.exitCode);
+      });
+  }
+
+  const context = command.command('context')
     .description('Manage capability-local CLAUDE.md and AGENTS.md context files');
 
-  command
+  context
     .command('status')
     .option('--repo <path>', 'Target repository path (defaults to cwd)')
     .option('--source-map-manifest <path>', 'Capability source-map manifest path', DEFAULT_MANIFEST_PATH)
@@ -439,7 +460,7 @@ export function buildCapabilityContextCommand(): Command {
       console.log(formatCapabilityContextStatus(status, opts.json === true));
     });
 
-  command
+  context
     .command('sync')
     .option('--repo <path>', 'Target repository path (defaults to cwd)')
     .option('--capability <id>', 'Capability ID to sync')

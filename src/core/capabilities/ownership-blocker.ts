@@ -47,14 +47,14 @@ function fixFor(diagnostic: CapabilityRegistryDiagnostic, mode: CapabilitySource
     case 'ARCHCONTEXT_RESOLVE_UNAVAILABLE':
       return 'rh state resolve --json';
     case 'ARCHCONTEXT_MODEL_REJECTED':
-      return 'edit .archcontext/model/nodes, then run rh run capability-resolver match --path <path>';
+      return 'edit .archcontext/model/nodes, then run rh capability resolve match --path <path>';
     case 'AMBIGUOUS_MATCH':
     case 'ARCHCONTEXT_OWNER_UNKNOWN':
       return mode === 'archcontext'
-        ? `rh run capability-resolver match --path ${diagnostic.path}`
-        : 'rh run capability-resolver validate';
+        ? `rh capability resolve match --path ${diagnostic.path}`
+        : 'rh capability resolve validate';
     default:
-      return 'rh run capability-resolver validate';
+      return 'rh capability resolve validate';
   }
 }
 

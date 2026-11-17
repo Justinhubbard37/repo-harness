@@ -307,7 +307,7 @@ main() {
     echo "Next steps:"
     echo "  1. cd $PROJECT_NAME"
     echo "  2. Copy .env.example to .env and configure"
-    echo "  3. Run: rh init --repo . (writes the policy, CLAUDE.md, AGENTS.md, the workflow marker, package scripts, the .gitignore block, the reference-config stubs and the seed files; register each existing context block with rh run capability-config add)"
+    echo "  3. Run: rh init --repo . (writes the policy, CLAUDE.md, AGENTS.md, the workflow marker, package scripts, the .gitignore block, the reference-config stubs and the seed files; register each existing context block with rh capability register add)"
     echo "  4. Run: $PKG_MANAGER run dev"
     echo "  5. Open a GitHub issue for the first feature, then run: rh worktrees start --issue <number>"
     echo ""

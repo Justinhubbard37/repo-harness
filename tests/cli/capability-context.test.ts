@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from 'child_process';
 import {
   runCapabilityContextStatus,
   runCapabilityContextSync,
-} from '../../src/cli/commands/capability-context';
+} from '../../src/cli/commands/capability';
 import type { Capability } from '../../src/core/capabilities/registry';
 import { pluginSelectionEnv } from '../helpers/install-ownership';
 import { tmpWorkspace } from '../helpers/repo-fixture';
@@ -58,7 +58,7 @@ const scriptCapability: Capability = {
   verification_hints: ['bash scripts/ensure-codegraph.sh --check --json'],
 };
 
-describe('capability-context command', () => {
+describe('capability context command', () => {
   test('status reports normalized target paths', () => {
     const cwd = tmpWorkspace('capability-context-status');
     try {
@@ -292,17 +292,34 @@ describe('capability-context command', () => {
     }
   });
 
-  test('CLI entrypoint registers capability-context status', () => {
+  test('CLI entrypoint registers capability context status', () => {
     const cwd = tmpWorkspace('capability-context-entrypoint');
     try {
       writeRegistry(cwd, [rootCapability]);
       const res = spawnSync(
         'bun',
-        [path.join(import.meta.dir, '../../src/cli/index.ts'), 'capability-context', 'status', '--repo', cwd, '--json'],
+        [path.join(import.meta.dir, '../../src/cli/index.ts'), 'capability', 'context', 'status', '--repo', cwd, '--json'],
         { cwd, encoding: 'utf-8' },
       );
       expect(res.status).toBe(0);
+      expect(JSON.parse(res.stdout)).toEqual(runCapabilityContextStatus(cwd));
       expect(JSON.parse(res.stdout).capabilities[0].id).toBe('public-surface-root-router');
+      const cli = path.join(import.meta.dir, '../../src/cli/index.ts');
+      const retired = spawnSync('bun', [cli, 'capability-context', 'status'], { cwd, encoding: 'utf-8' });
+      expect(retired.status).not.toBe(0);
+      expect(retired.stderr).toContain("unknown command 'capability-context'");
+      const registry = fs.readFileSync(path.join(cwd, '.ai/context/capabilities.json'), 'utf-8');
+      for (const apply of [false, true]) {
+        const sync = spawnSync('bun', [cli, 'capability', 'context', 'sync', '--repo', cwd,
+          '--capability', rootCapability.id, '--auto-fill-positioning', '--json', ...(apply ? ['--apply'] : [])],
+        { cwd, encoding: 'utf-8' });
+        expect(sync.status, sync.stderr).toBe(0);
+        expect(JSON.parse(sync.stdout).apply).toBe(apply);
+        for (const file of ['AGENTS.md', 'CLAUDE.md', '.ai/context/capability-source-map.json']) {
+          expect(fs.existsSync(path.join(cwd, file))).toBe(apply);
+        }
+        if (!apply) expect(fs.readFileSync(path.join(cwd, '.ai/context/capabilities.json'), 'utf-8')).toBe(registry);
+      }
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -340,7 +357,7 @@ describe('capability-context command', () => {
       expect(() => runCapabilityContextSync({ repo: cwd, capabilityId: 'runtime-operator', apply: true })).toThrow('declares shared contract files AGENTS.md, CLAUDE.md');
       const res = spawnSync(
         'bun',
-        [path.join(import.meta.dir, '../../src/cli/index.ts'), 'capability-context', 'sync', '--repo', cwd, '--capability', 'runtime-operator', '--apply'],
+        [path.join(import.meta.dir, '../../src/cli/index.ts'), 'capability', 'context', 'sync', '--repo', cwd, '--capability', 'runtime-operator', '--apply'],
         { cwd, env: pluginSelectionEnv(), encoding: 'utf-8' },
       );
       expect(res.status).toBe(2);
@@ -391,7 +408,7 @@ describe('capability-context command', () => {
       fs.writeFileSync(path.join(cwd, '.archcontext/model/nodes/broken.yaml'), 'not: [valid\n');
       const res = spawnSync(
         'bun',
-        [path.join(import.meta.dir, '../../src/cli/index.ts'), 'capability-context', 'status', '--repo', cwd],
+        [path.join(import.meta.dir, '../../src/cli/index.ts'), 'capability', 'context', 'status', '--repo', cwd],
         { cwd, env: pluginSelectionEnv(), encoding: 'utf-8' },
       );
       expect(res.status).toBe(2);

@@ -150,7 +150,7 @@ function repoRoot(input: string): string {
 function missingRegistryError(): Error {
   return new Error(
     `missing capability registry: ${DEFAULT_REGISTRY}; create it with ` +
-      "rh run capability-config add --prefix <existing-path>"
+      "rh capability register add --prefix <existing-path>"
   );
 }
 
@@ -284,7 +284,7 @@ function archcontextOwnership(): ArchitectureOwnershipPort {
   const port = architecturePort("ownership");
   if (isArchitectureUnavailable(port)) {
     throw new CapabilitySourceError(
-      'capability_source "archcontext" needs the packaged resolver; run rh run capability-resolver'
+      'capability_source "archcontext" needs the packaged resolver; run rh capability resolve'
     );
   }
   return port;

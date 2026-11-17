@@ -46,14 +46,6 @@ export const RUN_HELP_GROUPS = [
     ],
   },
   {
-    label: 'Capabilities & architecture',
-    helpers: [
-      'select-agent-context-blocks',
-      'capability-resolver',
-      'capability-config',
-    ],
-  },
-  {
     label: 'Host',
     helpers: ['install-agent-fleet'],
   },
@@ -71,8 +63,11 @@ const RETIRED_HELPERS: ReadonlyMap<string, string> = new Map([
 // Internal helper ids (`helpers.internal`) fail with the public command that runs them. They never run.
 // `worktree-merge-lib` is a library that the worktree helpers load, so it has no command.
 export const INTERNAL_HELPER_COMMANDS: ReadonlyMap<string, string | null> = new Map([
+  ['capability-config', 'rh capability register'],
+  ['capability-resolver', 'rh capability resolve'],
   ['contract-worktree', 'rh worktrees start|cleanup|notify-merged|sweep|status'],
   ['contract-worktree-runtime', 'rh worktrees runtime'],
+  ['select-agent-context-blocks', 'rh capability blocks'],
   ['ship-worktrees', 'rh worktrees ship'],
   ['verification-plan', 'rh verify plan'],
   ['verify-sprint', 'rh verify'],

@@ -1001,18 +1001,18 @@ Exactly one source is read. There is no dual-read, no merge, and no fallback in
 either direction: under `archcontext` a missing model directory fails instead of
 falling back to the JSON registry, and under `registry` a present model
 directory is never consulted. Under `archcontext` the JSON registry is not
-writable, so `rh run capability-config add` refuses and points at the
+writable, so `rh capability register add` refuses and points at the
 node files.
 
 Capability metadata comes from one `export native --worktree` call to the
-package-local archctx for each command. `capability-resolver`, `capability-context`
+package-local archctx for each command. `rh capability resolve`, `rh capability context`
 and `doctor` read the model only through this export. Hooks and Effective State
 never call the export. They take capability identity from the node id:
 `capability.<domain>.<name>` gives `<domain>-<name>` and its module document.
 Path ownership under `archcontext` comes only from the
 package-local archctx `resolve --paths-from` command. One process resolves one batch of
 paths. It reads no daemon state and no CodeGraph index. The pre-edit hook,
-Effective State, `capability-resolver match` and `capability-context` all use
+Effective State, `rh capability resolve match` and `rh capability context` all use
 this route. If archctx cannot run, Effective State reports the
 `capability_ownership:unavailable` blocker. A model fault or an ownership fault
 reports the `capability_registry:invalid` blocker. `profile_reasons` names the
@@ -1024,15 +1024,15 @@ is `null` when ownership was not computed. Under `registry`, a committed
 `docs/architecture/.projection-manifest.json` owns the module pages: a
 capability's `architecture_module` and `module_document` are the
 `entity-summary` page that the manifest projects for `capability.<domain>.<name>`,
-or `null`, and the registry value is not read. `capability-resolver validate`
+or `null`, and the registry value is not read. `rh capability resolve validate`
 then reports a page under `docs/architecture/modules/` as an orphan only when
-the manifest does not project it. `capability-context sync` shows the
+the manifest does not project it. `rh capability context sync` shows the
 same page and writes no page path to the registry or the source-map file;
 stored page fields stay in those files and are not read. A read-only observation does not
 start archctx. It reports `capability_ownership:unavailable`. The standalone helper copy
 in `assets/templates/helpers/` has no package-local archctx. Under `archcontext`
 it refuses every command with `capability_source "archcontext" needs the
-packaged resolver; run rh run capability-resolver`. From archctx
+packaged resolver; run rh capability resolve`. From archctx
 0.8.1, `resolve` rejects a node that parses but breaks the node schema with
 `AC_SCHEMA_INVALID`, as the export readers do. The pre-edit hook and
 `state resolve` then report the `capability_registry:invalid` blocker. A model
@@ -1367,7 +1367,7 @@ existing diagnostic codes. Shared anchors are not duplicates.
 
 ### Node/v2 export round-trip
 
-`rh run capability-resolver export --format archcontext-nodes-v2`
+`rh capability resolve export --format archcontext-nodes-v2`
 emits complete `archcontext.node/v2` capability nodes. Existing directory
 prefixes become explicit `<dir>/**` selectors, while file prefixes remain exact.
 The exported `extensions.contractFiles`, `lspProfile`, and `verification` fields

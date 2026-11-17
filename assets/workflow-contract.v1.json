@@ -149,8 +149,11 @@
       "decision-trail.ts"
     ],
     "internal": [
+      "capability-config",
+      "capability-resolver",
       "contract-worktree",
       "contract-worktree-runtime",
+      "select-agent-context-blocks",
       "ship-worktrees",
       "verification-plan",
       "verify-sprint",

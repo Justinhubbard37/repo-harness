@@ -809,7 +809,7 @@ describe('effective state resolver', () => {
             reason: 'capability:registry:invalid',
             code: 'INVALID_JSON',
             message: 'invalid JSON',
-            fix: 'rh run capability-resolver validate',
+            fix: 'rh capability resolve validate',
           });
         });
       }, 60_000);
@@ -824,7 +824,7 @@ describe('effective state resolver', () => {
             reason: 'capability:registry:invalid',
             code: 'ARCHCONTEXT_MODEL_REJECTED',
             message: 'archctx resolve rejected the model',
-            fix: 'edit .archcontext/model/nodes, then run rh run capability-resolver match --path <path>',
+            fix: 'edit .archcontext/model/nodes, then run rh capability resolve match --path <path>',
           });
         });
       }, 60_000);
@@ -861,7 +861,7 @@ describe('effective state resolver', () => {
             reason: 'capability:registry:invalid',
             code: 'AMBIGUOUS_MATCH',
             message: 'capability.shared.left, capability.shared.right',
-            fix: 'rh run capability-resolver match --path src/feature.ts',
+            fix: 'rh capability resolve match --path src/feature.ts',
           });
         });
       }, 90_000);

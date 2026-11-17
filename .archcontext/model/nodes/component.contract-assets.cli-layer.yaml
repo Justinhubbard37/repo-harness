@@ -11,10 +11,10 @@ responsibilities:
 source:
   include:
     - src/cli/commands/init.ts
-    - src/cli/commands/capability-context.ts
+    - src/cli/commands/capability.ts
     - src/cli/commands/run.ts
     - src/cli/commands/retention.ts
   exclude:
-    - src/cli/commands/capability-context.ts
+    - src/cli/commands/capability.ts
     - src/cli/commands/init.ts
     - src/cli/commands/run.ts

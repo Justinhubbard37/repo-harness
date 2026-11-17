@@ -278,7 +278,7 @@ describe("repo-harness action command skills", () => {
     expect(architecture.match(/--request-id/g)).toHaveLength(1);
     expect(architecture).toContain("## Adopt ArchContext in a repository");
     for (const step of [
-      "rh run capability-resolver export --format archcontext-nodes-v2",
+      "rh capability resolve export --format archcontext-nodes-v2",
       "rh arch init --name <product name>",
       "rh arch docs adopt --profile repo-harness/v1",
       "rh arch projection adopt --json --adoption-plan-id <adoptionPlanId>",

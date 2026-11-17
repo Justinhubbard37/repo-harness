@@ -8,13 +8,13 @@ Worker reference. Use only within the assigned architecture scope.
    Projection diagnostics need CodeGraph code facts. In a new worktree run `codegraph init -y .`; when `.codegraph/` exists, run `codegraph sync .`.
 2. Inspect the committed architecture entry for the projection profile (`docs/architecture/index.md`, or the capability pages under `docs/architecture/modules/` for `repo-harness/v1`) and `.archcontext/model/nodes/`. For a coverage or registration scope, follow the coverage procedure below.
 3. When the scope maps to repo code or config, resolve the capability with:
-   - `rh run capability-resolver match --repo <repo> --path <path> --format json`
+   - `rh capability resolve match --repo <repo> --path <path> --format json`
 4. Update the model and human-owned prose for the changed responsibility. Generated regions, diagrams and the projection manifest belong to the archctx rolling writer (see "Rolling writer"). Do not apply or commit generated output in a feature PR.
 5. archctx-generated Markdown Mermaid is the model's generated diagram. This skill does not hand-write diagrams or standalone HTML; use the external `mermaid` skill only to review layout and renderability of the Markdown source. The human-facing HTML map `docs/architecture/archimap.html` belongs to the `repo-harness-archimap` skill, which refreshes it after a model change.
 6. Verify with:
    - `rh arch debt --json --base <review-base>` (handle debt in scope)
    - `rh arch projection anchors --json` (read-only; see "Drift signals")
-   - `rh run capability-resolver validate --repo <repo> --format text`
+   - `rh capability resolve validate --repo <repo> --format text`
    - `bun run check:helpers` when a helper source or its standalone projection changed
    - The module reader and the review diff read the committed HEAD model, but archctx `resolve` reads the worktree model. Commit the model before a review diff.
 
@@ -59,8 +59,8 @@ write nodes.
 
 1. Read the existing semantic architecture docs and trace the relevant entrypoints,
    dependencies, ownership and verification in source. Use CodeGraph when indexed.
-   Compare `rh run capability-resolver list --format json` and
-   `rh run capability-resolver match --path <source-path> --format json`.
+   Compare `rh capability resolve list --format json` and
+   `rh capability resolve match --path <source-path> --format json`.
    Package layout is inventory evidence; it does not establish semantic boundaries.
 2. Give a concrete recommendation: retain an intentional umbrella, create a justified
    capability, or restore a missing projection. Include source evidence, responsibility,
@@ -147,7 +147,7 @@ Then the repository has no complete ArchContext model, and `apply.enabled` is
 1. Run `codegraph init -y .`.
 2. While `.ai/harness/policy.json#context.capability_source` is `registry`, export
    the registry:
-   `rh run capability-resolver export --format archcontext-nodes-v2`.
+   `rh capability resolve export --format archcontext-nodes-v2`.
    The output is a JSON array of complete `archcontext.node/v2` capability nodes.
    An empty registry gives an empty array. Then author the first nodes as
    "Coverage and Agent-owned registration" describes.
@@ -182,10 +182,10 @@ Then the repository has no complete ArchContext model, and `apply.enabled` is
    `.archcontext/model/nodes`. Update the root `CLAUDE.md` and `AGENTS.md` lines
    that name the registry file. Keep one authority. Do not keep the registry as
    a second source.
-7. Run `rh run capability-resolver validate --repo . --format text`.
-   Run `rh capability-context status`. It lists each capability id and
+7. Run `rh capability resolve validate --repo . --format text`.
+   Run `rh capability context status`. It lists each capability id and
    its declared contract files. For each capability whose contract files do not
-   exist, run `rh capability-context sync --capability <id> --apply`
+   exist, run `rh capability context sync --capability <id> --apply`
    with the id from that list. Commit.
 8. Run `rh arch projection apply --json`. A repository with an
    existing `docs/architecture/index.md` returns `adoption-required`. Then read the

@@ -100,6 +100,37 @@ describe("run command", () => {
     }
   }, 30_000);
 
+  test("capability routes forward arguments and helper exits; internal ids run nothing", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-capability-routes-"));
+    try {
+      const marker = join(tmp, "ran");
+      for (const [route, helper, extension] of [
+        ["resolve", "capability-resolver", "ts"],
+        ["register", "capability-config", "ts"],
+        ["blocks", "select-agent-context-blocks", "sh"],
+      ]) {
+        const sourceRoot = writeSourceHelper(tmp, `${helper}.${extension}`, extension === "sh"
+          ? 'printf "%s\\n" "$@"; echo helper-error >&2; touch ran; exit 17\n'
+          : 'console.log(process.argv.slice(2).join("\\n")); console.error("helper-error"); require("fs").writeFileSync("ran", ""); process.exit(17);\n', [helper]);
+        const env = { ...process.env, REPO_HARNESS_SOURCE_ROOT: sourceRoot };
+        for (const id of [helper, `${helper}.${extension}`]) {
+          const refused = spawnSync("bun", [CLI, "run", id, "list"], { cwd: tmp, encoding: "utf-8", env });
+          expect(refused.status).toBe(2);
+          expect(refused.stderr).toContain(`Use \`rh capability ${route}\`.`);
+          expect(existsSync(marker)).toBe(false);
+        }
+        for (const args of [[], ["match", "--path", "a b.ts", "--help", "-h", "--", "literal"]]) {
+          const res = spawnSync("bun", [CLI, "capability", route, ...args], { cwd: tmp, encoding: "utf-8", env });
+          expect(res.status, res.stderr).toBe(17);
+          expect(res.stdout).toBe(`${args.join("\n")}\n`);
+          expect(res.stderr).toBe("helper-error\n");
+          rmSync(marker);
+        }
+        expect(listHelpers(packageRuntimeEnv()).map(item => item.id)).not.toContain(helper);
+      }
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  }, 30_000);
+
   test("retired context helper is absent from the registry", () => {
     expect(listHelpers().map((helper) => helper.id)).not.toContain("context-contract-sync");
     expect(resolveHelper("context-contract-sync")).toBeNull();

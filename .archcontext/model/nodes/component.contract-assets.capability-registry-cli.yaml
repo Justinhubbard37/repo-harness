@@ -10,4 +10,4 @@ responsibilities:
   - Hold the cli-layer source files of Capability Registry so layer direction is checked per directory.
 source:
   include:
-    - src/cli/commands/capability-context.ts
+    - src/cli/commands/capability.ts

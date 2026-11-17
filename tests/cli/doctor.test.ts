@@ -338,7 +338,7 @@ describe('doctor command (Phase 1C)', () => {
       expect(invalid.status).toBe('fail');
       expect(invalid.detail).toContain('archcontext authority does not load: AC_SCHEMA_INVALID');
       expect(invalid.detail).toContain('capability.a.b $.status required');
-      expect(invalid.detail).toContain('Next: run rh run capability-resolver validate');
+      expect(invalid.detail).toContain('Next: run rh capability resolve validate');
 
       // A declared newer minimum names the upgrade, not the parse error.
       fs.writeFileSync(path.join(repoRoot, '.ai/harness/workflow-contract.json'), `${JSON.stringify({ minimum_harness_version: '999.0.0' })}\n`);

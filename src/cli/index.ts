@@ -32,7 +32,7 @@ import { registerArchitecturePorts } from '../core/architecture/contracts';
 import { assertPluginCommandSelected, declareArchitectureSelection, pluginSelected, readRecordedSelection, recordedPlugins } from './installer/architecture-selection';
 import { buildHerdrCommand } from './commands/herdr';
 import { buildEventsCommand } from './commands/events';
-import { buildCapabilityContextCommand } from './commands/capability-context';
+import { buildCapabilityCommand } from './commands/capability';
 import { buildDocsCommand } from './commands/docs';
 import { buildMcpCommand } from './commands/mcp';
 import { buildRunCommand } from './commands/run';
@@ -983,7 +983,7 @@ export function buildProgram(): Command {
 
   program.addCommand(pluginCommand(buildHerdrCommand(), 'peer-runtime'));
   program.addCommand(pluginCommand(buildEventsCommand(), 'peer-runtime'));
-  program.addCommand(buildCapabilityContextCommand());
+  program.addCommand(buildCapabilityCommand());
   program.addCommand(buildDocsCommand());
   const mcp = buildMcpCommand();
   for (const name of ['serve', 'doctor']) {
