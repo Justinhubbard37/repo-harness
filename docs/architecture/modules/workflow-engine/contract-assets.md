@@ -1,5 +1,5 @@
 # workflow-engine/contract-assets 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-contract-assets" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:2b89531c247055e0610015690e8e43209385962c6a484628fcba20f13f1fc32d" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-contract-assets" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:47544999d2a498a3460a3f76338c42a6984d9b2d3c60c620f2d38dc5f82e178e" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.workflow-engine.contract-assets`(kind `capability`)
 > **Matched Prefixes**:`agents/fleet/**`、`.codex/agents/**`、`scripts/install-agent-fleet.sh`、`assets/workflow-contract.v1.json`、`assets/released-managed-values.v1.json`、`scripts/check-released-managed-values.ts`、`.ai/context/**`、`.archcontext/model/nodes/**`、`scripts/capability-resolver.ts`、`scripts/capability-config.ts`、`scripts/contract-worktree.sh`、`scripts/merge-gate.ts`、`scripts/ship-worktrees.sh`、`assets/templates/**`、`assets/reference-configs/**`、`docs/reference-configs/**`、`assets/AGENTS.md`、`assets/CLAUDE.md`、`.archcontext/**`、`docs/adr/**`、`src/core/capabilities/**`、`assets/project-structures/**`、`assets/plan-map.json`、`assets/versions.json`、`.claude/templates/**`、`scripts/workflow-contract.ts`、`scripts/check-context-map.ts`、`scripts/check-context-files.sh`、`scripts/select-agent-context-blocks.sh`、`scripts/sync-reference-configs.ts`、`scripts/contract-worktree-runtime.ts`、`scripts/worktree-merge-lib.sh`、`scripts/cutover-closure.ts`、`scripts/new-spec.sh`、`scripts/summarize-failures.sh`、`scripts/maintenance-triage.sh`、`scripts/heartbeat-triage.sh`、`scripts/check-deploy-sql-order.sh`、`scripts/factor-lab-new.sh`、`scripts/factor-lab-promote.sh`、`scripts/factor-lab-reject.sh`、`scripts/factor-lab-check.sh`
@@ -53,7 +53,7 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:dd8beeb4c515e18b02770cbe94031e67f6973e2c5c483c9bdc70ee73cd059103`).
+- Proof: `proven` (`sha256:9284bdf4f0194493ad09d47ed2d524ce65efe3dcec95374a75c5d43d5bdb4a1d`).
 - Semantic nodes: `25`; declared relations: `8`.
 
 ### 1.2 模組職責表
@@ -61,7 +61,7 @@ flowchart LR
 | 宣告入口 | 錨點 | 職責 |
 | --- | --- | --- |
 | `entrypoint.contract-assets.run-command` | `src/cli/commands/run.ts#buildRunCommand` | `sink.contract-assets.helper-runner` → `src/effects/runtime/helper-runner.ts#runHelper` |
-| `entrypoint.contract-assets.helper-runner` | `src/effects/runtime/helper-runner.ts#runHelper` | `sink.contract-assets.bounded-process` → `src/effects/process-runner.ts#runProcess` |
+| `entrypoint.contract-assets.helper-runner` | `src/effects/runtime/helper-runner.ts#executeHelper` | `sink.contract-assets.bounded-process` → `src/effects/process-runner.ts#runProcess` |
 
 組件入口:
 
@@ -91,7 +91,7 @@ flowchart LR
 - `depends-on` ← `capability.verification.codegraph-readiness` — Type the CodeGraph init step with the core init port type and the CodeGraph doctor provider with the core architecture contract
 - `calls` ← `component.evals-checks.primary` — Consume trusted PR checks for a base ref through the merge gate without rerunning commands
 - `calls` ← `component.global-runtime-reconciliation.cli-diagnostics` — Read the ArchContext capability authority for the doctor report
-- `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the init and capability-context commands
+- `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the init and capability commands
 - `calls` ← `component.global-runtime-reconciliation.primary` — Sync the cross-review skills through the init command
 - `reads` ← `component.hook-adapters.host-installer` — Resolve the managed fleet role list during host installation
 - `reads` ← `component.inspection-migration.primary` — Read directory and legacy path inventory from the package workflow contract
@@ -173,7 +173,7 @@ flowchart LR
 | `component.contract-assets.effects-layer` | Contract Assets (effects) | `1–2` 個文件 / `200–500` 行 | 未宣告 |
 | `component.contract-assets.fleet-role-profiles` | Fleet Role Profiles | `1–2` 個文件 / `100–200` 行 | 未宣告 |
 | `component.contract-assets.planning-helpers` | Operations Helpers | `5–10` 個文件 / `1000–2000` 行 | 未宣告 |
-| `component.contract-assets.planning-helpers-cli` | Planning Helpers (cli) | `2–5` 個文件 / `500–1000` 行 | 未宣告 |
+| `component.contract-assets.planning-helpers-cli` | Planning Helpers (cli) | `1–2` 個文件 / `100–200` 行 | 未宣告 |
 | `component.contract-assets.planning-helpers-effects` | Planning Helpers (effects) | `1–2` 個文件 / `200–500` 行 | 未宣告 |
 | `component.contract-assets.primary` | Workflow Contract And Policy | `5–10` 個文件 / `1000–2000` 行 | 未宣告 |
 | `component.contract-assets.primary-assets` | Workflow Contract And Policy (assets) | `2–5` 個文件 / `5000–10000` 行 | 未宣告 |
@@ -187,7 +187,7 @@ flowchart LR
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:dd8beeb4c515e18b02770cbe94031e67f6973e2c5c483c9bdc70ee73cd059103`); selectors `2/2`.
+> **Proof**: `proven` (`sha256:9284bdf4f0194493ad09d47ed2d524ce65efe3dcec95374a75c5d43d5bdb4a1d`); selectors `2/2`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%

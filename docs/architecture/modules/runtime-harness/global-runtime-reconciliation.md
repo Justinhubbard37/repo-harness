@@ -1,6 +1,6 @@
 # runtime-harness/global-runtime-reconciliation 架構文檔
 
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-global-runtime-reconciliation" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:5bf2515856d57b09d736928f38b17fe696147608814f0ed7cade4c66480480c4" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-global-runtime-reconciliation" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:6a5ad1ecf5a933db520cef5cfc4051535b4af98652478db0f1e339d32500b0d9" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.global-runtime-reconciliation`(kind `capability`)
 > **Matched Prefixes**:`package.json`、`bun.lock`、`scripts/check-managed-runtime.ts`、`scripts/sync-codex-installed-copies.sh`、`assets/reference-configs/external-tooling.md`、`docs/reference-configs/external-tooling.md`、`docs/reference-configs/install-profiles.md`、`src/effects/upgrade/**`、`src/effects/runtime/node-candidates.ts`、`src/effects/runtime/protected-helper-platform.ts`、`src/effects/skill-tree-integrity.ts`、`src/effects/host-skill-roots.ts`、`src/effects/configuration/**`、`src/core/release/**`、`src/effects/release/**`、`scripts/check-npm-release.sh`、`scripts/check-release-published.sh`、`scripts/check-tarball-install-smoke.sh`、`scripts/check-pi-package-smoke.ts`、`scripts/runtime-evidence-receipt.ts`、`install.sh`、`install.ps1`、`tsconfig.json`、`src/effects/runtime/node-runtime.ts`
@@ -33,11 +33,11 @@ flowchart LR
   p1_component_global_runtime_reconciliation_tests_layer_04289ccd["Global Runtime Reconciliation (tests)"]:::component
   p1_component_global_runtime_reconciliation_archctx_closure_1b9b31b7 -->|"Read the architecture section through the global configuration store"| p1_component_global_runtime_reconciliation_global_configuration_17512409
   p1_component_global_runtime_reconciliation_archctx_closure_1b9b31b7 -->|"Write the private global configuration through the installer ownership writer"| p1_capability_runtime_harness_hook_adapters_75a11743
-  p1_component_global_runtime_reconciliation_cli_diagnostics_95dbb784 -->|"Read the install state#44; skill projections#44; host targets#44; the Pi host probe#44; hook routes and status for the doctor and init-hook reports"| p1_capability_runtime_harness_hook_adapters_75a11743
+  p1_component_global_runtime_reconciliation_cli_diagnostics_95dbb784 -->|"Read the install state#44; skill projections#44; host targets#44; the Pi host probe#44; hook routes and status for the doctor and setup check reports"| p1_capability_runtime_harness_hook_adapters_75a11743
   p1_component_global_runtime_reconciliation_cli_diagnostics_95dbb784 -->|"Read the staged host skill roots and the upgrade operator decisions"| p1_component_global_runtime_reconciliation_primary_d41cdd38
-  p1_component_global_runtime_reconciliation_cli_diagnostics_95dbb784 -->|"Plan the upgrade for the init-hook checklist"| p1_component_global_runtime_reconciliation_primary_cli_6acfbdac
-  p1_component_global_runtime_reconciliation_cli_root_389856ab -->|"Register the architecture-projection command and the archctx providers"| p1_component_global_runtime_reconciliation_archctx_closure_1b9b31b7
-  p1_component_global_runtime_reconciliation_cli_root_389856ab -->|"Register the doctor and init-hook commands and validate the shared CLI options"| p1_component_global_runtime_reconciliation_cli_diagnostics_95dbb784
+  p1_component_global_runtime_reconciliation_cli_diagnostics_95dbb784 -->|"Plan the upgrade for the setup check checklist"| p1_component_global_runtime_reconciliation_primary_cli_6acfbdac
+  p1_component_global_runtime_reconciliation_cli_root_389856ab -->|"Register the rh arch projection command and the archctx providers"| p1_component_global_runtime_reconciliation_archctx_closure_1b9b31b7
+  p1_component_global_runtime_reconciliation_cli_root_389856ab -->|"Register the doctor and setup check commands and validate the shared CLI options"| p1_component_global_runtime_reconciliation_cli_diagnostics_95dbb784
   p1_component_global_runtime_reconciliation_cli_root_389856ab -->|"Register the install and status and security and hook commands and run host transactions for the plugin selection"| p1_capability_runtime_harness_hook_adapters_75a11743
   p1_component_global_runtime_reconciliation_cli_root_389856ab -->|"Register the update and upgrade commands and run the setup inside the candidate runtime"| p1_component_global_runtime_reconciliation_primary_d41cdd38
   p1_capability_runtime_harness_global_runtime_reconciliation_401730e8 -->|"Reconcile and verify the selected global runtime closure"| p1_component_global_runtime_reconciliation_primary_d41cdd38
@@ -50,7 +50,7 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:b77fe0d16cbfa3697a2c8faad06e0b5e71f273db6e91bb9b4d6c907e04c19acf`).
+- Proof: `proven` (`sha256:4fa6ef2f7a1ba2d2103f74e00734602e9371d7a442014b1d002a55349a1da343`).
 - Semantic nodes: `16`; declared relations: `13`.
 
 ### 1.2 模組職責表
@@ -100,13 +100,13 @@ flowchart LR
 組件出向關係:
 
 - `component.global-runtime-reconciliation.cli-diagnostics`:
-  - `calls` → `capability.public-surface.adoption` — Inspect the workflow marker, strip managed hooks and plan the adoption for the doctor and init-hook reports
+  - `calls` → `capability.public-surface.adoption` — Inspect the workflow marker, strip managed hooks and plan the adoption for the doctor and setup check reports
   - `calls` → `capability.workflow-engine.contract-assets` — Read the ArchContext capability authority for the doctor report
   - `calls` → `component.execution-primitives.hc-client` — List relay terminals by the recorded labels for the Doctor notify relay check.
-  - `calls` → `capability.runtime-harness.hook-adapters` — Read the install state, skill projections, host targets, the Pi host probe, hook routes and status for the doctor and init-hook reports
+  - `calls` → `capability.runtime-harness.hook-adapters` — Read the install state, skill projections, host targets, the Pi host probe, hook routes and status for the doctor and setup check reports
   - `reads` → `component.execution-primitives.notify-read` — Read the notify relay install record and check the recorded relay identity for Doctor.
   - `calls` → `component.global-runtime-reconciliation.primary` — Read the staged host skill roots and the upgrade operator decisions
-  - `calls` → `component.global-runtime-reconciliation.primary-cli` — Plan the upgrade for the init-hook checklist
+  - `calls` → `component.global-runtime-reconciliation.primary-cli` — Plan the upgrade for the setup check checklist
   - `calls` → `component.action-commands.skill-surface-catalog` — Parse the skill surface catalog to check the projected host skills
   - `calls` → `capability.workflow-engine.workflow-state` — Read the workflow policy and the capability registry authority for the doctor report
 - `component.global-runtime-reconciliation.cli-layer`:
@@ -115,13 +115,13 @@ flowchart LR
   - `deployed-on` → `process.cli` — The CLI root dispatches commands in the per-command process.
   - `calls` → `capability.verification.acceptance-review` — Register the review command
   - `calls` → `capability.public-surface.adoption` — Register the adoption-plan command and run the adoption plan for the setup check
-  - `calls` → `component.global-runtime-reconciliation.archctx-closure` — Register the architecture-projection command and the archctx providers
+  - `calls` → `component.global-runtime-reconciliation.archctx-closure` — Register the rh arch projection command and the archctx providers
   - `calls` → `component.contract-assets.architecture-contracts` — Register the architecture providers after the contract version check
   - `calls` → `capability.organization.board` — Register the board, seats and quota commands
   - `calls` → `component.execution-primitives.cli-layer` — Register the bots command
-  - `calls` → `component.global-runtime-reconciliation.cli-diagnostics` — Register the doctor and init-hook commands and validate the shared CLI options
-  - `calls` → `capability.verification.codegraph-readiness` — Register the tools command and pass the CodeGraph doctor checks and setup steps to core commands
-  - `calls` → `capability.workflow-engine.contract-assets` — Register the init and capability-context commands
+  - `calls` → `component.global-runtime-reconciliation.cli-diagnostics` — Register the doctor and setup check commands and validate the shared CLI options
+  - `calls` → `capability.verification.codegraph-readiness` — Register the rh arch codegraph command and pass the CodeGraph doctor checks and setup steps to core commands
+  - `calls` → `capability.workflow-engine.contract-assets` — Register the init and capability commands
   - `calls` → `component.execution-primitives.hc-client` — Give the hc board and attention host ports to the board command and to the attention watch doctor check
   - `calls` → `capability.runtime-harness.hook-adapters` — Register the install and status and security and hook commands and run host transactions for the plugin selection
   - `calls` → `capability.runtime-harness.mcp-sidecar` — Guard mcp serve and doctor on the mcp selection, load their actions after the guard, and list the MCP log roots for retention only when the plugin is selected
@@ -129,7 +129,7 @@ flowchart LR
   - `calls` → `component.global-runtime-reconciliation.primary` — Register the update and upgrade commands and run the setup inside the candidate runtime
   - `reads` → `component.execution-primitives.public-projections` — Pass the MCP audit log path to retention
   - `calls` → `capability.organization.publication` — Register the publication command
-  - `calls` → `capability.runtime-harness.refactor-program` — Register the refactor command
+  - `calls` → `capability.runtime-harness.refactor-program` — Register the rh arch refactor command
   - `calls` → `component.execution-primitives.repository-registry` — Set a repository access grant for mcp access set
   - `calls` → `capability.public-surface.root-router` — Register the docs command
   - `calls` → `component.action-commands.skill-surface-catalog` — Parse the skill surface catalog for CLI commands
@@ -184,7 +184,7 @@ flowchart LR
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:b77fe0d16cbfa3697a2c8faad06e0b5e71f273db6e91bb9b4d6c907e04c19acf`); selectors `5/5`.
+> **Proof**: `proven` (`sha256:4fa6ef2f7a1ba2d2103f74e00734602e9371d7a442014b1d002a55349a1da343`); selectors `5/5`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%

@@ -1,5 +1,5 @@
 # runtime-harness/hook-adapters 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-hook-adapters" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:2d65b0074c18acd3eabe215b86ada7e7494d523770b44d92623cbf421db85ca7" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-hook-adapters" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:5ae9c3c07851c399800b32d9b18ab8e00be0dcdb81213e32c941fa120c17b9bb" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.hook-adapters`(kind `capability`)
 > **Matched Prefixes**:`src/cli/hook/**`、`src/cli/installer/**`、`src/pi/**`、`src/effects/managed-tree.ts`、`src/cli/hook-entry.ts`、`src/effects/loop/**`、`src/effects/segmented-log.ts`、`src/effects/run-summary-retention.ts`、`src/cli/commands/install.ts`、`src/cli/commands/status.ts`、`src/cli/commands/security.ts`
@@ -92,7 +92,7 @@ flowchart LR
 - `reads` ← `component.evals-checks.evals-and-benchmarks` — Read hook event telemetry records to measure hook cost in profile benchmarks
 - `depends-on` ← `capability.runtime-harness.evidence-ledger` — Collect loop state inputs for recovery evidence.
 - `calls` ← `component.global-runtime-reconciliation.archctx-closure` — Write the private global configuration through the installer ownership writer
-- `calls` ← `component.global-runtime-reconciliation.cli-diagnostics` — Read the install state, skill projections, host targets, the Pi host probe, hook routes and status for the doctor and init-hook reports
+- `calls` ← `component.global-runtime-reconciliation.cli-diagnostics` — Read the install state, skill projections, host targets, the Pi host probe, hook routes and status for the doctor and setup check reports
 - `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the install and status and security and hook commands and run host transactions for the plugin selection
 - `calls` ← `component.global-runtime-reconciliation.primary` — Install host adapters, project owned host skills, and register the Pi package from the installed candidate after mandatory setup succeeds
 - `calls` ← `component.mcp-sidecar.repo-policy-registry` — Append the MCP audit log through the shared segmented log writer

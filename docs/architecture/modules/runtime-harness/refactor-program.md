@@ -1,5 +1,5 @@
 # Refactor Program
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-refactor-program" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:e1a2c8364f4d44fe28d1ebcb2ada365f95ea12192acfbc63e27d70958512c6be" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-refactor-program" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:199eb6ed1531519de779176e539739096840ba79deda784a2972601c27e5e25d" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.refactor-program`(kind `capability`)
 > **Matched Prefixes**:`src/effects/refactor/**`
@@ -56,7 +56,7 @@ flowchart LR
 入向關係:
 
 - `depends-on` ← `capability.verification.evals-checks` — Test Refactor Recommendations behavior through its source modules.
-- `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the refactor command
+- `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the rh arch refactor command
 
 組件出向關係:
 

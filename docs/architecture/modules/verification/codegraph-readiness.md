@@ -1,5 +1,5 @@
 # verification/codegraph-readiness 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-codegraph-readiness" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:7dc7d5e7ba3f95e1f7badfe368a8618c585e1bba063c4f9a0cb786b89ecd5e9d" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-codegraph-readiness" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:5586719007f62592f6c1196b7d14a202bade972c206dbb3be10c171d1fe13f79" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.verification.codegraph-readiness`(kind `capability`)
 > **Matched Prefixes**:`src/cli/tools/codegraph.ts`、`src/cli/tools/codegraph-reader.ts`、`src/cli/commands/tools.ts`
@@ -61,7 +61,7 @@ flowchart LR
 
 - `depends-on` ← `capability.verification.evals-checks` — Test CodeGraph Readiness behavior through its source modules.
 - `calls` ← `component.general-repo-access.primary` — Read CodeGraph index metadata through the adapter after path authorization
-- `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the tools command and pass the CodeGraph doctor checks and setup steps to core commands
+- `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the rh arch codegraph command and pass the CodeGraph doctor checks and setup steps to core commands
 - `depends-on` ← `capability.runtime-harness.mcp-sidecar` — Build the CodeGraph reader for the served tools and type the reader tool context
 
 組件出向關係:

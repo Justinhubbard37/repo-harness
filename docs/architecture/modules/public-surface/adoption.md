@@ -1,5 +1,5 @@
 # public-surface/adoption 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-public-surface-adoption" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:9d3add263eaf252dd79aaa8d650d5f0e510714e6c87844f3298d4117041b2e85" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-public-surface-adoption" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:8ef58d7b04ca9a2d1a67cc12f483708ce3c3ac1e561d3258534f943ab88b5308" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.public-surface.adoption`(kind `capability`)
 > **Matched Prefixes**:`src/core/adoption/**`
@@ -61,7 +61,7 @@ flowchart LR
 - `calls` ← `component.contract-assets.template-projection` — Plan and apply the transactional adoption for repository init
 - `depends-on` ← `capability.verification.evals-checks` — Test Adoption behavior through its source modules.
 - `calls` ← `capability.runtime-harness.evidence-ledger` — Resolve blob and log paths inside the repository with the shared path-safety helper
-- `calls` ← `component.global-runtime-reconciliation.cli-diagnostics` — Inspect the workflow marker, strip managed hooks and plan the adoption for the doctor and init-hook reports
+- `calls` ← `component.global-runtime-reconciliation.cli-diagnostics` — Inspect the workflow marker, strip managed hooks and plan the adoption for the doctor and setup check reports
 - `calls` ← `component.global-runtime-reconciliation.cli-root` — Register the adoption-plan command and run the adoption plan for the setup check
 - `calls` ← `component.global-runtime-reconciliation.primary` — Classify retired surfaces with the adoption fingerprints and back up removals in an FsTransaction manifest under the target lock
 - `calls` ← `component.hook-adapters.host-installer` — Share the managed hook command fingerprints with the adoption migration

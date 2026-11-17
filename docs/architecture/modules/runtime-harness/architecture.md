@@ -1,6 +1,6 @@
 # runtime-harness/architecture 架構文檔
 
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-architecture" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:7481e9410dcb10894cc0de3329787c0ea8883653ce35676cf6e25f5198e965be" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-architecture" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:2f17846fa77277bad22bfb742350c767674c82f260d2f97a38d81e36ec344cee" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.architecture`(kind `capability`)
 > **Matched Prefixes**:`src/effects/architecture/**`、`src/core/architecture/projection.ts`、`src/core/architecture/module-view.ts`、`src/core/review/module-review-prompt.ts`、`src/cli/commands/module.ts`、`src/cli/hook/agent-notice.ts`、`scripts/axr5-archctx-clean-room.ts`、`scripts/check-state-boundaries.ts`、`scripts/project-test-capabilities.ts`、`scripts/sync-helper-sources.ts`、`assets/skills/repo-harness-archimap/**`、`assets/skill-commands/repo-harness-architecture/**`、`docs/verification/**`
@@ -32,7 +32,7 @@ flowchart LR
   p1_component_global_runtime_reconciliation_architecture_read_33d34b6e["Architecture Read"]:::component
   p1_capability_runtime_harness_architecture_b2e483c3 -->|"Project the standalone capability resolver helper"| p1_component_architecture_helper_projection_4f90d353
   p1_component_architecture_module_cli_9d2922f4 -->|"List modules and export review prompts through the shared ArchitectureModelReader"| p1_component_architecture_model_reader_a34f9503
-  p1_component_global_runtime_reconciliation_archctx_closure_cli_a2249d79 -->|"Read the hand edits and the model readiness for the architecture-projection command"| p1_component_global_runtime_reconciliation_architecture_read_33d34b6e
+  p1_component_global_runtime_reconciliation_archctx_closure_cli_a2249d79 -->|"Read the hand edits and the model readiness for the rh arch projection command"| p1_component_global_runtime_reconciliation_architecture_read_33d34b6e
   p1_component_global_runtime_reconciliation_architecture_read_33d34b6e -->|"Run each read through the package-local archctx client and read the projection policy"| p1_component_global_runtime_reconciliation_archctx_closure_1b9b31b7
   classDef actor fill:#111827,color:#ffffff,stroke:#f9fafb,stroke-width:2px
   classDef component fill:#075985,color:#ffffff,stroke:#bae6fd,stroke-width:2px
@@ -40,7 +40,7 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:e133f9085972096212457e328719c4d194f587b013c9ccafb184c93f662e8770`).
+- Proof: `proven` (`sha256:96595f54d9eb365704697b99fc3e9e0f09b3ede0cf5bded0e78dd3e360d64058`).
 - Semantic nodes: `15`; declared relations: `4`.
 
 ### 1.2 模組職責表
@@ -101,7 +101,7 @@ flowchart LR
   - `calls` → `capability.runtime-harness.hook-adapters` — Write the private global configuration through the installer ownership writer
   - `reads` → `capability.workflow-engine.workflow-state` — Read the capability ownership type for archctx resolve results
 - `component.global-runtime-reconciliation.archctx-closure-cli`:
-  - `calls` → `component.global-runtime-reconciliation.architecture-read` — Read the hand edits and the model readiness for the architecture-projection command
+  - `calls` → `component.global-runtime-reconciliation.architecture-read` — Read the hand edits and the model readiness for the rh arch projection command
 - `component.global-runtime-reconciliation.archctx-closure-core`:
   - 無。
 - `component.global-runtime-reconciliation.archctx-closure-scripts`:
@@ -123,14 +123,14 @@ flowchart LR
 | `component.architecture.state-boundaries-check` | State Boundaries Check | `1–2` 個文件 / `1000–2000` 行 | 未宣告 |
 | `component.architecture.test-projection-check` | Test Capability Projection Check | `1–2` 個文件 / `100–200` 行 | 未宣告 |
 | `component.global-runtime-reconciliation.archctx-closure` | ArchContext Closure | `10–20` 個文件 / `1000–2000` 行 | 未宣告 |
-| `component.global-runtime-reconciliation.archctx-closure-cli` | ArchContext Closure (cli) | `5–10` 個文件 / `200–500` 行 | 未宣告 |
-| `component.global-runtime-reconciliation.archctx-closure-core` | ArchContext Closure (core) | `1–2` 個文件 / `200–500` 行 | 未宣告 |
+| `component.global-runtime-reconciliation.archctx-closure-cli` | ArchContext Closure (cli) | `5–10` 個文件 / `500–1000` 行 | 未宣告 |
+| `component.global-runtime-reconciliation.archctx-closure-core` | ArchContext Closure (core) | `2–5` 個文件 / `500–1000` 行 | 未宣告 |
 | `component.global-runtime-reconciliation.archctx-closure-scripts` | ArchContext Closure (scripts) | `1–2` 個文件 / `200–500` 行 | 未宣告 |
 | `component.global-runtime-reconciliation.architecture-read` | Architecture Read | `1–2` 個文件 / `200–500` 行 | 未宣告 |
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:e133f9085972096212457e328719c4d194f587b013c9ccafb184c93f662e8770`); selectors `3/3`.
+> **Proof**: `proven` (`sha256:96595f54d9eb365704697b99fc3e9e0f09b3ede0cf5bded0e78dd3e360d64058`); selectors `3/3`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%

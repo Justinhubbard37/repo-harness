@@ -1,5 +1,5 @@
 # runtime-harness/mcp-sidecar 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-mcp-sidecar" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:72f5b90f8589b1957a4263356747853f7cc94234bd5c8ab943c6698d26f4dc78" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-mcp-sidecar" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:56eabc1f7d76a09d5ab11b76a60811a59000b0137deb9aae518a22ee46819003" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.mcp-sidecar`(kind `capability`)
 > **Matched Prefixes**:`src/cli/mcp/**`
@@ -31,7 +31,7 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:59b5491395c66af4264f9c2fab5e79333b3ea7fbc152ed9c764d94a6a27187f2`).
+- Proof: `proven` (`sha256:3324010d17ad56bde062808a4160feed69dfbd9320da83d747d250d5aa9ab81a`).
 - Semantic nodes: `5`; declared relations: `6`.
 
 ### 1.2 模組職責表
@@ -46,7 +46,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `component.mcp-sidecar.host-setup` | `entrypoint.mcp-sidecar.cli` | `src/cli/mcp/cli-actions.ts#runMcpServeCommand` | `sink.mcp-sidecar.stdio-start` → `src/cli/mcp/transports/stdio.ts#startMcpStdio` |
 | `component.mcp-sidecar.primary` | `entrypoint.mcp-sidecar.tool-dispatch` | `src/cli/mcp/tools.ts#callMcpTool` | `sink.mcp-sidecar.path-policy` → `src/cli/mcp/paths.ts#resolveMcpPath` |
-| `component.mcp-sidecar.primary` | `entrypoint.mcp-sidecar.tool-context` | `src/cli/mcp/server.ts#createMcpToolContext` | `sink.mcp-sidecar.startup-config` → `src/cli/mcp/auth.ts#loadMcpLocalConfig`、`sink.mcp-sidecar.legacy-refusal` → `src/cli/mcp/auth.ts#assertNoLegacyRepoScopeMcpConfig` |
+| `component.mcp-sidecar.primary` | `entrypoint.mcp-sidecar.tool-context` | `src/cli/mcp/server.ts#createMcpToolContext` | `sink.mcp-sidecar.startup-config` → `src/cli/mcp/auth.ts#loadMcpLocalConfig` |
 | `component.mcp-sidecar.transport-auth` | `entrypoint.mcp-sidecar.stdio-transport` | `src/cli/mcp/transports/stdio.ts#startMcpStdio` | `sink.mcp-sidecar.session-server` → `src/cli/mcp/server.ts#createRepoHarnessMcpServer` |
 
 ### 1.3 規模信號
@@ -102,7 +102,7 @@ flowchart LR
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:59b5491395c66af4264f9c2fab5e79333b3ea7fbc152ed9c764d94a6a27187f2`); selectors `6/6`.
+> **Proof**: `proven` (`sha256:3324010d17ad56bde062808a4160feed69dfbd9320da83d747d250d5aa9ab81a`); selectors `5/5`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%
@@ -134,9 +134,9 @@ sequenceDiagram
   alt Tool call runs under the profile path policy
   p2_dispatch_8a0cbd63->>p2_policy_17ad92e6: Resolve each tool path under the profile policy before any read or write
     Note over p2_dispatch_8a0cbd63: Return the redacted tool result
-  else Repository keeps a legacy repo-scope MCP config
-  p2_dispatch_8a0cbd63->>p2_policy_17ad92e6: Refuse the legacy repo-scope config before the server starts
-    Note over p2_dispatch_8a0cbd63: Exit with the legacy config error and serve no tool
+  else User config keeps a retired key
+  p2_dispatch_8a0cbd63->>p2_policy_17ad92e6: Throw MCP_CONFIG_RETIRED_FIELD before the server starts
+    Note over p2_dispatch_8a0cbd63: Exit with the retired key error and serve no tool
   end
 ```
 <!-- END ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-mcp-sidecar" -->
