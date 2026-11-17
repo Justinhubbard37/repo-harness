@@ -29,7 +29,7 @@
 - For a bug fix, prefer a focused failing regression before the fix. Run only the reproducer during RED. Record a reproduction gap when the environment cannot produce it; ordinary tasks do not require RED artifacts.
 - A diff's size, a new test file, a new agent or a rebase does not by itself require a full run.
 - Use `bun run test:files <affected tests> --timeout 60000 --max-concurrency 1`; extend existing coverage before creating a new test file.
-- Test budget per PR: added test lines divided by added product lines must not exceed 2:1, and the PR adds at most one test file. A PR that adds no product lines records the exception for any added test. Measure with `git diff --numstat main...HEAD -- tests` and `git diff --numstat main...HEAD -- src scripts`; above either cap, add a `Test budget exception` PR section with the counts and why an existing test cannot cover the behavior.
+- Read `.ai/harness/policy.json#rules` for enabled rules and their parameters; `src/core/ci/rules.ts` defines their meaning and repair steps.
 - Select tests by observable risk and owning runtime boundary, including error/recovery paths when affected.
 - Mechanical prose changes need link/scope validation, not new product tests; do not test incidental formatting or that deleted files stay deleted.
 - Reviewers consume the recorded command, result, revision and environment; they do not rerun passing checks to claim ownership.
