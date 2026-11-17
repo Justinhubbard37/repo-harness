@@ -10,7 +10,6 @@ import { runUserUninstall } from '../../src/cli/installer/uninstall';
 import { configurationReceiptPath, writeOwnedConfiguration } from '../../src/cli/installer/configuration-ownership';
 import { buildManagedHooks } from '../../src/cli/installer/managed-entries';
 import { renderGlobalRulesBlock } from '../../src/cli/installer/global-context';
-import { RUNTIME_STATE_IGNORE_CONTENT } from '../../src/effects/adoption/gitignore-plan';
 const CLI = join(import.meta.dir, '../../src/cli/index.ts');
 beforeAll(() => { seedGlobalPackageFixture(); });
 function fixture(run: (home: string, env: NodeJS.ProcessEnv) => void) {
@@ -152,10 +151,8 @@ test('managed context block cleanup keeps user prose',()=>fixture((home,env)=>{
  put(home,'.codex/AGENTS.md',`user-before\n${RULES_BLOCK}\nuser-after\n`);
  expect(runUserUninstall({target:'codex',env}).status).toBe('complete');expect(readFileSync(join(home,'.codex/AGENTS.md'),'utf8')).toBe('user-before\n\nuser-after\n');
 }));
-const IGNORE_BLOCK=`# BEGIN: repo-harness runtime-state\n${RUNTIME_STATE_IGNORE_CONTENT}\n# END: repo-harness runtime-state`;
 test.each([
  ['.claude/CLAUDE.md',`user-before\n${RULES_BLOCK.replace('## Reporting','- My own rule.\n\n## Reporting')}\n`,'managed rules block'],
- ['.config/git/ignore',`*.log\n${IGNORE_BLOCK.replace('\n# END:','\nscratch-*/\n# END:')}\n`,'runtime-state ignore block'],
 ])('an edited managed block in %s keeps the file byte-identical and is unresolved',(path,content,name)=>fixture((home,env)=>{
  put(home,path,content);
  const result=runUserUninstall({target:'both',env});

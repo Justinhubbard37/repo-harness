@@ -1,6 +1,6 @@
 import { globalConfigurationPath, mutateGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { globalRuntimeScope, withRuntimeTransactionContext, type RuntimeTransactionContext } from '../../effects/locking/runtime-transaction-lock';
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, rmSync, rmdirSync, unlinkSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
@@ -10,7 +10,8 @@ import { piPackagePresent, removePiPackage } from './pi-package';
 import { piExecutable } from '../../effects/pi-executable';
 import { deepEqual } from './shared';
 import { globalContextPath, removeManagedBlock } from './global-context';
-import { removeRuntimeStateIgnoreBlock, userExcludesFilePath } from '../../effects/adoption/gitignore-plan';
+import { removeRuntimeStateIgnoreBlock } from '../../effects/adoption/gitignore-plan';
+import { readRepositoryExcludes, repositoryCommonDirectory, repositoryExcludesLedgerPath, repositoryExcludeTarget, serializeRepositoryExcludes, type RepositoryExclude } from './repository-excludes';
 import { managedInstallSurfaceIsCurrent, readInstallState, type ManagedInstallSurface } from './install-profile';
 import { installProfileStatePath } from './install-state';
 import { assertConfigurationPath, configurationPaths, configurationReceiptPath, hostConfigurationRoot, readConfigurationFragment, readConfigurationReceipt, replaceConfigurationFragment, writePrivateConfiguration } from './configuration-ownership';
@@ -82,9 +83,9 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   const piRemovals: string[] = [];
   const piSkills = hostSkillRoot(home, 'pi', env);
   let lock: ProviderSkillLock;
-  // The user-level Git excludes file can sit outside HOME (core.excludesFile); its directory is its root.
-  let excludesPath: string | null = null;
-  const surfaceRoot = (path: string) => path === lock.path ? lock.root : path === excludesPath ? dirname(path) : path.startsWith(piSkills + '/') ? dirname(piSkills) : home;
+  // A repository exclude file, its links followed, has its own directory as its root.
+  const repositoryExcludes = new Set<string>();
+  const surfaceRoot = (path: string) => path === lock.path ? lock.root : repositoryExcludes.has(path) ? dirname(path) : path.startsWith(piSkills + '/') ? dirname(piSkills) : home;
   const removedSurfaces = new Set<ManagedInstallSurface>();
   const remember = (path: string): void => { if (!originals.has(path)) originals.set(path, fingerprint(path)); };
   const read = (path: string): string => writes.has(path) ? writes.get(path) ?? '' : existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -242,19 +243,24 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
         }
       }
     } catch (error) { unresolved(path, String((error as Error).message)); }
-    const excludes = userExcludesFilePath(env);
-    if (!excludes.ok) unresolved('user-level Git excludes file', excludes.error);
-    else if (fileExists(excludes.path)) {
-      excludesPath = excludes.path;
+    const ledgerPath = repositoryExcludesLedgerPath(env);
+    let ledger: RepositoryExclude[] = [];
+    try { ledger = readRepositoryExcludes(env); } catch (error) { unresolved(ledgerPath, String((error as Error).message)); }
+    const retained = ledger.filter((entry) => {
       try {
-        // Preview refuses a symlinked excludes file, so dry run and apply report the same item.
-        assertConfigurationPath(excludes.path, dirname(excludes.path));
-        const removal = removeRuntimeStateIgnoreBlock(read(excludes.path));
-        if (removal.status === 'unbalanced') unresolved(excludes.path, 'unbalanced runtime-state ignore block; preserved');
-        else if (removal.status === 'edited') unresolved(excludes.path, 'runtime-state ignore block was edited; preserved. Move your rules outside the markers, then delete the block.');
-        else if (removal.status === 'removed') change(excludes.path, removal.content.trim() ? removal.content : null, 'runtime-state ignore block');
-      } catch (error) { unresolved(excludes.path, String((error as Error).message)); }
-    }
+        if (!existsSync(entry.repo_path)) throw new Error(`repository ${entry.repo_path} is unavailable; block and ledger entry kept`);
+        const path = repositoryExcludeTarget(repositoryCommonDirectory(entry.repo_path, env), env);
+        if (path !== entry.exclude_path) throw new Error(`repository ${entry.repo_path} now resolves its exclude file to ${path}; preserved`);
+        repositoryExcludes.add(path);
+        // Read as latin1 and written back the same way, so the bytes outside the block stay.
+        const removal = removeRuntimeStateIgnoreBlock(existsSync(path) ? readFileSync(path, 'latin1') : '');
+        if (removal.status === 'unbalanced') unresolved(path, 'unbalanced runtime-state ignore block; preserved');
+        else if (removal.status === 'edited') unresolved(path, 'runtime-state ignore block was edited; preserved. Move your rules outside the markers, then delete the block.');
+        else if (removal.status === 'removed') change(path, removal.content, 'runtime-state ignore block');
+        return removal.status === 'unbalanced' || removal.status === 'edited';
+      } catch (error) { unresolved(entry.exclude_path, String((error as Error).message)); return true; }
+    });
+    if (retained.length !== ledger.length) change(ledgerPath, serializeRepositoryExcludes(retained), 'repository excludes ledger');
     for (const name of ['agent-fleet-user-managed.json']) {
       const path = join(home, '.repo-harness', name);
       try { assertConfigurationPath(path, home); if (existsSync(path)) change(path, null, 'product configuration'); }
@@ -315,6 +321,7 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
         if (path === globalConfigurationPath(env)) {
           mutateGlobalConfiguration(env, () => ({ config: content === null ? null : object(content), value: undefined }), { runtimeLock: opts.runtimeLock });
         } else if (content === null) { if (existsSync(path)) unlinkSync(path); }
+        else if (repositoryExcludes.has(path)) writeFileSync(path, content, 'latin1');
         else writePrivateConfiguration(path, content, surfaceRoot(path));
       }
       for (const path of [...originals.keys()]) {

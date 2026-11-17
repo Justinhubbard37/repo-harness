@@ -10,10 +10,8 @@ import { globalConfigurationWriter, mutateGlobalConfiguration } from '../../effe
 import { DEFAULT_SEATS_CONFIG, INTRODUCED_ROUTING_DEFAULTS, ROUTING_CLASSES, SeatsConfigMigrationRequiredError, decodeSeatsConfig } from '../../core/board/seats-settings';
 import { checkSeatRoutingModels, seatsRanges } from '../../effects/board/seats-configuration';
 import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
-import { upsertManagedBlock } from "../../core/adoption/managed-block";
 import { renderJsonObjectUpdate } from "../../effects/adoption/standard-plan";
-import { assertConfigurationPath } from "../installer/configuration-ownership";
-import { ignoreBlockProof, runtimeStateIgnoreOperation, userExcludesFilePath } from "../../effects/adoption/gitignore-plan";
+import { retireUserExcludesBlock, writeRepositoryExcludes } from "../installer/repository-excludes";
 import { sha256Hex } from "../../core/evidence/sha256";
 import { homedir, tmpdir, userInfo } from "os";
 import { delimiter, dirname, join, relative, resolve, sep } from "path";
@@ -1033,34 +1031,16 @@ const AGENT_FLEET_STEP = 'install agent fleet';
 export const GLOBAL_RULES_REFRESH_STEP = 'refresh global working rules';
 
 export const RUNTIME_IGNORE_RULES_STEP = 'write runtime ignore rules';
+const RETIRE_USER_EXCLUDES_STEP = 'retire user-level runtime ignore block';
 
-/** Writes the runtime-state ignore block into the user-level Git excludes file; `core.excludesFile` is never set. */
-function writeRuntimeIgnoreRules(env: NodeJS.ProcessEnv): GlobalRuntimeStep {
-  const step = RUNTIME_IGNORE_RULES_STEP;
-  const target = userExcludesFilePath(env);
-  if (!target.ok) return { step, status: 'failed', detail: target.error };
-  try {
-    // Uninstall refuses a symlinked excludes file, so update must not write a block through one.
-    assertConfigurationPath(target.path, dirname(target.path));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { step, status: 'failed', detail: `${target.path}: ${reason}; set core.excludesFile to the real file, then run rh update again` };
-  }
-  try {
-    const existing = existsSync(target.path) ? readFileSync(target.path, 'utf-8') : '';
-    const operation = runtimeStateIgnoreOperation(target.path);
-    const update = upsertManagedBlock(existing, operation, ignoreBlockProof(operation));
-    if (!update.ok) return { step, status: 'failed', detail: `${target.path}: ${update.error}` };
-    if (update.kept !== undefined) {
-      return { step, status: 'ok', detail: `${target.path}: kept the edited block "${update.kept}"; it differs from every released block, so update does not change it. Delete the block, then run rh update again to get the current one` };
-    }
-    if (!update.changed) return { step, status: 'ok', detail: `${target.path}: current` };
-    mkdirSync(dirname(target.path), { recursive: true });
-    writeFileSync(target.path, update.content!);
-    return { step, status: 'ok', detail: `${target.path}: written` };
-  } catch (error) {
-    return { step, status: 'failed', detail: `${target.path}: ${error instanceof Error ? error.message : String(error)}` };
-  }
+/**
+ * Writes the runtime-state block into each adopted repository's `.git/info/exclude`.
+ * Update then runs the one-shot removal of the block that earlier releases wrote to the user-level Git excludes file.
+ */
+function writeRuntimeIgnoreRules(env: NodeJS.ProcessEnv, updateMode: boolean): GlobalRuntimeStep[] {
+  const repositories = writeRepositoryExcludes(env);
+  const step: GlobalRuntimeStep = { step: RUNTIME_IGNORE_RULES_STEP, status: repositories.status, detail: repositories.detail };
+  return updateMode ? [step, { step: RETIRE_USER_EXCLUDES_STEP, ...retireUserExcludesBlock(env, repositories) }] : [step];
 }
 
 function installAgentFleet(sourceRoot: string, bunExecutable: string, env: NodeJS.ProcessEnv): GlobalRuntimeStep {
@@ -2113,7 +2093,7 @@ export function runGlobalRuntimeSetup(
     const pi = installPiPackage(bunGlobalPackageRoot(env)!, plugins.includes('pi') && target === 'both' && opts.hostAdapters !== false, env);
     steps.push({ ...pi, ...(pi.created ? { owned_surface: piPackageSurface(pi.source) } : {}) });
   }
-  steps.push(writeRuntimeIgnoreRules(env));
+  steps.push(...writeRuntimeIgnoreRules(env, updateMode));
   // Last, and only after every other step passed: a failed update keeps the previous command.
   if (updateMode && steps.every(step => step.status !== 'failed')) steps.push(retireCliLink(env));
   return finalizeRuntimeResult(steps);

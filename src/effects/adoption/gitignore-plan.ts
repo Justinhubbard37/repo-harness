@@ -78,7 +78,7 @@ export function gitignoreManagedBlockOperation(
 
 export const RUNTIME_STATE_IGNORE_MARKER = "repo-harness runtime-state";
 
-// Runtime-state rules live in the user-level Git excludes file, so a rule change needs no commit in any repository.
+// Runtime-state rules live in each adopted repository's .git/info/exclude, so a rule change needs no commit.
 export const RUNTIME_STATE_IGNORE_CONTENT = readFileSync(
   join(import.meta.dir, "../../../assets/templates/runtime-state.gitignore"), "utf8",
 ).trimEnd();
@@ -90,7 +90,7 @@ export function runtimeStateIgnoreOperation(path: string): AppendManagedBlockOpe
     path,
     marker: RUNTIME_STATE_IGNORE_MARKER,
     content: RUNTIME_STATE_IGNORE_CONTENT,
-    reason: "Ensure the repo-harness runtime-state ignore block in the user-level Git excludes file is current",
+    reason: "Ensure the repo-harness runtime-state ignore block in the repository Git exclude file is current",
     risk: "low",
     status: "planned",
   };
@@ -100,6 +100,7 @@ export type UserExcludesFile = { readonly ok: true; readonly path: string } | { 
 
 /**
  * `core.excludesFile` from the global Git config when set, otherwise Git's default user-level excludes file.
+ * Only the one-shot removal of the block that earlier releases wrote there reads it.
  * `--includes` reads the `[include]` and `[includeIf]` sections of that config, as Git does when it applies ignore rules.
  */
 export function userExcludesFilePath(callerEnv: NodeJS.ProcessEnv = {}): UserExcludesFile {
