@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -60,7 +60,35 @@ const expectedSnapshot: ProjectionExpectedSnapshotV1 = {
   repositoryId: 'repo.0123456789abcdef', workspaceId: 'workspace.0123456789abcdef', headSha: 'a'.repeat(40), worktreeDigest: digest('1'),
 };
 
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+/**
+ * Exit signal of a fixture script and of every process that inherited its stdio pipes.
+ * `spawnSync` returns at the child exit, so on Windows it leaves a provider descendant that
+ * still holds its working directory inside the fixture root; `close` on a spawned child fires
+ * only after those pipes close, which requires the descendant to exit.
+ */
+const scriptExits: Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean }>[] = [];
+
+function runFixtureScript(f: { repoRoot: string }, script: string, timeoutMs: number) {
+  const child = spawn(process.execPath, [script], { cwd: f.repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+  child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
+  const exit = new Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolve) => {
+    child.once('close', (status: number | null) => { clearTimeout(timer); resolve({ status, stdout, stderr, timedOut }); });
+  });
+  scriptExits.push(exit);
+  return exit;
+}
+
+afterEach(async () => {
+  // The fixture root is the working directory of the spawned tree: remove it only after
+  // the tree released its stdio pipes, then let the bounded retry absorb the handle teardown.
+  await Promise.all(scriptExits.splice(0));
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+});
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'repo-harness-archctx-provider-'));
@@ -1028,7 +1056,7 @@ describe('package-local ArchContext projection provider', () => {
       .toThrow('no committed projection apply exists for request.axr5');
   });
 
-  test('bounds a real provider process tree whose descendant keeps captured pipes open', () => {
+  test('bounds a real provider process tree whose descendant keeps captured pipes open', async () => {
     const f = fixture();
     // Include runtime selection and startup so the provider reaches its descendant
     // before the timeout exercises process-tree cleanup. Selection has its own test.
@@ -1044,34 +1072,44 @@ describe('package-local ArchContext projection provider', () => {
       '',
     ].join('\n'));
     const providerModule = join(import.meta.dir, '..', 'src', 'effects', 'architecture', 'archctx-provider.ts');
+    const terminationModule = join(import.meta.dir, '..', 'src', 'effects', 'process-group-termination.ts');
     const script = join(f.root, 'provider-timeout.ts');
     writeFileSync(script, [
       `import { archctxCapabilities } from ${JSON.stringify(providerModule)};`,
+      `import { processExists } from ${JSON.stringify(terminationModule)};`,
       `const started = Date.now();`,
       `try {`,
       `  archctxCapabilities(${JSON.stringify(f.repoRoot)}, { consumerRoot: ${JSON.stringify(f.consumerRoot)}, policy: { provider: 'archctx', applyMode: 'manual', requiredVersion: '${ARCHCTX_REQUIRED_VERSION}', timeoutMs: ${providerBudgetMs} }, env: { ...process.env, REPO_HARNESS_NODE_BIN: ${JSON.stringify(node)}, ARCHCTX_DESCENDANT_PID_PATH: ${JSON.stringify(descendantPidPath)} }, deadlineMs: Date.now() + ${providerBudgetMs} });`,
       `  process.exitCode = 2;`,
       `} catch (error) {`,
       `  console.error(String(error));`,
-      `  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);`,
       `  const pid = Number((await import('node:fs')).readFileSync(${JSON.stringify(descendantPidPath)}, 'utf8'));`,
-      `  let descendantAlive = true;`,
-      `  try { process.kill(pid, 0); } catch { descendantAlive = false; }`,
-      `  if (descendantAlive) try { process.kill(pid, 'SIGKILL'); } catch { descendantAlive = false; }`,
+      // The absence probe is the exit signal; a fixed wait would report a live descendant as gone. Both bounds leave
+      // room inside the 4 s outer bound for the fallback kill and the pipe release, so neither can be cut off.
+      `  const waitForAbsence = async (untilMs: number): Promise<boolean> => {`,
+      `    while (processExists(pid) && Date.now() < untilMs) await new Promise((resolve) => setTimeout(resolve, 20));`,
+      `    return !processExists(pid);`,
+      `  };`,
+      `  const descendantAlive = !(await waitForAbsence(started + ${providerBudgetMs} + 500));`,
+      // Release the captured pipes even when the process tree kill failed, so the fixture never hangs.
+      `  if (descendantAlive) {`,
+      `    try { process.kill(pid, 'SIGKILL'); } catch {}`,
+      `    await waitForAbsence(started + ${providerBudgetMs} + 1_000);`,
+      `  }`,
       `  console.log(String(error));`,
       `  console.log('descendant_alive=' + descendantAlive);`,
       `  console.log('elapsed=' + (Date.now() - started));`,
       `}`,
       '',
     ].join('\n'));
-    const result = spawnSync(process.execPath, [script], { cwd: f.repoRoot, encoding: 'utf8', timeout: 4_000, killSignal: 'SIGKILL' });
-    expect((result.error as NodeJS.ErrnoException | undefined)?.code).not.toBe('ETIMEDOUT');
+    const result = await runFixtureScript(f, script, 4_000);
+    expect(result.timedOut).toBe(false);
     if (result.status !== 0) throw new Error(`provider timeout fixture failed: ${result.stderr || result.stdout}`);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('descendant_alive=false');
   });
 
-  test('charges Node runtime selection to the caller deadline', () => {
+  test('charges Node runtime selection to the caller deadline', async () => {
     const f = fixture();
     const slowNode = writeNodeStub(join(f.root, 'slow-node'), { version: '24.18.0', delayMs: 6_000 });
     const providerModule = join(import.meta.dir, '..', 'src', 'effects', 'architecture', 'archctx-provider.ts');
@@ -1084,8 +1122,8 @@ describe('package-local ArchContext projection provider', () => {
       `} catch (error) { console.log(String(error)); }`,
       '',
     ].join('\n'));
-    const result = spawnSync(process.execPath, [script], { cwd: f.repoRoot, encoding: 'utf8', timeout: 4_000, killSignal: 'SIGKILL' });
-    expect((result.error as NodeJS.ErrnoException | undefined)?.code).not.toBe('ETIMEDOUT');
+    const result = await runFixtureScript(f, script, 4_000);
+    expect(result.timedOut).toBe(false);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('RH_ARCHCTX_TIMEOUT: architecture projection timeout before Node runtime selection');
     // A per-candidate timeout must still permit the next trusted candidate when
