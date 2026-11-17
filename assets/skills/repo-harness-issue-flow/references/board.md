@@ -150,21 +150,27 @@ after each claim or status change.
   unmerged code sets its base to that PR's branch. A PR to issue link is
   `Closes #<issue>` or `Refs #<issue>` in the PR body.
 - **Pushed history is append-only.** A head owner never rewrites a branch
-  that someone may have built on. It syncs main with a merge commit, and
-  it does not force-push. A rewrite that cannot be avoided needs a
-  `handoff` or `decision` comment first, on every PR that depends on it.
-  This rule is what makes stacking safe.
+  that someone may have built on. It takes main with a merge commit only
+  when it must, and it does not force-push. A rewrite that cannot be
+  avoided needs a `handoff` or `decision` comment first, on every PR that
+  depends on it. This rule is what makes stacking safe.
 - **Early start stacks on the producer.** When an issue allows early start
   and the consumer needs the producer's unmerged code to compile, the
   consumer branches from the producer's PR head, and its PR's base is the
   producer's branch. The consumer's CI then stays green, and its diff
   shows only its own work. Without that need, base the PR on main.
 - **Producer merges.** The coordinator posts `unblocked` on the consumer
-  PR. Its head owner retargets the PR to main (`gh pr edit <n> --base
-  main`), merges main into its branch (no force push), runs the affected
-  checks and posts `integration status`. A squash merge of the producer
-  leaves its commits in the consumer branch; the merge of main resolves
-  them as already applied.
+  PR, then tests the consumer head against main with `git merge-tree
+  --write-tree origin/main <consumer head>`. A clean result needs no merge
+  of main: the head owner retargets the PR to main (`gh pr edit <n> --base
+  main`), and the PR merges on its existing head, CI and records. A
+  retarget is an `edited` event and starts no CI run; make it before the
+  next push, because a push to a PR whose base conflicts starts no CI run
+  either. A conflict takes one merge of main in the consumer branch (no
+  force push), and that new head takes one CI run and its delta rows
+  (`acceptor.md` §2.2, New head). The consumer's CI already tested its head
+  on the producer's content, and a squash merge lands the producer's hunks
+  as already present.
 - **Producer rewrote anyway.** Replay only your own commits onto the new
   producer head (`git rebase --onto <new-head> <old-head>`), push with
   `--force-with-lease` on your own branch only, and post `integration
@@ -180,10 +186,15 @@ after each claim or status change.
   review` refuse a parent with more than two children and no plan
   (`plan_unavailable`). The Order column of the parent table is only a
   view. A PR whose base is behind main merges with no
-  sync, so each PR head has one CI run. A PR that conflicts with main
-  takes a merge of main by its head owner. That merge is a new head: it
-  needs its own CI run and its own review rows by the tier rule
-  (`acceptor.md` §2.2, New head). Procedure: `orchestrator.md` §9.
+  sync, so each PR head has one CI run. A stale base is not a reason to
+  merge main (`orchestrator.md` §8, CI red). Base drift needs no CI
+  rerun: a local `git merge-tree` plus the tests of the overlapping files
+  is enough, and a docs-only main change needs neither. Only a conflict
+  with main takes a merge of main, by its head owner. That merge is a new
+  head: it needs one CI run and its delta rows by the tier rule
+  (`acceptor.md` §2.2, New head). The integrator fixes the merge order of
+  in-flight PRs that touch the same files before their CI runs: such PRs
+  either wait or join one batch. Procedure: `orchestrator.md` §9.
 
 ## Comment protocol
 
@@ -203,7 +214,7 @@ lines, then at most a short free-text body. The exact shapes are in
 | `handoff` | Issue and PR | Current holder, or coordinator on the owner's instruction | Move a claim role. Names prior claim, next holder, exact state |
 | `acceptance claim` | PR | Acceptor, or the coordinator for a gatekeeper round | Take one review in a round: role, round, subject SHA, tier (`acceptor.md`) |
 | `acceptance record` | PR | Acceptor or coordinator | One row per review: round, role, subject SHA, verdict; then the model relation and the findings. The same shape for every review (`templates.md`) |
-| `unblocked` | PR or issue | Coordinator | A dependency merged. Sync and continue |
+| `unblocked` | PR or issue | Coordinator | A dependency merged. Retarget and continue; merge main only on a conflict |
 | `integration status` | PR | Head owner or integrator | The result of a merge of main (delta, new head, CI), or a merge result with the executor exit code |
 
 `plan`, `decision`, `scope change`, `unblocked` and `issue claim`

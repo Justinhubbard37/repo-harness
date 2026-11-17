@@ -448,7 +448,7 @@ Review-bot reference: no findings at <sha>: no action
 repo-harness unblocked
 To: head owner #<p>
 Merged: #<dep> as <merge sha>; main is <sha>
-Next: merge main into your branch (no force push; the `unblocked` case of `worker.md`, Main moved), run affected checks, post integration status
+Next: run `git merge-tree --write-tree origin/main <head>`. Clean: retarget to main (`gh pr edit <n> --base main`) before your next push, and merge main nowhere. Conflict: merge main once (no force push), then post integration status
 ```
 
 ### merge hold (on the parent, an issue or a PR)
@@ -521,6 +521,6 @@ state it (`orchestrator.md` §2 and §8):
 - One concern and one module in this PR; ask for a split before acceptance, not after.
 - Keep the PR draft until the verification evidence exists.
 - Low or docs-only: put the commands and outcomes in the PR body (Review by risk).
-- A second identical CI failure is not a flake: classify it once (diff, infrastructure, stale base).
+- A second identical CI failure is not a flake: classify it once (diff, infrastructure, main side). A main-side cause is fixed on main, not in your PR.
 - `Affected coverage is unknown for: <paths>` is a map bug: fix the consumer edge or the test import.
 ```

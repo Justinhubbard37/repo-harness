@@ -391,14 +391,20 @@ host's PR events or check when the worker reports.
 - **CI red.** The worker owns the fix. Send the failing job name and the
   log excerpt to that worker, because it has the context. Allow one rerun
   for a known flake. A second identical failure is not a flake. Classify
-  it once, as the diff, the infrastructure or a stale base, and act on
+  it once, as the diff, the infrastructure or the main side, and act on
   that class: the worker fixes the diff, the owner gets the infrastructure
-  failure, and for a stale base the worker merges main into the head. This is one of
-  the two cases that merge main without a conflict (`acceptor.md` §2.2,
-  New head). The merge makes a new head. Do not rerun the job
-  again. A job that was cancelled or timed out with no failed assertion is
-  infrastructure: it starts no fix round. Rerun the failed job once on the
-  same head. A second identical cancel goes to the owner.
+  failure, and a main-side cause is fixed on main once, in one PR. No PR
+  merges main for this class: that merge makes a new head, a new CI run
+  and new delta rows on every open PR. After the main fix lands, only the
+  PR that is next to merge gets a CI re-trigger on its unchanged head, so
+  its records stay valid. The other PRs wait until they are next. The
+  re-trigger is a close and reopen, and it works once the workflow takes
+  the `reopened` event (#3068). Until #3068 lands, a head with no usable
+  run gets one same-tree amend push (`git diff` is empty) and one
+  confirmation row that records the tree identity. A job that was
+  cancelled or timed out with no failed assertion is infrastructure: it
+  starts no fix round. Rerun the failed job once on the same head. A
+  second identical cancel goes to the owner.
 - **Uncovered path.** A CI selection failure `Affected coverage is unknown
   for: <paths>` is a map bug. The worker fixes the consumer edge
   (`scripts/ci-path-consumers.ts`) or the test import. Never widen to the
@@ -424,6 +430,8 @@ host's PR events or check when the worker reports.
   Send each reviewer the review packet of `acceptor.md` §2.1. Each reviewer
   posts an `acceptance claim` before it reads. Who reviews each
   round, and how many claims a round has, follow `acceptor.md` §2.2.
+  Ship the whole verdict bundle of a round before the worker pushes: the
+  worker fixes and pushes once per round, not once per finding.
   Findings take the severities of `acceptor.md` §3. A P2 and a P3 do not
   block the PR: the `PASS` record carries them, and you file one follow-up
   issue for the PR's P2 findings under the same parent and resolve their
@@ -613,6 +621,13 @@ and no plan uses blocked-by order: a blocker lands before the issue it
 blocks. `rh board merge` and `rh board review` refuse a parent with more
 than two children and no plan (`plan_unavailable`); post a plan first.
 The Order column of the parent table is only a view.
+
+Fix the merge order of in-flight PRs that touch the same files before
+their CI runs: such PRs either wait or join one batch, so a later PR does
+not re-cut after the earlier one lands. A stacked consumer is retargeted
+to its new base before its next push, never after. A retarget takes the
+`edited` event and a push to a PR whose base conflicts starts no CI run,
+so a retarget after the push leaves the head with no run.
 
 ### 9.3 Board merge
 

@@ -221,6 +221,14 @@ blocked. A hand-drawn slice is not a fallback.
 
 You are the head owner. Only you push to this branch.
 
+- **One push per review round.** Collect the whole verdict bundle of a
+  round, then fix and push once. Do not push while a CI run that is merge
+  evidence is running: a push cancels that run and starts another. A
+  stacked writer commits locally and pushes after its producer merges.
+  Retarget the PR to its new base before that push, never after: a
+  retarget is an `edited` event, and a push to a PR whose base conflicts
+  starts no CI run. A late retarget leaves the head with no run at all.
+
 - **CI red.** Read the failing job log. Fix the cause, not the symptom.
   Rerun a job once only for a failure that the log shows is unrelated to
   your diff (a network timeout, a runner fault), and say so on the board.
@@ -250,12 +258,14 @@ You are the head owner. Only you push to this branch.
   does a self-check. The pre-check writes no record and does not replace
   the review.
 - **Main moved.** A PR whose base is behind main merges with no sync, so
-  do not merge main into a PR that has no conflict. Merging main without a conflict has two cases only: a stale-base CI failure (`orchestrator.md` §8, CI red) and an `unblocked` stacked PR (`worker.md`, Main moved). When the coordinator
-  posts `unblocked` for a stacked PR, or your PR conflicts with main,
-  retarget a stacked PR to main, merge the current main into your
-  branch (no force push), run the affected checks and post `integration
-  status` with the new head, the delta and CI. The new head needs its own
-  review rows (`acceptor.md` §2.2, New head).
+  merge main into your branch only for a conflict with main. A stale base
+  is not a reason (`orchestrator.md` §8, CI red). When the coordinator
+  posts `unblocked` for a stacked PR, test the head against main with `git
+  merge-tree --write-tree origin/main <head>`. A clean result needs no
+  merge of main and no new head. A conflict takes one merge of main (no
+  force push), the affected checks and an `integration status` with the
+  new head, the delta and CI; that new head takes its delta rows
+  (`acceptor.md` §2.2, New head).
 - **Never rewrite pushed history.** Other PRs may be stacked on yours.
   Fix review findings with new commits.
 - **Someone else must push.** When a repair or integration must come from

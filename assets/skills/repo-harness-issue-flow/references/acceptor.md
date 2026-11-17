@@ -85,13 +85,17 @@ The table rules govern how the row combines with the review.
    **New head.** The rows of a record count for their subject SHA only;
    the board reads the rows of the head. A PR whose base is behind main
    merges with no sync (`orchestrator.md` §9), so do not merge main into
-   a PR that has no conflict. Merging main without a conflict has two cases only: a stale-base CI failure (`orchestrator.md` §8, CI red) and an `unblocked` stacked PR (`worker.md`, Main moved).
-   A head that takes a merge of main, for a conflict or one of these
-   cases, is a new head. It needs its own CI run and a delta check: a
-   review of the delta from the reviewed head that writes one record row
-   for the new head. A Medium head needs one delta check row under the
-   Medium rule above. A High head needs the round-1 rule: two delta
-   check rows from distinct claims, at least one different-family.
+   a PR that has no conflict. A merge of main is for a conflict with main
+   only: a stale base takes a CI re-trigger on the unchanged head
+   (`orchestrator.md` §8, CI red), and a clean stacked producer takes a
+   retarget (`board.md`, Producer merges). A head made only by a clean
+   merge of main, with no change to the PR's own files, needs no review
+   row: cite the empty range-diff of the PR's own commits. A head that
+   resolves a conflict is a new head. It needs its own CI run and a delta
+   check: a review of the delta from the reviewed head that writes one
+   record row for the new head. A Medium head needs one delta check row
+   under the Medium rule above. A High head needs the round-1 rule: two
+   delta check rows from distinct claims, at least one different-family.
    A reviewer `FAIL` sends the fix back to the gatekeeper first: the fix
    is a new head, it starts the gatekeeper, and the reviewer runs again
    only after the gatekeeper `PASS` of that head.
