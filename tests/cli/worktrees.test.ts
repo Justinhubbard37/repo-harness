@@ -167,3 +167,20 @@ test('path resolves a listed id only inside its own registered repository and re
   writeFileSync(join(f.home, 'registered-repos.json'), '{');
   refused(['--repository', repository, '--worktree', green.id], 'inventory_unavailable');
 });
+
+test('without plugins, the lifecycle subcommands run and list, clean and path need the operator plugin', () => {
+  const parent = tmpWorkspace('worktrees-no-plugins');
+  roots.push(parent);
+  const env = { ...process.env, HOME: parent, REPO_HARNESS_HOME: join(parent, 'home') };
+  recordPluginSelection(env, []);
+  const entry = resolve(import.meta.dir, '../../src/cli/index.ts');
+  const cli = (...args: string[]) => spawnSync(process.execPath, [entry, 'worktrees', ...args], { cwd: parent, env, encoding: 'utf8', timeout: 90_000 });
+  const help = cli('start', '--help');
+  expect(help.status, help.stderr).toBe(0);
+  expect(help.stdout).toContain('rh worktrees start --issue <number>');
+  for (const args of [['list'], ['clean', '--ids', 'x', '--expected-digest', 'y'], ['path']]) {
+    const refused = cli(...args);
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain(`install_plugin_unavailable: rh worktrees ${args[0]} needs the operator plugin`);
+  }
+});

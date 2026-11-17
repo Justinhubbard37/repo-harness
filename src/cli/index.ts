@@ -1010,7 +1010,13 @@ export function buildProgram(): Command {
   if (!investigation) throw new Error('operator cleanup-investigation-job is not defined');
   pluginCommand(investigation, 'peer-runtime', 'operator cleanup-investigation-job');
   program.addCommand(pluginCommand(operator, 'operator'));
-  program.addCommand(pluginCommand(buildWorktreesCommand(), 'operator'));
+  const worktrees = buildWorktreesCommand();
+  for (const name of ['list', 'clean', 'path']) {
+    const command = worktrees.commands.find(candidate => candidate.name() === name);
+    if (!command) throw new Error(`worktrees ${name} is not defined`);
+    pluginCommand(command, 'operator', `worktrees ${name}`);
+  }
+  program.addCommand(worktrees);
   program.addCommand(pluginCommand(buildCatchUpCommand(), 'operator'));
   program.addCommand(buildQuotaCommand());
   program.addCommand(buildRulesCommand(boardHostPorts()));

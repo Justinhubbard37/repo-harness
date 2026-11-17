@@ -186,6 +186,54 @@ describe("contract-worktree helper integration", () => {
     }
   }, 15000);
 
+  test("rh worktrees start gives the same worktree, record and exit code as the helper script", () => {
+    const issue = { title: "Parity fixture" };
+    const slug = "123-parity-fixture";
+    const ghStub = join(GH_DIR, "gh-parity");
+    writeFileSync(ghStub, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ ...ISSUE, ...issue })}'\n`, { mode: 0o755 });
+    const roots = [tmpWorkspace("helper-contract-start-script"), tmpWorkspace("helper-contract-start-cli")];
+    try {
+      for (const cwd of roots) {
+        copyHelpers(cwd);
+        initGitRepo(cwd);
+        commitAll(cwd, "seed parity");
+        addSelfOrigin(cwd);
+      }
+      const [scriptRoot, cliRoot] = roots;
+      const home = join(cliRoot, "home");
+      mkdirSync(home);
+      const results = [
+        start(["--issue", "123", "--path", `${scriptRoot}-wt`, "--json"], scriptRoot, {}, issue),
+        run(process.execPath, [
+          "--preload", join(ROOT, "tests/helpers/protected-helper-host.ts"),
+          join(ROOT, "src/cli/index.ts"), "worktrees", "start", "--issue", "123", "--path", `${cliRoot}-wt`, "--json",
+        ], cliRoot, { HOME: home, PROTECTED_HELPER_TEST_GH: ghStub, PROTECTED_HELPER_TEST_HOME: home }),
+      ];
+      const observed = results.map((result, index) => {
+        const cwd = roots[index]!;
+        const record = JSON.parse(readFileSync(join(cwd, ".ai/harness/worktrees", `${slug}.json`), "utf8"));
+        const base = run("git", ["rev-parse", "origin/main"], cwd).stdout.trim();
+        return {
+          status: result.status,
+          start: JSON.parse(result.stdout.replaceAll(realpathSync(`${cwd}-wt`), "<worktree>")),
+          record: { ...record, worktree: record.worktree.replace(realpathSync(`${cwd}-wt`), "<worktree>"),
+            source_repo: record.source_repo.replace(cwd, "<repo>"), base_commit: record.base_commit === base },
+          branch: run("git", ["branch", "--show-current"], `${cwd}-wt`).stdout.trim(),
+        };
+      });
+      expect(results[1]!.status, results[1]!.stderr).toBe(0);
+      expect(observed[1]).toEqual(observed[0]!);
+      expect(observed[0]).toMatchObject({ status: 0, branch: `feat/${slug}`, start: { worktree_path: "<worktree>", disposition: "created" },
+        record: { slug, worktree: "<worktree>", source_repo: "<repo>", base_commit: true } });
+    } finally {
+      for (const cwd of roots) {
+        run("git", ["worktree", "remove", "--force", `${cwd}-wt`], cwd);
+        rmSync(`${cwd}-wt`, { recursive: true, force: true });
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    }
+  }, 60000);
+
   test("contract-worktree start creates the worktree and runs CodeGraph only for a selected architecture plugin", () => {
     const cases = [
       { name: "not-selected", state: null, skipped: "the architecture plugin is not selected; run: rh install" },

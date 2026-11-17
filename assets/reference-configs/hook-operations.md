@@ -116,7 +116,7 @@ sections stay. An optional section that does not fit becomes
 `SessionStart` runs no security scan, no tooling update check and no worktree
 sweep. It writes no run identity. Run `rh security scan --json` or
 `rh setup check --check-updates --json` when a task needs them.
-`contract-worktree start` runs the managed worktree sweep.
+`rh worktrees start` runs the managed worktree sweep.
 
 The hook identity is the payload `session_id`, `run_id` and `turn_id`. A missing
 value stays null. No hook mints or stores an id.

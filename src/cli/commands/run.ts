@@ -10,8 +10,6 @@ export const RUN_HELP_GROUPS = [
     helpers: [
       'new-spec',
       'cutover-closure',
-      'contract-worktree',
-      'contract-worktree-runtime',
     ],
   },
   {
@@ -21,8 +19,6 @@ export const RUN_HELP_GROUPS = [
       'change-assessment',
       'runtime-evidence-receipt',
       'merge-gate',
-      'ship-worktrees',
-      'worktree-merge-lib',
       'verify-sprint',
       'harness-trace-grade',
     ],
@@ -73,6 +69,23 @@ export const RUN_HELP_GROUPS = [
 const RETIRED_HELPERS: ReadonlyMap<string, string> = new Map([
   ['run-bounded-verifier-command', 'rh run verification-plan execute'],
 ]);
+
+// Internal helper ids (`helpers.internal`) fail with the public command that runs them. They never run.
+// `worktree-merge-lib` is a library that the worktree helpers load, so it has no command.
+export const INTERNAL_HELPER_COMMANDS: ReadonlyMap<string, string | null> = new Map([
+  ['contract-worktree', 'rh worktrees start|cleanup|notify-merged|sweep|status'],
+  ['contract-worktree-runtime', 'rh worktrees runtime'],
+  ['ship-worktrees', 'rh worktrees ship'],
+  ['worktree-merge-lib', null],
+]);
+
+function internalHelperMessage(id: string): string {
+  const command = INTERNAL_HELPER_COMMANDS.get(id);
+  if (command === undefined) throw new Error(`rh run: internal helper "${id}" has no entry in INTERNAL_HELPER_COMMANDS`);
+  return command === null
+    ? `rh run: helper "${id}" is internal. It has no public command.`
+    : `rh run: helper "${id}" is internal. Use \`${command}\`.`;
+}
 
 function groupedHelperLines(helpers: ReturnType<typeof listHelpers>): string[] {
   const byId = new Map(helpers.map((helper) => [helper.id, helper]));
@@ -127,6 +140,10 @@ export function buildRunCommand(): Command {
         process.exit(2);
       }
       const result = runHelper({ helper, args });
+      if (result.reason === 'internal-helper') {
+        console.error(internalHelperMessage(result.helper));
+        process.exit(2);
+      }
       if (result.stderr && result.reason !== 'ok') {
         console.error(result.stderr);
         const helpers = listHelperIds();

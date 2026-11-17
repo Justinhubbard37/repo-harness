@@ -155,7 +155,8 @@ describe('operator serve command and HTTP boundary', () => {
         ['operator', ['operator', 'serve', '--port', '0']],
         ['operator', ['operator', 'capture', '--provider', 'codex', '--source-id', 'gate', '--snapshot', join(root, 'capture.json'), '--', 'true']],
         ['operator', ['operator', 'cleanup-investigation-job', 'a', 'b', '1']],
-        ['worktrees', ['worktrees', 'list']],
+        // The operator gate is on the subcommand: `rh worktrees` is core and its lifecycle subcommands need no plugin.
+        ['worktrees list', ['worktrees', 'list']],
         ['catch-up', ['catch-up', '--json']],
       ];
       for (const [name, env, expected] of blocked) {

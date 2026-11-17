@@ -213,7 +213,7 @@ describe("canonical adoption plan", () => {
         expect(context).toContain("docs/architecture/archimap.html");
         expect(context).toContain("Keep four hard boundaries");
         expect(context).toContain("Review by risk");
-        expect(context).toContain("rh run contract-worktree start --issue <number>");
+        expect(context).toContain("rh worktrees start --issue <number>");
         expect(context).not.toContain("--plan <plan-file>");
         expect(context).not.toContain("Write a plan before");
       }

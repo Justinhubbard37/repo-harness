@@ -4,7 +4,7 @@ import { effectiveSeatConfig, seatAccountQuotas } from '../../core/board/seat-ro
 import { withSeatLine } from '../../core/board/seat-line';
 import type { SeatConfigV1, SeatId } from '../../core/board/seats-settings';
 import { HerdrCoreError, herdrAppDo } from '../terminal/herdr-core';
-import { runHelper } from '../runtime/helper-runner';
+import { runInternalHelper } from '../runtime/helper-runner';
 import { readQuotaReport } from './quota';
 import { readSeatsConfiguration } from './seats-configuration';
 import { BoardCollectError, readParent, readRepositoryId, runGhText } from './collect';
@@ -42,11 +42,11 @@ export interface DispatchResultV1 {
 }
 
 function startWorktree(input: DispatchInput, issue: number): { readonly path: string; readonly branch: string } {
-  const run = runHelper({ helper: 'contract-worktree', args: ['start', '--issue', String(issue), '--json'], cwd: input.repo_root, stdio: 'pipe' });
-  if (run.exitCode !== 0) throw new BoardCollectError(`contract-worktree start for #${issue} failed: ${(run.stderr ?? '').trim().slice(0, 300)}`);
+  const run = runInternalHelper({ helper: 'contract-worktree', args: ['start', '--issue', String(issue), '--json'], cwd: input.repo_root, stdio: 'pipe' });
+  if (run.exitCode !== 0) throw new BoardCollectError(`rh worktrees start for #${issue} failed: ${(run.stderr ?? '').trim().slice(0, 300)}`);
   const start = JSON.parse(run.stdout ?? '') as { kind?: unknown; worktree_path?: unknown; branch?: unknown; disposition?: unknown };
   if (start.kind !== 'repo-harness-contract-worktree-start' || typeof start.worktree_path !== 'string' || typeof start.branch !== 'string') {
-    throw new BoardCollectError(`contract-worktree start for #${issue} answered an unknown document`);
+    throw new BoardCollectError(`rh worktrees start for #${issue} answered an unknown document`);
   }
   // Dispatch runs in the primary checkout. A linked worktree would answer with itself.
   if (start.disposition === 'already_linked') throw new BoardCollectError('dispatch must run in the primary checkout, not in a linked worktree');

@@ -450,7 +450,7 @@ describe('upgrade with real release bytes', () => {
     const previousTemplate = rootTemplate.replace(
       "- Write output text in a plain technical style: short sentences, one idea per sentence, active voice. For `en`, follow ASD-STE100 Simplified Technical English. For `zh-CN`, write plain Chinese (简明中文) with the same rules and keep technical terms in English. For `follow-user`, use the user's language with the same rules.",
       '- Write output text in ASD-STE100 Simplified Technical English: short sentences, one idea per sentence, active voice.',
-    ).replace('`rh run contract-worktree start', '`repo-harness run contract-worktree start');
+    ).replace('`rh worktrees start', '`repo-harness run contract-worktree start');
     const cleanRoot = join(opts.cwd, 'CLAUDE.md');
     const editedRoot = join(opts.cwd, 'AGENTS.md');
     put(cleanRoot, previousTemplate);
@@ -462,6 +462,15 @@ describe('upgrade with real release bytes', () => {
     expect(readFileSync(cleanRoot, 'utf8')).toBe(rootTemplate);
     expect(refreshed.refreshedPaths).not.toContain(editedRoot);
     expect(readFileSync(editedRoot, 'utf8')).toBe(`${previousTemplate}user edit\n`);
+
+    // The 0.33 root context named the helper id that is now internal.
+    const helperTemplate = rootTemplate.replace('`rh worktrees start', '`rh run contract-worktree start');
+    put(cleanRoot, helperTemplate);
+    expect(legacyPathSnapshot(cleanRoot)?.contentHash).toBe('sha256:5ec6c523a550df4dc3e36d1bbfa8470fa3dd48e494a1b8c5de52b9bd6276f5a1');
+    const helperRefreshed = runUpgrade({ ...opts, scope: 'project', apply: true });
+    expect(helperRefreshed.exitCode, helperRefreshed.error).toBe(0);
+    expect(helperRefreshed.refreshedPaths).toContain(cleanRoot);
+    expect(readFileSync(cleanRoot, 'utf8')).toBe(rootTemplate);
   }));
 
   test('every byte-identical retired reference config is removed once and the migration is idempotent', () => sandbox((opts) => {

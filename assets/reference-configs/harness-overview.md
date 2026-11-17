@@ -60,7 +60,7 @@ same-family context. Each review records `model_relation` in its receipt.
 ## Tools
 
 - Worktree: create a task worktree at `{{system_tmp}}/{{repo}}-wt-{{slug}}`
-  with `rh run contract-worktree start --issue <number>`. Commit
+  with `rh worktrees start --issue <number>`. Commit
   or push before a reboot or temp cleanup. Closeout removes only merged,
   clean and unowned worktrees.
 - Dispatch: run peers in herdr-core (`hc`) terminals that Herdr.app shows

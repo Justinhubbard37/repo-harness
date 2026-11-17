@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, readFileSync, rmSync, writeFileSync }
 import { userInfo } from 'os';
 import { join } from 'path';
 import { configureProtectedHelperPlatform } from '../../src/cli/commands/global-runtime';
-import { protectedChildEnv, runHelper } from '../../src/effects/runtime/helper-runner';
+import { protectedChildEnv, runHelper, runInternalHelper } from '../../src/effects/runtime/helper-runner';
 import { resolveProtectedHelperPlatform } from '../../src/effects/runtime/protected-helper-platform';
 import { runProcess } from '../../src/effects/process-runner';
 
@@ -37,14 +37,14 @@ describe('Windows protected-helper runtime smoke', () => {
         REPO_HARNESS_BUN_BIN: 'C:\\repo-harness-attacker\\bun.exe',
       };
       const cases = [
-        { helper: 'acceptance-receipt', args: ['path'], output: '.repo-harness' },
-        { helper: 'merge-gate', args: ['fingerprint', '--base', 'HEAD'], output: 'required' },
-        { helper: 'contract-worktree', args: ['status'], output: '[ContractWorktree]' },
-        { helper: 'ship-worktrees', args: ['--help'], output: 'Usage:' },
+        { helper: 'acceptance-receipt', args: ['path'], output: '.repo-harness', run: runHelper },
+        { helper: 'merge-gate', args: ['fingerprint', '--base', 'HEAD'], output: 'required', run: runHelper },
+        { helper: 'contract-worktree', args: ['status'], output: '[ContractWorktree]', run: runInternalHelper },
+        { helper: 'ship-worktrees', args: ['--help'], output: 'Usage:', run: runInternalHelper },
       ] as const;
 
       for (const smoke of cases) {
-        const result = runHelper({
+        const result = smoke.run({
           helper: smoke.helper,
           args: smoke.args,
           cwd: ROOT,

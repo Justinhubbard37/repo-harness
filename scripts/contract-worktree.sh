@@ -59,11 +59,11 @@ architecture_plugin_lib="$helper_dir/lib/architecture-plugin.sh"
 usage() {
   cat <<'USAGE_EOF'
 Usage:
-  rh run contract-worktree start --issue <number> [--type <branch-type>] [--path <worktree-path>] [--branch <branch-name>] [--fresh] [--json] [--herdr-endpoint <json-file>]
-  rh run contract-worktree cleanup --slug <slug> [--target <branch>] [--dry-run]
-  rh run contract-worktree notify-merged --worktree <path> --branch <branch> --owner <hc terminal t<n>> --pr <number> --merge <sha>
-  rh run contract-worktree sweep
-  rh run contract-worktree status
+  rh worktrees start --issue <number> [--type <branch-type>] [--path <worktree-path>] [--branch <branch-name>] [--fresh] [--json] [--herdr-endpoint <json-file>]
+  rh worktrees cleanup --slug <slug> [--target <branch>] [--dry-run]
+  rh worktrees notify-merged --worktree <path> --branch <branch> --owner <hc terminal t<n>> --pr <number> --merge <sha>
+  rh worktrees sweep
+  rh worktrees status
 
   --herdr-endpoint JSON: {"endpoint":{"socket":"<hc core socket>"}}
 USAGE_EOF

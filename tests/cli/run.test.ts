@@ -3,8 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { listHelpers, protectedChildEnv, resolveHelper, runHelper } from "../../src/effects/runtime/helper-runner";
-import { RUN_HELP_GROUPS, RUN_HELP_MAX_HELPERS, RUN_HELP_MAX_LINES } from "../../src/cli/commands/run";
+import { listHelpers, listInternalHelperIds, protectedChildEnv, resolveHelper, runHelper, runInternalHelper } from "../../src/effects/runtime/helper-runner";
+import { INTERNAL_HELPER_COMMANDS, RUN_HELP_GROUPS, RUN_HELP_MAX_HELPERS, RUN_HELP_MAX_LINES } from "../../src/cli/commands/run";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const CLI = join(ROOT, "src/cli/index.ts");
@@ -13,13 +13,13 @@ function packageRuntimeEnv(): NodeJS.ProcessEnv {
   return { ...process.env, REPO_HARNESS_SOURCE_ROOT: undefined };
 }
 
-function writeSourceHelper(tmp: string, fileName: string, content: string): string {
+function writeSourceHelper(tmp: string, fileName: string, content: string, internal: readonly string[] = []): string {
   const sourceRoot = join(tmp, "source-root");
   mkdirSync(join(sourceRoot, "assets"), { recursive: true });
   mkdirSync(join(sourceRoot, "scripts"), { recursive: true });
   writeFileSync(
     join(sourceRoot, "assets", "workflow-contract.v1.json"),
-    `${JSON.stringify({ helpers: { scripts: [fileName] } }, null, 2)}\n`,
+    `${JSON.stringify({ helpers: { scripts: [fileName], internal } }, null, 2)}\n`,
   );
   const helperPath = join(sourceRoot, "scripts", fileName);
   writeFileSync(helperPath, content);
@@ -45,6 +45,56 @@ describe("run command", () => {
       expect(existsSync(marker)).toBe(false);
       expect(existsSync(result)).toBe(false);
       expect(resolveHelper("run-bounded-verifier-command")).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("internal worktree helpers fail closed with their public command and run nothing", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-run-internal-"));
+    try {
+      expect(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: tmp }).status).toBe(0);
+      const res = spawnSync("bun", [CLI, "run", "contract-worktree", "start", "--issue", "1"], {
+        cwd: tmp, encoding: "utf-8", env: packageRuntimeEnv(),
+      });
+      expect(res.status).toBe(2);
+      expect(res.stderr).toContain('rh run: helper "contract-worktree" is internal. Use `rh worktrees start|cleanup|notify-merged|sweep|status`.');
+      expect(res.stderr).not.toContain("known helpers:");
+      expect(spawnSync("git", ["worktree", "list", "--porcelain"], { cwd: tmp, encoding: "utf-8" }).stdout.match(/^worktree /gm)).toHaveLength(1);
+      expect(existsSync(join(tmp, ".ai"))).toBe(false);
+
+      const library = spawnSync("bun", [CLI, "run", "worktree-merge-lib"], { cwd: tmp, encoding: "utf-8", env: packageRuntimeEnv() });
+      expect(library.status).toBe(2);
+      expect(library.stderr).toContain('rh run: helper "worktree-merge-lib" is internal. It has no public command.');
+
+      expect(runHelper({ helper: "ship-worktrees.sh", args: ["--help"], cwd: tmp, stdio: "pipe" })).toMatchObject({ exitCode: 2, reason: "internal-helper" });
+      expect(runInternalHelper({ helper: "verify-sprint", cwd: tmp, stdio: "pipe" })).toMatchObject({ exitCode: 2, reason: "missing-helper" });
+      expect([...INTERNAL_HELPER_COMMANDS.keys()].sort()).toEqual(listInternalHelperIds(packageRuntimeEnv()));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("worktrees runtime passes every argument, including --help, to the internal helper", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-worktrees-runtime-"));
+    const logFile = join(tmp, "args.json");
+    try {
+      const sourceRoot = writeSourceHelper(
+        tmp,
+        "contract-worktree-runtime.ts",
+        `require("fs").writeFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)));\n`,
+        ["contract-worktree-runtime"],
+      );
+      const env = { ...process.env, REPO_HARNESS_SOURCE_ROOT: sourceRoot };
+
+      const refused = spawnSync("bun", [CLI, "run", "contract-worktree-runtime", "record"], { cwd: tmp, encoding: "utf-8", env });
+      expect(refused.status).toBe(2);
+      expect(refused.stderr).toContain("Use `rh worktrees runtime`.");
+      expect(existsSync(logFile)).toBe(false);
+
+      const res = spawnSync("bun", [CLI, "worktrees", "runtime", "record", "--repo", tmp, "--help", "-h"], { cwd: tmp, encoding: "utf-8", env });
+      expect(res.status, res.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(logFile, "utf-8"))).toEqual(["record", "--repo", tmp, "--help", "-h"]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -160,7 +210,7 @@ describe("run command", () => {
 
       const bashEnv = join(tmp, "bash-env-injection.sh");
       writeFileSync(bashEnv, `#!/bin/sh\ntouch "${marker}"\n`);
-      const direct = runHelper({
+      const direct = runInternalHelper({
         helper: "ship-worktrees",
         args: ["--help"],
         cwd: tmp,
@@ -176,7 +226,7 @@ describe("run command", () => {
       expect(direct.stdout).toContain("Usage:");
       expect(existsSync(marker)).toBe(false);
 
-      const res = spawnSync(process.execPath, [CLI, "run", "ship-worktrees", "--help"], {
+      const res = spawnSync(process.execPath, [CLI, "worktrees", "ship", "--help"], {
         cwd: tmp,
         encoding: "utf-8",
         env: {
@@ -238,6 +288,11 @@ describe("run command", () => {
         `${JSON.stringify({ helpers: { scripts: ["known.sh"] } })}\n`,
       );
       expect(() => resolveHelper("known", tmp, env)).toThrow("contract helper is missing");
+      writeFileSync(
+        join(sourceRoot, "assets", "workflow-contract.v1.json"),
+        `${JSON.stringify({ helpers: { scripts: ["known.sh"], internal: ["ghost"] } })}\n`,
+      );
+      expect(() => resolveHelper("known", tmp, env)).toThrow('helpers.internal names helper id "ghost", which is not in helpers.scripts');
       expect(() => resolveHelper("known", tmp, { REPO_HARNESS_SOURCE_ROOT: "relative/source" })).toThrow(
         "must be an absolute path",
       );
@@ -302,6 +357,7 @@ describe("run command", () => {
     expect(res.stdout).toContain("Planning & execution:");
     expect(res.stdout.match(/cutover-closure/g)).toHaveLength(1);
     expect(res.stdout).toContain("Verification & maintenance:");
+    expect(res.stdout).not.toMatch(/contract-worktree|ship-worktrees|worktree-merge-lib/);
   }, 30_000);
 
   test("run --help groups every real helper exactly once and stays within explicit budgets", () => {

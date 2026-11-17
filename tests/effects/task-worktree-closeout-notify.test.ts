@@ -115,7 +115,7 @@ test('cleanup ends the live owner terminal before closeout and exact public remo
   expect(await cleanupTaskWorktree(f.root, f.checkout)).toEqual({ status: 'closed', pids: [] });
   expect([f.spies.hcKill.mock.calls.map(call => call[0]), f.spies.hcRm.mock.calls.map(call => call[0])]).toEqual([[f.binding.terminal_id], [f.binding.terminal_id]]);
   const cli = join(import.meta.dir, '../../src/cli/index.ts');
-  const removal = run(process.execPath, [cli, 'run', 'contract-worktree-runtime', 'remove-exact',
+  const removal = run(process.execPath, [cli, 'worktrees', 'runtime', 'remove-exact',
     '--repo', f.root, '--worktree', f.checkout, '--branch', f.notice.branch, '--head', f.notice.merge_sha,
     '--target', 'main', '--target-oid', f.notice.merge_sha, '--merge', f.notice.merge_sha], f.root);
   expect(removal.status).toBe(0);
