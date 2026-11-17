@@ -20,7 +20,18 @@ import {
   runDoctor,
 } from '../../src/cli/commands/doctor';
 import { writeShellExecutableFixture } from '../helpers/repo-fixture';
-import { installStateFixturePath, recordPluginSelection, withTempHome } from '../helpers/install-ownership';
+import { installStateFixturePath, recordPluginSelection, seedPathRecords, withTempHome } from '../helpers/install-ownership';
+import type { PathCommitted } from '../../src/core/host-config/types';
+import { pathRecordHost, pathRecordKey } from '../../src/effects/host-config/path-records';
+import { hostConfigPaths } from '../../src/effects/host-config/store';
+
+/** A protocol 4 state and one `created` path record per entry, as an install leaves them. */
+function seedRecordedInstall(env: NodeJS.ProcessEnv, plugins: readonly PluginId[], selection: 'all' | readonly PluginId[],
+  records: readonly { readonly path: string; readonly owner: string; readonly committed: PathCommitted }[]): void {
+  recordPluginSelection(env, plugins, selection === 'all' ? 'all' : [...selection]);
+  seedPathRecords(env, Object.fromEntries(records.map(({ path: entry, owner, committed }) => [pathRecordKey(env, entry),
+    { owner, host: pathRecordHost(env, entry)!, kind: 'created' as const, baseline: { state: 'unknown' as const }, committed }])));
+}
 import { expectedSkillProjections, type SkillProjection } from '../../src/cli/installer/skill-projection';
 import { buildManagedHooks, MANAGED_TAG } from '../../src/cli/installer/managed-entries';
 import { parseSkillSurfaceCatalog } from '../../src/core/skill-surface/catalog';
@@ -648,8 +659,8 @@ describe('doctor command (Phase 1C)', () => {
       fs.rmSync(logFile);
       const statePath = installStateFixturePath(env);
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
-      fs.writeFileSync(statePath, JSON.stringify({ protocol: 3, ...versions(['product']), selection: ['product'], transaction_id: 'doctor',
-        applied_at: '2026-11-01T00:00:00.000Z', ownership_manifest: [], previous: null }));
+      fs.writeFileSync(statePath, JSON.stringify({ protocol: 4, ...versions(['product']), selection: ['product'], transaction_id: 'doctor',
+        applied_at: '2026-11-01T00:00:00.000Z', pi_packages: [], previous: null }));
       const unselected = JSON.parse(doctor().stdout).checks
         .filter((entry: { id: string }) => ['codegraph', 'codegraph-readiness', 'codex-codegraph-mcp', 'claude-codegraph-mcp', 'codegraph-index'].includes(entry.id))
         .map(({ id, status, detail }: { id: string; status: string; detail: string }) => ({ id, status, detail }));
@@ -740,11 +751,7 @@ describe('doctor skill projection', () => {
       // The link is fine; the recorded ledger entry has the wrong type, so only the ledger line differs.
       { state: 'ok link', name: crossReview, ledger: true, setup: p => {
         fs.symlinkSync(p.source, p.destination);
-        fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
-        fs.writeFileSync(ledgerPath, JSON.stringify({ protocol: 3, ...versions(FULL_PLUGINS), selection: 'all',
-          transaction_id: 'parity-test', applied_at: new Date(0).toISOString(), previous: null,
-          ownership_manifest: [{ owner: 'cross-review', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
-            path: p.destination, type: 'directory-copy', content_hash: hashManagedTree(p.source), managed_marker: 'transaction-created-directory', symlink_target: null }] }));
+        seedRecordedInstall({ HOME: home }, FULL_PLUGINS, 'all', [{ path: p.destination, owner: 'cross-review', committed: { type: 'directory', sha256: hashManagedTree(p.source) } }]);
       } },
       // Last: this case deletes the fixture source for the rest of the test.
       { state: 'source missing', name: crossReview, setup: p => { fs.cpSync(p.source, p.destination, { recursive: true }); fs.rmSync(p.source, { recursive: true }); } },
@@ -752,6 +759,7 @@ describe('doctor skill projection', () => {
     for (const { state, name, ledger, setup } of cases) {
       for (const projection of allProjections) fs.rmSync(projection.destination, { recursive: true, force: true });
       fs.rmSync(ledgerPath, { force: true });
+      fs.rmSync(hostConfigPaths({ HOME: home }).ledger, { force: true });
       setup(codexProjection(name));
       const driftedDestination = ledger ? codexProjection(name).destination : null;
       for (const target of ['both', 'codex', 'claude'] as const) {
@@ -805,13 +813,9 @@ describe('doctor skill projection', () => {
       fs.mkdirSync(path.dirname(projection.destination), { recursive: true });
       fs.symlinkSync(projection.source, projection.destination);
     }
-    // A protocol 3 ledger that owns only the claude links.
-    const ledger = installStateFixturePath({ HOME: home });
-    fs.mkdirSync(path.dirname(ledger), { recursive: true });
-    fs.writeFileSync(ledger, JSON.stringify({ protocol: 3, ...versions(recorded), selection: 'all',
-      transaction_id: 'claude-only-test', applied_at: new Date(0).toISOString(), previous: null,
-      ownership_manifest: claude.map(projection => ({ owner: ownerForInstallPath(projection.destination, f.env), authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
-        path: projection.destination, type: 'symlink', content_hash: null, managed_marker: null, symlink_target: projection.source })) }));
+    // Path records that own only the claude links.
+    seedRecordedInstall(f.env, recorded, 'all', claude.map(projection => ({ path: projection.destination,
+      owner: ownerForInstallPath(projection.destination, f.env)!, committed: { type: 'symlink', target: projection.source } })));
 
     const result = checkSkillProjection('both', f.env);
     expect(result.skills!.map(row => `${row.host}:${row.name}:${row.state}:${row.ok}`))
@@ -895,12 +899,8 @@ describe('doctor skill projection', () => {
   test('reports ledger type drift and installStateStatus drift without changing the ledger', () => withTempHome('repo-harness-doctor', home => {
     const f = seed(home);
     fs.symlinkSync(f.source, f.destination);
-    const ledger = installStateFixturePath({ HOME: home });
-    fs.mkdirSync(path.dirname(ledger), { recursive: true });
-    fs.writeFileSync(ledger, JSON.stringify({ protocol: 3, ...versions(FULL_PLUGINS), selection: 'all',
-      transaction_id: 'projection-test', applied_at: new Date(0).toISOString(), previous: null,
-      ownership_manifest: [{ owner: 'cross-review', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
-        path: f.destination, type: 'directory-copy', content_hash: hashManagedTree(f.source), managed_marker: 'transaction-created-directory', symlink_target: null }] }));
+    seedRecordedInstall(f.env, FULL_PLUGINS, 'all', [{ path: f.destination, owner: 'cross-review', committed: { type: 'directory', sha256: hashManagedTree(f.source) } }]);
+    const ledger = hostConfigPaths(f.env).ledger;
     const before = fs.readFileSync(ledger, 'utf8');
     const result = checkSkillProjection('codex', f.env);
     expect(result.status).toBe('warn');
@@ -910,8 +910,8 @@ describe('doctor skill projection', () => {
     expect(fs.readFileSync(ledger, 'utf8')).toBe(before);
     // Keep the on-disk type as symlink, but change its recorded target.
     const changed = JSON.parse(before);
-    changed.ownership_manifest[0] = { ...changed.ownership_manifest[0], type: 'symlink', content_hash: null,
-      managed_marker: null, symlink_target: path.join(home, 'previous-target') };
+    const [key] = Object.keys(changed.paths);
+    changed.paths[key!] = { ...changed.paths[key!], committed: { type: 'symlink', target: path.join(home, 'previous-target') } };
     fs.writeFileSync(ledger, JSON.stringify(changed));
     expect(checkSkillProjection('codex', f.env).detail).toContain(`${f.destination}: ok link -> ${f.source}; ledger drift`);
   }));
@@ -964,11 +964,7 @@ test('each skill-projection repair command keeps the recorded selection and pass
     const router = path.join(home, '.codex/skills/repo-harness');
     fs.mkdirSync(path.dirname(router), { recursive: true });
     fs.symlinkSync(home, router);
-    const statePath = installStateFixturePath({ HOME: home });
-    fs.mkdirSync(path.dirname(statePath), { recursive: true });
-    fs.writeFileSync(statePath, JSON.stringify({ protocol: 3, ...versions(row.plugins), selection: row.selection, transaction_id: 'repair', applied_at: new Date(0).toISOString(),
-      previous: null, ownership_manifest: [{ owner: 'core', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only', path: router, type: 'symlink',
-        content_hash: null, managed_marker: null, symlink_target: path.join(home, '.bun/install/global/node_modules/repo-harness') }] }));
+    seedRecordedInstall(env, row.plugins, row.selection, [{ path: router, owner: 'core', committed: { type: 'symlink', target: path.join(home, '.bun/install/global/node_modules/repo-harness') } }]);
     const label = JSON.stringify(row.selection);
     const result = checkSkillProjection('codex', env);
     const repairs = [...new Set([...result.detail.matchAll(/run: (rh install[^;\n]*)/g)].map(match => match[1]!.trim()))];

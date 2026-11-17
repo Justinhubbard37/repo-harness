@@ -5,7 +5,8 @@ import { CODEX_CONFIG_FRAGMENTS, codexConfigFragment, isCodexConfigSelector, tom
 import { HostConfigError } from '../../core/host-config/types';
 import { openHostConfigGate, type AdoptedFragment, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
 import { configurationReceiptPath, hostConfigurationRoot, readRawConfigurationReceipt, saveConfigurationReceipt, type ConfigurationReceipt } from './configuration-ownership';
-import { CODEGRAPH_CONFIG_MARKER, readInstallState, writeState, type InstallState, type ManagedInstallSurface } from './install-profile';
+import { CODEGRAPH_CONFIG_MARKER } from './install-profile';
+import { readLegacyManifest, type LegacyManifestSurface } from './install-state';
 
 /**
  * One-shot migration of `~/.codex/config.toml` into the host-config ledger.
@@ -20,7 +21,6 @@ export interface CodexConfigMigration {
   /** Null when no old record is still active: only the old records go. */
   readonly adoption: HostConfigAdoption | null;
   readonly receipt: ConfigurationReceipt | null;
-  readonly state: InstallState | null;
 }
 
 interface OldFragment {
@@ -64,7 +64,7 @@ function receiptFragments(raw: any, path: string, receiptPath: string): { fragme
 }
 
 function isTomlProjection(path: string) {
-  return (surface: ManagedInstallSurface) => surface.path === path && surface.managed_marker === CODEGRAPH_CONFIG_MARKER;
+  return (surface: LegacyManifestSurface) => surface.path === path && surface.managed_marker === CODEGRAPH_CONFIG_MARKER;
 }
 
 /** The hash that the old manifest recorded: the table's lines with LF ends, trimmed. */
@@ -72,23 +72,22 @@ function projectionHash(fragment: string): string {
   return sha256Prefixed(fragment.split(/\r?\n/).join('\n').trim());
 }
 
-/** The manifest's CodeGraph tables of this file, as receipt-shaped fragments with no text before rh. */
-function manifestFragments(state: InstallState | null, path: string, content: string): { fragments: OldFragment[]; changed: boolean; rest: InstallState | null } {
-  const surfaces = state?.ownership_manifest.filter(isTomlProjection(path)) ?? [];
-  const previous = state?.previous?.ownership_manifest.filter(isTomlProjection(path)) ?? [];
-  if (!state || (!surfaces.length && !previous.length)) return { fragments: [], changed: false, rest: null };
+/**
+ * The protocol 3 manifest's CodeGraph tables of this file, as receipt-shaped
+ * fragments with no text before rh. The state migration that runs next drops
+ * the manifest; it converts no section record.
+ */
+function manifestFragments(manifest: ReturnType<typeof readLegacyManifest>, path: string, content: string): { fragments: OldFragment[]; changed: boolean; present: boolean } {
+  const surfaces = manifest?.current.filter(isTomlProjection(path)) ?? [];
+  const previous = manifest?.previous.filter(isTomlProjection(path)) ?? [];
+  if (!surfaces.length && !previous.length) return { fragments: [], changed: false, present: false };
   const current = codexConfigFragment(content, 'mcp_servers.codegraph');
   const intact = current !== null && surfaces.some((surface) => surface.content_hash === projectionHash(current));
-  const rest: InstallState = {
-    ...state,
-    ownership_manifest: state.ownership_manifest.filter((surface) => !isTomlProjection(path)(surface)),
-    previous: state.previous && { ...state.previous, ownership_manifest: state.previous.ownership_manifest.filter((surface) => !isTomlProjection(path)(surface)) },
-  };
   return {
     fragments: intact ? [{ selector: 'mcp_servers.codegraph', before: null, installed: current }] : [],
     // A recorded table that the user changed keeps the file out of a revert, as the old uninstall preserved it.
     changed: surfaces.length > 0 && current !== null && !intact,
-    rest,
+    present: true,
   };
 }
 
@@ -117,14 +116,13 @@ export function planCodexConfigMigration(env: NodeJS.ProcessEnv): CodexConfigMig
   const path = join(home, '.codex', 'config.toml');
   const receipt = receiptFragments(readRawConfigurationReceipt(home), path, configurationReceiptPath(home));
   const content = existsSync(path) ? readFileSync(path, 'utf8') : '';
-  const state = readInstallState(env);
   // The file's own spelling errors name the file.
   try {
-    const manifest = manifestFragments(state, path, content);
-    if (!receipt.rest && !manifest.rest) return null;
+    const manifest = manifestFragments(readLegacyManifest(env), path, content);
+    if (!receipt.rest && !manifest.present) return null;
     // A receipt entry for the CodeGraph table is the older and more exact record of it.
     const fromManifest = manifest.fragments.filter((fragment) => !receipt.fragments.some((entry) => entry.selector === fragment.selector));
-    return { path, adoption: adoption(content, [...receipt.fragments, ...fromManifest], manifest.changed), receipt: receipt.rest, state: manifest.rest };
+    return { path, adoption: adoption(content, [...receipt.fragments, ...fromManifest], manifest.changed), receipt: receipt.rest };
   } catch (error) {
     if (!(error instanceof HostConfigError)) throw error;
     throw new HostConfigError(error.code, `${path}: ${error.message}`, { cause: error });
@@ -138,7 +136,6 @@ export function migrateCodexConfigRecords(env: NodeJS.ProcessEnv): void {
   if (migration.adoption) openHostConfigGate({ env }).adopt(migration.path, migration.adoption);
   const home = hostConfigurationRoot(env);
   if (migration.receipt) saveConfigurationReceipt(migration.receipt, home);
-  if (migration.state) writeState(migration.state, env);
 }
 
 /** What a revert of the adopted file would report, for a dry run before the migration. */

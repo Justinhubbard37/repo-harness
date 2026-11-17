@@ -29,6 +29,7 @@ import {
   missingDirectories,
   observeFile,
   parseLedger,
+  pathRecordOf,
   putVault,
   readLedger,
   readVault,
@@ -145,6 +146,17 @@ function admitPaths(paths: HostConfigPaths, targets: readonly string[]): HostPat
   return admitted;
 }
 
+/**
+ * An install owns the whole path of a path record (a skill, a link, a fleet
+ * file); no gate operation acts on it until #2850 gives the gate that strategy.
+ */
+function refuseRecordedPaths(ledger: HostConfigLedger, targets: readonly HostPath[]): void {
+  for (const target of targets) {
+    const key = pathRecordOf(ledger, target);
+    if (key !== null) throw new HostConfigError('host_config_invalid_state', `an install owns this whole path (${key}), so the gate does not write it: ${target}`);
+  }
+}
+
 function committedOf(expected: ExpectedFile): FileCommitted {
   return expected.existed ? { type: 'file', sha256: expected.sha256 } : { type: 'absent' };
 }
@@ -236,7 +248,8 @@ function applyChanges(paths: HostConfigPaths, changes: readonly HostConfigFileCh
   const ledger = readLedger(paths);
   const files = { ...ledger.files };
   let { fragments, directories } = ledger;
-  const persist = () => writeLedger(paths, { protocol: 1, files, fragments, directories });
+  refuseRecordedPaths(ledger, targets);
+  const persist = () => writeLedger(paths, { ...ledger, files, fragments, directories });
   const skipped: SkippedOverride[] = [];
   const written: HostPath[] = [];
   for (const [index, change] of changes.entries()) {
@@ -283,6 +296,7 @@ function applyChanges(paths: HostConfigPaths, changes: readonly HostConfigFileCh
 function delegateWrite(paths: HostConfigPaths, declaredPaths: readonly string[], run: (destinations: readonly HostPath[]) => void): HostConfigDelegateResult {
   const targets = admitPaths(paths, declaredPaths);
   const ledger = readLedger(paths);
+  refuseRecordedPaths(ledger, targets);
   const files = { ...ledger.files };
   const persist = () => writeLedger(paths, { ...ledger, files });
   const observed = targets.map((path) => {
@@ -439,6 +453,7 @@ function revertFiles(paths: HostConfigPaths, only: readonly string[] | undefined
   let fragments = ledger.fragments;
   const report: HostConfigRevertEntry[] = [];
   const targets = only ? only.map((path) => resolveHostPath(paths, path)) : (Object.keys(ledger.files) as HostPath[]);
+  refuseRecordedPaths(ledger, targets);
   for (const path of targets) {
     const record = files[path];
     if (!record) continue;
@@ -467,13 +482,14 @@ function revertFiles(paths: HostConfigPaths, only: readonly string[] | undefined
   const attempted = filtered ? [] : only ? ledger.directories.filter((directory) => targets.some((path) => isPathInside(directory, path))) : ledger.directories;
   const kept = removeCreatedDirectories(attempted);
   const directories = ledger.directories.filter((directory) => !attempted.includes(directory) || kept.includes(directory));
-  writeLedger(paths, { protocol: 1, files, fragments, directories });
+  writeLedger(paths, { ...ledger, files, fragments, directories });
   return report;
 }
 
 function adoptFile(paths: HostConfigPaths, target: string, adoption: HostConfigAdoption): 'adopted' | 'recorded' {
   const [path] = admitPaths(paths, [target]) as [HostPath];
   const ledger = readLedger(paths);
+  refuseRecordedPaths(ledger, [path]);
   if (ledger.files[path]) return 'recorded';
   const current = expectedOf(observeFile(path).observation, path);
   const kind = adoption.kind ?? (adoption.backup === null ? 'created' : 'text_block');

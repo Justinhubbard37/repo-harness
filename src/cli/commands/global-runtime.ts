@@ -4,7 +4,7 @@ import { bunGlobalPackageRoot, isBunGlobalPackageSource, skillLinkMatches } from
 import { installPiPackage } from '../installer/pi-package';
 import { realPathOrResolved } from '../../effects/path-identity';
 import type { SkillHost } from '../../effects/host-skill-roots';
-import type { ManagedInstallSurface } from '../installer/install-profile';
+import { ownedPath, pathRecordIsCurrent, pathRecordKey, type PathRecords } from '../../effects/host-config/path-records';
 import { architecturePort, isArchitectureUnavailable } from '../../core/architecture/contracts';
 import { globalConfigurationWriter, mutateGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { DEFAULT_SEATS_CONFIG, INTRODUCED_ROUTING_DEFAULTS, ROUTING_CLASSES, SeatsConfigMigrationRequiredError, decodeSeatsConfig } from '../../core/board/seats-settings';
@@ -29,8 +29,6 @@ import { gitChildEnv } from "../../effects/git/runner";
 import { leftoverCheckWarning } from "./upgrade";
 import { commitVerifiedSkillTree, skillTreeSha256 } from "../../effects/skill-tree-integrity";
 import {
-  managedInstallSurfaceIsCurrent,
-  piPackageSurface,
   readInstallState,
   recordVerifiedAgentFleetOwnership,
   requireInstallState,
@@ -93,7 +91,8 @@ export interface GlobalRuntimeOptions {
 export type McpLocalConfigCheck = (env: NodeJS.ProcessEnv) => { readonly status: 'ok' | 'skipped' | 'failed'; readonly detail: string };
 
 export interface GlobalRuntimeStep {
-  owned_surface?: ManagedInstallSurface;
+  /** The Pi package source that this step registered, so the install state records it. */
+  owned_pi_package?: string;
   step: string;
   status: "ok" | "skipped" | "failed";
   command?: readonly string[];
@@ -1061,14 +1060,14 @@ const WAZA_RULES_STEP = "sync Waza shared rules";
  * The Skills CLI never writes ~/.agents/rules, so the setup step skips the
  * rules on a fresh install. The refresh path needs an install state to own
  * new rules. An install therefore runs it once after its state write.
- * That write renews existing receipts, so `priorReceipts` (the receipts from
- * before the transaction) judge whether a host rule may be overwritten.
+ * That write renews the existing path records, so `priorReceipts` (the ledger's
+ * path records from before the transaction) judge whether a host rule may be overwritten.
  */
 export function ownFreshWazaSharedRules(
   result: GlobalRuntimeResult,
   target: InstallTargetSpec,
   env: NodeJS.ProcessEnv,
-  priorReceipts: readonly ManagedInstallSurface[],
+  priorReceipts: PathRecords,
 ): GlobalRuntimeResult {
   const index = result.steps.findIndex((step) => step.step === WAZA_RULES_STEP);
   const wazaInstalled = result.steps.some((step) => step.step === externalSkillStepName("tw93/Waza") && step.status === "ok");
@@ -1235,9 +1234,9 @@ function installExternalSkillGroup(
       for (const skill of integrityMissing) {
         const installed = join(skillsRoot, skill);
         if (existsSync(installed)) {
-          const state = readInstallState(env);
-          const receipt = state?.ownership_manifest.find((surface) => surface.path === installed);
-          if (!state || receipt === undefined || !managedInstallSurfaceIsCurrent(receipt)) {
+          const ownerEnv = env ?? process.env;
+          const receipt = readInstallState(ownerEnv) ? ownedPath(ownerEnv, installed) : null;
+          if (receipt === null || !pathRecordIsCurrent(pathRecordKey(ownerEnv, installed), receipt)) {
             return fail({
               step: stepName,
               status: "failed",
@@ -2122,7 +2121,7 @@ export function runGlobalRuntimeSetup(
   if (steps.every((step) => step.status !== "failed")) steps.push(configureRequiredHerdrSkill(target, env, undefined, piSelected));
   if (steps.every((step) => step.status !== 'failed')) {
     const pi = installPiPackage(bunGlobalPackageRoot(env)!, plugins.includes('pi') && target === 'both' && opts.hostAdapters !== false, env);
-    steps.push({ ...pi, ...(pi.created ? { owned_surface: piPackageSurface(pi.source) } : {}) });
+    steps.push({ ...pi, ...(pi.created ? { owned_pi_package: pi.source } : {}) });
   }
   steps.push(...writeRuntimeIgnoreRules(env, updateMode));
   // Last, and only after every other step passed: a failed update keeps the previous command.

@@ -209,8 +209,8 @@ Safety hook guards:
   host agent's own memory and plan directories (Claude
   `~/.claude/projects/*/memory` and `~/.claude/plans`, Codex
   `~/.codex/memories`; the rest of `~/.claude`, `~/.codex` and `~/.pi` stays
-  protected), and the install ledger in `~/.repo-harness/install-state.json` does not record the
-  file, or a directory tree above it, as rh-created. A create or an append
+  protected), and the host-config ledger (`~/.repo-harness/config/ledger.json`) has no `created`
+  path record of the file, or of a directory tree above it. A create or an append
   passes everywhere. A removal (`rm`, `unlink`, `shred`, `truncate`, each `mv`
   operand, `sed -i`, `find -delete`) whose target is not known before the
   command runs is refused; an overwrite with an unknown target passes. A

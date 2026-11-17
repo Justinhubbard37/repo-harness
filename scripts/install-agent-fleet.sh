@@ -110,16 +110,24 @@ const HOME = process.env.HOME ?? os.homedir();
 const CLAUDE_TARGET_DIR = path.join(HOME, ".claude", "agents");
 const CODEX_TARGET_DIR = path.join(HOME, ".codex", "agents");
 const SOURCE_DIR = process.env.REPO_HARNESS_AGENT_FLEET_SOURCE_DIR;
-const {
-  readInstallState,
-  managedInstallSurfaceIsCurrent,
-  agentFleetUserManagedReceiptPath,
-  readAgentFleetUserManagedReceipt,
-} = require(
+const { readInstallState } = require(
   path.join(SOURCE_DIR, "../../src/cli/installer/install-profile.ts"),
 );
-const USER_MANAGED_RECEIPT_PATH = agentFleetUserManagedReceiptPath({ ...process.env, HOME });
-const installState = readInstallState();
+const {
+  pathRecordHost,
+  pathRecordIsCurrent,
+  pathRecordKey,
+  readPathRecords,
+  writePathRecords,
+} = require(
+  path.join(SOURCE_DIR, "../../src/effects/host-config/path-records.ts"),
+);
+const ENV = { ...process.env, HOME };
+// The state check fails closed on a state that this package no longer reads.
+readInstallState(ENV);
+// A fleet file that the user keeps is a `user_managed` path record; one that rh wrote is `created`.
+const records = readPathRecords(ENV);
+const recordOf = (targetPath) => records[pathRecordKey(ENV, targetPath)];
 
 // A generated persona carries role identity only. The anti-extras execution
 // boundary belongs to the final runtime task packet, which is the only surface that knows
@@ -214,17 +222,18 @@ function validateUserManagedCodex(agent, content) {
   }
 }
 
-function writeUserManagedReceipt(files) {
-  fs.mkdirSync(path.dirname(USER_MANAGED_RECEIPT_PATH), { recursive: true });
-  const receipt = {
-    protocol: 1,
-    authority: "user-managed-agent-fleet",
-    accepted_at: new Date().toISOString(),
-    files,
-  };
-  const temp = `${USER_MANAGED_RECEIPT_PATH}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(temp, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temp, USER_MANAGED_RECEIPT_PATH);
+/** The fleet targets that the user keeps become exactly `files`: every other fleet `user_managed` record goes. */
+function writeUserManagedRecords(fleetPaths, files) {
+  const fleetKeys = new Set(fleetPaths.map((targetPath) => pathRecordKey(ENV, targetPath)));
+  const next = Object.fromEntries(Object.entries(records)
+    .filter(([key, record]) => !(record.kind === "user_managed" && fleetKeys.has(key))));
+  for (const file of files) {
+    next[pathRecordKey(ENV, file.path)] = {
+      owner: "core", host: pathRecordHost(ENV, file.path), kind: "user_managed",
+      baseline: { state: "unknown" }, committed: { type: "file", sha256: file.sha256 },
+    };
+  }
+  writePathRecords(ENV, next);
 }
 
 function backupAgentFile(host, targetPath) {
@@ -260,9 +269,8 @@ function compareAndWrite(targetPath, content, acceptedHash, host) {
     return "installed";
   }
 
-  const owned = installState?.ownership_manifest.find((surface) =>
-    surface.path === targetPath && surface.type === "managed-file");
-  const current = owned && managedInstallSurfaceIsCurrent(owned);
+  const owned = recordOf(targetPath);
+  const current = owned?.kind === "created" && owned.committed.type === "file" && pathRecordIsCurrent(pathRecordKey(ENV, targetPath), owned);
 
   if (force) {
     let backup;
@@ -369,28 +377,21 @@ if (acceptUserManaged) {
   }
   for (const entry of results) console.log(`[fleet] ${entry.host}/${entry.file}: ${entry.status}`);
   if (invalid) process.exit(1);
-  writeUserManagedReceipt(acceptedFiles);
-  console.log(`[fleet] user-managed receipt: accepted ${acceptedFiles.length} files`);
+  writeUserManagedRecords(targets.map((target) => target.path), acceptedFiles);
+  console.log(`[fleet] user-managed records: accepted ${acceptedFiles.length} files`);
   process.exit(0);
 }
 
-const receipt = force
-  ? { ok: true, hashes: new Map() }
-  : readAgentFleetUserManagedReceipt({ ...process.env, HOME });
-if (!receipt.ok) {
-  console.log("[fleet] user-managed receipt: invalid");
-  process.exit(1);
-}
-
 for (const target of targets) {
-  const status = compareAndWrite(target.path, target.content, receipt.hashes.get(target.path), target.host);
+  const kept = recordOf(target.path);
+  const acceptedHash = !force && kept?.kind === "user_managed" ? kept.committed.sha256 : undefined;
+  const status = compareAndWrite(target.path, target.content, acceptedHash, target.host);
   results.push({ host: target.host, file: target.file, status });
 }
 
 const failed = results.some((entry) => entry.status === "drift" || entry.status === "backup-failed");
-if (force && !failed && fs.existsSync(USER_MANAGED_RECEIPT_PATH)) {
-  fs.rmSync(USER_MANAGED_RECEIPT_PATH, { force: true });
-}
+// A forced run takes every fleet file back, so the user's claims on them go.
+if (force && !failed) writeUserManagedRecords(targets.map((target) => target.path), []);
 
 for (const entry of results) {
   console.log(`[fleet] ${entry.host}/${entry.file}: ${entry.status}`);

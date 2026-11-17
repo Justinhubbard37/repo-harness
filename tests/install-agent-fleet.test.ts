@@ -8,6 +8,12 @@ import { MANAGED_AGENTS, WRITABLE_AGENTS } from '../src/effects/terminal/task-ro
 import { installProfileHostMutationPaths } from "../src/cli/installer/install-profile";
 
 import { recordInstallOwnership } from "./helpers/install-ownership";
+import { pathRecordKey, readPathRecords } from "../src/effects/host-config/path-records";
+
+/** The ledger's `user_managed` path records under `home`: the fleet files that the user keeps. */
+function userManagedRecords(home: string) {
+  return Object.fromEntries(Object.entries(readPathRecords({ HOME: home })).filter(([, record]) => record.kind === "user_managed"));
+}
 import { writeBunWrapper } from "./helpers/repo-fixture";
 
 const ROOT = join(import.meta.dir, "..");
@@ -275,20 +281,14 @@ describe("install-agent-fleet", () => {
 
       const accepted = runInstaller(home, FLEET_SOURCE_DIR, ["--accept-user-managed"]);
       expect(accepted.status).toBe(0);
-      expect(accepted.stdout).toContain("[fleet] user-managed receipt: accepted 2 files");
+      expect(accepted.stdout).toContain("[fleet] user-managed records: accepted 2 files");
       expect(readFileSync(claudeTarget, "utf-8")).toBe(customClaude);
       expect(readFileSync(codexTarget, "utf-8")).toBe(customCodex);
 
-      const receiptPath = join(home, ".repo-harness/agent-fleet-user-managed.json");
-      const receipt = JSON.parse(readFileSync(receiptPath, "utf-8")) as {
-        protocol: number;
-        authority: string;
-        files: Array<{ path: string; sha256: string }>;
-      };
-      expect(receipt.protocol).toBe(1);
-      expect(receipt.authority).toBe("user-managed-agent-fleet");
-      expect(receipt.files.map((entry) => entry.path).sort()).toEqual([claudeTarget, codexTarget].sort());
-      expect(receipt.files.every((entry) => /^sha256:[a-f0-9]{64}$/.test(entry.sha256))).toBe(true);
+      const acceptedRecords = userManagedRecords(home);
+      expect(Object.keys(acceptedRecords).sort()).toEqual([claudeTarget, codexTarget].map((path) => pathRecordKey({ HOME: home }, path)).sort());
+      expect(Object.values(acceptedRecords).every((record) => record.owner === "core" && record.committed.type === "file"
+        && /^sha256:[a-f0-9]{64}$/.test(record.committed.sha256))).toBe(true);
 
       const repeated = runInstaller(home, FLEET_SOURCE_DIR);
       expect(repeated.status).toBe(0);
@@ -306,7 +306,7 @@ describe("install-agent-fleet", () => {
 
       const forced = runInstaller(home, FLEET_SOURCE_DIR, ["--force"]);
       expect(forced.status).toBe(0);
-      expect(existsSync(receiptPath)).toBe(false);
+      expect(userManagedRecords(home)).toEqual({});
       expect(readFileSync(codexTarget, "utf-8")).toBe(
         readFileSync(join(GOLDEN_CODEX_DIR, "explorer.toml"), "utf-8"),
       );
@@ -315,7 +315,7 @@ describe("install-agent-fleet", () => {
     }
   }, 30_000);
 
-  test("--accept-user-managed rejects malformed or role-mismatched files without writing a receipt", () => {
+  test("--accept-user-managed rejects malformed or role-mismatched files without writing a record", () => {
     const { root, home } = setupFakeHome("install-agent-fleet-user-managed-invalid");
     try {
       expect(runInstaller(home, FLEET_SOURCE_DIR).status).toBe(0);
@@ -328,7 +328,7 @@ describe("install-agent-fleet", () => {
       const accepted = runInstaller(home, FLEET_SOURCE_DIR, ["--accept-user-managed"]);
       expect(accepted.status).not.toBe(0);
       expect(accepted.stdout).toContain("[fleet] claude/gatekeeper.md: user-managed-invalid");
-      expect(existsSync(join(home, ".repo-harness/agent-fleet-user-managed.json"))).toBe(false);
+      expect(userManagedRecords(home)).toEqual({});
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -372,7 +372,7 @@ describe("install-agent-fleet", () => {
   test.each([
     ["read-only state directory", "both"], ["unreadable sources", "both"],
     ["mixed replacements", "claude"], ["mixed replacements", "codex"],
-  ])("--force keeps the accepted receipt with %s (failed host: %s)", (failure, failedHost) => {
+  ])("--force keeps the accepted user-managed records with %s (failed host: %s)", (failure, failedHost) => {
     const { root, home } = setupFakeHome("install-agent-fleet-backup-failure");
     const stateDir = join(home, ".repo-harness");
     try {
@@ -386,8 +386,8 @@ describe("install-agent-fleet", () => {
         return { host, file, path, generated, custom, blocked: failedHost === "both" || failedHost === host };
       });
       expect(runInstaller(home, FLEET_SOURCE_DIR, ["--accept-user-managed"]).status).toBe(0);
-      const receiptPath = join(stateDir, "agent-fleet-user-managed.json");
-      const receipt = readFileSync(receiptPath);
+      const receipt = userManagedRecords(home);
+      expect(Object.keys(receipt)).toHaveLength(2);
       if (failure === "read-only state directory") chmodSync(stateDir, 0o500);
       else for (const target of targets) if (target.blocked) chmodSync(target.path, 0o200);
 
@@ -398,7 +398,7 @@ describe("install-agent-fleet", () => {
         if (target.blocked && failure !== "read-only state directory") chmodSync(target.path, 0o600);
         expect(readFileSync(target.path, "utf8")).toBe(target.blocked ? target.custom : target.generated);
       }
-      expect(readFileSync(receiptPath)).toEqual(receipt);
+      expect(userManagedRecords(home)).toEqual(receipt);
       const backupDir = join(stateDir, "replaced-agents");
       if (failedHost === "both") expect(existsSync(backupDir)).toBe(false);
       else expect(readdirSync(backupDir)).toHaveLength(1);
@@ -409,9 +409,9 @@ describe("install-agent-fleet", () => {
       for (const target of targets) {
         expect(normal.stdout).toContain(`[fleet] ${target.host}/${target.file}: ${target.blocked ? "user-managed" : "up-to-date"}`);
       }
-      expect(readFileSync(receiptPath)).toEqual(receipt);
+      expect(userManagedRecords(home)).toEqual(receipt);
       expect(runInstaller(home, FLEET_SOURCE_DIR, ["--force"]).status).toBe(0);
-      expect(existsSync(receiptPath)).toBe(false);
+      expect(userManagedRecords(home)).toEqual({});
     } finally {
       chmodSync(stateDir, 0o700);
       rmSync(root, { recursive: true, force: true });

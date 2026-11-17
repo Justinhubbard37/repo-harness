@@ -7,6 +7,8 @@ import { ensurePrivateDirectory, hostConfigPaths, putVault, resolveHostPath } fr
 import { openHostConfigGate, rollbackHostConfigTransaction } from '../../effects/host-config/gate';
 import { migrateCodexConfigRecords } from './codex-config-migration';
 import { migrateJsonConfigRecords } from './json-config-migration';
+import { pathRecordHost, pathRecordIsCurrent, pathRecordKey, pathRecordsDigest, readPathRecords, readPathRecordSet, registerSupportedPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
+import type { FileBaseline, PathCommitted, PathRecord, PathRecordHost, PathRecordKind } from '../../core/host-config/types';
 import { globalContextBackupEligible, globalContextPath } from './global-context';
 import { acquireRuntimeTransactionLock, assertRuntimeTransactionContext, globalRuntimeScope, runtimeTransactionLockRelativePath, runtimeTransactionRoot, type RuntimeTransactionContext, type RuntimeTransactionLock, type RuntimeTransactionScope } from '../../effects/locking/runtime-transaction-lock';
 import { exclusiveDirectoryLockOwnerLiveness, readExclusiveDirectoryLockOwner } from '../../effects/locking/exclusive-directory-lock';
@@ -32,7 +34,6 @@ import {
 import { homedir } from 'os';
 import { basename, delimiter, dirname, join } from 'path';
 import {
-  MANAGED_TAG,
   compareManagedHookProjection,
   type HookHost,
 } from './managed-entries';
@@ -58,7 +59,7 @@ import {
   type SurfaceOwner,
 } from '../../core/skill-surface/plugin-manifest';
 import { hostSkillRoot, providerSkillLock, stagedSkillRoot, syncSkillRoots, type SkillHost } from '../../effects/host-skill-roots';
-import { ownedSkillIsIntact } from './herdr-skill-marker';
+import { ownedSkillIsIntact } from '../../effects/host-config/herdr-skill-marker';
 import { MANAGED_AGENTS } from '../../effects/terminal/task-role-profiles';
 import { hashManagedTree, OWNER_MARKER } from '../../effects/managed-tree';
 import { readWorkflowPolicyDocument } from '../../effects/state/resolve-effective-state';
@@ -104,25 +105,28 @@ const AGENT_FLEET_FILE = new RegExp(
   `/(?:\\.claude/agents/(?:${MANAGED_AGENTS.join('|')})\\.md|\\.codex/agents/(?:${MANAGED_AGENTS.join('|')})\\.toml)$`,
 );
 
-export interface ManagedInstallSurface {
-  /** `core`, or the enabled plugin whose selection owns this surface. */
-  readonly owner: SurfaceOwner;
+/** The recorded state after the source check of each Pi package. Host path ownership lives in the ledger's path records. */
+export type InstallState = RecordedInstallState;
+
+export type InstallStateSnapshot = RecordedInstallSnapshot;
+
+/** One path that an install step wrote, before it becomes a path record. */
+interface CapturedPath {
   readonly path: string;
-  readonly type: 'directory-copy' | 'symlink' | 'managed-file' | 'pi-package';
-  readonly authority: 'repo-harness-install-transaction';
-  readonly removal: 'managed-surfaces-only';
-  readonly content_hash: string | null;
-  readonly managed_marker: string | null;
-  readonly symlink_target: string | null;
+  /** `core`, or the enabled plugin whose selection owns this path. */
+  readonly owner: SurfaceOwner;
+  readonly committed: PathCommitted;
 }
 
-/** The recorded state after the host-path check of each ownership surface. */
-export interface InstallState extends Omit<RecordedInstallState, 'ownership_manifest' | 'previous'> {
-  readonly ownership_manifest: readonly ManagedInstallSurface[];
-  readonly previous: InstallStateSnapshot | null;
+/** One ledger path record as `rh install --state` shows it. */
+export interface OwnershipEntry {
+  readonly path: string;
+  readonly owner: string;
+  readonly host: PathRecordHost;
+  readonly kind: PathRecordKind;
+  readonly type: PathCommitted['type'];
+  readonly current: boolean;
 }
-
-export type InstallStateSnapshot = Omit<InstallState, 'previous'>;
 
 export interface OwnerProbe {
   readonly status: 'present' | 'missing';
@@ -132,6 +136,12 @@ export interface OwnerProbe {
 }
 
 export interface InstallStateStatus extends InstallState {
+  /** A projection of the ledger's path records. */
+  readonly ownership: readonly OwnershipEntry[];
+  /** Record keys outside the root of their host: rh does not act on them, and the next record write drops them. */
+  readonly ownership_outside_root: readonly string[];
+  /** Record keys that name no install surface (path, owner or kind): rh does not act on them, and the next record write drops them. */
+  readonly ownership_unsupported: readonly string[];
   /** `core` and each enabled plugin. */
   readonly probes: Readonly<Partial<Record<SurfaceOwner, OwnerProbe>>>;
   readonly drift: {
@@ -202,8 +212,6 @@ export interface InstallPlan {
 }
 
 export const CODEGRAPH_CONFIG_MARKER = 'codegraph-config-projection';
-/** Markers of records that own one fragment of a shared host configuration file. */
-const SECTION_MARKERS: ReadonlySet<string> = new Set([MANAGED_TAG, CODEGRAPH_CONFIG_MARKER]);
 
 function adapterHasRequiredProjection(path: string, host: HookHost, env: NodeJS.ProcessEnv): boolean {
   try {
@@ -219,7 +227,7 @@ function adapterHasRequiredProjection(path: string, host: HookHost, env: NodeJS.
   }
 }
 
-function captureDirectoryOrLink(path: string, owner: SurfaceOwner): ManagedInstallSurface | null {
+function captureDirectoryOrLink(path: string, owner: SurfaceOwner): CapturedPath | null {
   if (!existsSync(path)) return null;
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) {
@@ -242,57 +250,33 @@ function captureDirectoryOrLink(path: string, owner: SurfaceOwner): ManagedInsta
       (marker.surface !== 'canonical-skill' && marker.surface !== 'command-facade') ||
       typeof marker.content_hash !== 'string'
     ) return null;
-    return {
-      owner,
-      path,
-      type: 'directory-copy',
-      authority: 'repo-harness-install-transaction',
-      removal: 'managed-surfaces-only',
-      content_hash: marker.content_hash,
-      managed_marker: `${OWNER_MARKER}:owner=repo-harness;surface=${marker.surface}`,
-      symlink_target: null,
-    };
+    // The marker's hash is the tree hash without the marker: the record's proof.
+    return { owner, path, committed: { type: 'directory', sha256: marker.content_hash } };
   } catch {
     return null;
   }
 }
 
-function captureOwnedPath(path: string, owner: SurfaceOwner): ManagedInstallSurface | null {
-  if (!existsSync(path) && !lstatExists(path)) return null;
-  const stat = lstatSync(path);
-  const base = { owner, path, authority: 'repo-harness-install-transaction' as const, removal: 'managed-surfaces-only' as const };
-  if (stat.isSymbolicLink()) {
-    return { ...base, type: 'symlink', content_hash: null, managed_marker: null, symlink_target: readlinkSync(path) };
-  }
-  if (stat.isDirectory()) {
-    return { ...base, type: 'directory-copy', content_hash: hashManagedTree(path), managed_marker: 'transaction-created-directory', symlink_target: null };
-  }
+function captureOwnedPath(path: string, owner: SurfaceOwner): CapturedPath | null {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return null;
+  if (stat.isSymbolicLink()) return { owner, path, committed: { type: 'symlink', target: readlinkSync(path) } };
+  if (stat.isDirectory()) return { owner, path, committed: { type: 'directory', sha256: hashManagedTree(path) } };
   if (!stat.isFile()) return null;
-  return {
-    ...base,
-    type: 'managed-file',
-    content_hash: sha256Prefixed(readFileSync(path)),
-    managed_marker: 'transaction-created-file',
-    symlink_target: null,
-  };
+  return { owner, path, committed: { type: 'file', sha256: sha256Prefixed(readFileSync(path)) } };
 }
-
-/**
- * A Herdr skill receipt. Its currency is the marker proof (`ownedSkillIsIntact`), never a tree hash:
- * a later Herdr write keeps the receipt current, and any user entry ends rh's claim on the directory.
- */
-const HERDR_SKILL_RECEIPT = 'herdr-skill-marker';
 
 function herdrSkillPaths(home: string, env: NodeJS.ProcessEnv): readonly string[] {
   return [...hostSkillRoots(home, env), stagedSkillRoot(home)].map((root) => join(root, 'herdr'));
 }
 
-function captureHerdrSkill(path: string, owner: SurfaceOwner): ManagedInstallSurface | null {
+/**
+ * A Herdr skill record. Its currency is the marker proof (`ownedSkillIsIntact`), never a tree hash:
+ * a later Herdr write keeps the record current, and any user entry ends rh's claim on the directory.
+ */
+function captureHerdrSkill(path: string, owner: SurfaceOwner): CapturedPath | null {
   if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory() || !ownedSkillIsIntact(path)) return null;
-  return {
-    owner, path, type: 'directory-copy', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
-    content_hash: sha256Prefixed(readFileSync(join(path, 'SKILL.md'))), managed_marker: HERDR_SKILL_RECEIPT, symlink_target: null,
-  };
+  return { owner, path, committed: { type: 'directory', proof: 'herdr-skill-marker' } };
 }
 
 /**
@@ -371,10 +355,10 @@ export function ownerForInstallPath(path: string, env: NodeJS.ProcessEnv = proce
 function discoverManagedSurfaces(
   plugins: readonly PluginId[],
   env: NodeJS.ProcessEnv,
-): readonly ManagedInstallSurface[] {
+): readonly CapturedPath[] {
   const home = env.HOME ?? homedir();
   const catalog = loadSkillSurfaceCatalog();
-  const surfaces: ManagedInstallSurface[] = [];
+  const surfaces: CapturedPath[] = [];
   const enabled = (owner: SurfaceOwner | null): owner is SurfaceOwner => owner !== null && ownerEnabled(owner, plugins);
   // A catalog facade can lack the prefix (obsidian-memory). Its copy needs
   // the same marker-based receipt as a prefixed facade copy.
@@ -418,42 +402,8 @@ function discoverManagedSurfaces(
   return surfaces;
 }
 
-function surfaceIsCurrent(surface: ManagedInstallSurface, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (surface.type === 'pi-package') {
-    try { return piPackagePresent(surface.path, env); } catch { return false; }
-  }
-  if (!existsSync(surface.path)) return false;
-  try {
-    const stat = lstatSync(surface.path);
-    if (surface.type === 'symlink') {
-      return stat.isSymbolicLink() && readlinkSync(surface.path) === surface.symlink_target;
-    }
-    if (surface.type === 'managed-file') {
-      if (!stat.isFile() || surface.content_hash === null) return false;
-      return surface.managed_marker === 'transaction-created-file'
-        && sha256Prefixed(readFileSync(surface.path)) === surface.content_hash;
-    }
-    if (!stat.isDirectory() || surface.content_hash === null || surface.managed_marker === null) return false;
-    if (surface.managed_marker === HERDR_SKILL_RECEIPT) return ownedSkillIsIntact(surface.path);
-    if (surface.managed_marker === 'transaction-created-directory') {
-      return hashManagedTree(surface.path) === surface.content_hash;
-    }
-    const markerPath = join(surface.path, OWNER_MARKER);
-    return existsSync(markerPath)
-      && readFileSync(markerPath, 'utf-8').includes('"owner":"repo-harness"')
-      && hashManagedTree(surface.path) === surface.content_hash;
-  } catch {
-    return false;
-  }
-}
-
-/** Verify one recorded managed surface without requiring unrelated owner probes. */
-export function managedInstallSurfaceIsCurrent(surface: Pick<ManagedInstallSurface, 'path' | 'type' | 'content_hash' | 'managed_marker' | 'symlink_target'>, env: NodeJS.ProcessEnv = process.env): boolean {
-  return surfaceIsCurrent(surface as ManagedInstallSurface, env);
-}
-
 /** Generated agent fleet targets written by scripts/install-agent-fleet.sh. */
-function agentFleetTargetPaths(env: NodeJS.ProcessEnv = process.env): readonly string[] {
+export function agentFleetTargetPaths(env: NodeJS.ProcessEnv = process.env): readonly string[] {
   const home = env.HOME ?? homedir();
   return MANAGED_AGENTS.flatMap((agent) => [
     join(home, '.codex', 'agents', `${agent}.toml`),
@@ -461,124 +411,73 @@ function agentFleetTargetPaths(env: NodeJS.ProcessEnv = process.env): readonly s
   ]);
 }
 
-export function agentFleetUserManagedReceiptPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.HOME ?? homedir(), '.repo-harness', 'agent-fleet-user-managed.json');
+/** The path records that a producer edits, by key. */
+type RecordMap = Map<string, PathRecord>;
+
+/**
+ * A captured path as a `created` path record. An existing record keeps its
+ * baseline; otherwise a path that the transaction snapshot found absent is
+ * `known, existed: false`, and one that discovery found is `unknown`. A
+ * `user_managed` record is the user's file: no capture claims it.
+ */
+function recordCapture(env: NodeJS.ProcessEnv, records: RecordMap, capture: CapturedPath, prior: PathRecords, absent: ReadonlySet<string> = new Set()): void {
+  const host = pathRecordHost(env, capture.path);
+  if (host === null) throw new Error(`no install root holds the captured path: ${capture.path}`);
+  const key = pathRecordKey(env, capture.path);
+  const previous = prior[key];
+  if (previous?.kind === 'user_managed' || records.get(key)?.kind === 'user_managed') return;
+  const baseline: FileBaseline = previous?.baseline ?? (absent.has(capture.path) ? { state: 'known', existed: false } : { state: 'unknown' });
+  records.set(key, { owner: capture.owner, host, kind: 'created', baseline, committed: capture.committed });
+}
+
+function ownerSelected(record: PathRecord, plugins: readonly PluginId[]): boolean {
+  return record.kind === 'user_managed' || (isSurfaceOwner(record.owner) && ownerEnabled(record.owner, plugins));
+}
+
+/** The records that a selection commits: no record of a plugin outside `plugins`. */
+function selectionRecords(records: RecordMap, plugins: readonly PluginId[]): Record<string, PathRecord> {
+  return Object.fromEntries([...records].filter(([, record]) => ownerSelected(record, plugins)));
 }
 
 /**
- * Sole reader of the fleet user-managed receipt that scripts/install-agent-fleet.sh
- * writes. A malformed receipt fails closed as `ok: false`.
+ * The current records that a rebuilt set carries: each path still on disk
+ * unchanged, each `user_managed` record, and every record of a kept plugin.
  */
-export function readAgentFleetUserManagedReceipt(
-  env: NodeJS.ProcessEnv = process.env,
-): { readonly ok: boolean; readonly hashes: ReadonlyMap<string, string> } {
-  const receiptPath = agentFleetUserManagedReceiptPath(env);
-  if (!existsSync(receiptPath)) return { ok: true, hashes: new Map() };
-  const allowedPaths = new Set(agentFleetTargetPaths(env));
-  try {
-    const parsed = JSON.parse(readFileSync(receiptPath, 'utf-8'));
-    if (
-      parsed?.protocol !== 1
-      || parsed?.authority !== 'user-managed-agent-fleet'
-      || !Array.isArray(parsed.files)
-    ) return { ok: false, hashes: new Map() };
-    const hashes = new Map<string, string>();
-    for (const entry of parsed.files) {
-      if (
-        !entry
-        || typeof entry.path !== 'string'
-        || !allowedPaths.has(entry.path)
-        || typeof entry.sha256 !== 'string'
-        || !/^sha256:[a-f0-9]{64}$/.test(entry.sha256)
-        || hashes.has(entry.path)
-      ) return { ok: false, hashes: new Map() };
-      hashes.set(entry.path, entry.sha256);
-    }
-    return { ok: true, hashes };
-  } catch {
-    return { ok: false, hashes: new Map() };
-  }
+function carriedRecords(prior: PathRecords, kept: readonly PluginId[] = []): RecordMap {
+  return new Map(Object.entries(prior).filter(([key, record]) => (
+    record.kind === 'user_managed' || (kept as readonly string[]).includes(record.owner) || pathRecordIsCurrent(key, record)
+  )));
 }
 
 /**
  * Fleet files written before ownership tracking, or during an update, are never
  * transaction-created, so a later fleet projection change would report them as
  * drift. Right after a successful fleet run every target is either the generated
- * projection or receipt-accepted user-managed content; only the former is adopted.
+ * projection or a file that the user keeps (a `user_managed` record); only the former is recorded.
  */
-function verifiedAgentFleetSurfaces(env: NodeJS.ProcessEnv): readonly ManagedInstallSurface[] {
-  const receipt = readAgentFleetUserManagedReceipt(env);
-  if (!receipt.ok) return [];
+function verifiedAgentFleetSurfaces(env: NodeJS.ProcessEnv, prior: PathRecords): readonly CapturedPath[] {
   return agentFleetTargetPaths(env).flatMap((path) => {
-    if (!lstatExists(path) || !lstatSync(path).isFile()) return [];
-    const hash = sha256Prefixed(readFileSync(path));
-    if (receipt.hashes.get(path) === hash) return [];
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile() || prior[pathRecordKey(env, path)]?.kind === 'user_managed') return [];
     const surface = captureOwnedPath(path, 'core');
     return surface ? [surface] : [];
   });
 }
 
 /**
- * The one order of every written ownership manifest, so a writer that changes
- * nothing rewrites no bytes and an unchanged check compares like with like.
- */
-function canonicalOwnership(surfaces: readonly ManagedInstallSurface[]): ManagedInstallSurface[] {
-  return [...surfaces].sort((left, right) => left.path.localeCompare(right.path)
-    || left.type.localeCompare(right.type)
-    || (left.managed_marker ?? '').localeCompare(right.managed_marker ?? ''));
-}
-
-function sameOwnership(left: readonly ManagedInstallSurface[], right: readonly ManagedInstallSurface[]): boolean {
-  return JSON.stringify(canonicalOwnership(left)) === JSON.stringify(canonicalOwnership(right));
-}
-
-function mergeOwnership(surfaces: readonly ManagedInstallSurface[]): ManagedInstallSurface[] {
-  return canonicalOwnership([...new Map(surfaces.map((surface) => [
-    `${surface.path}\0${surface.managed_marker ?? surface.type}`,
-    surface,
-  ])).values()]);
-}
-
-/**
- * The ledger that a selection commits: every source (discovery, carried-over
- * records, transaction captures, fleet and Pi package surfaces) passes this one
- * filter, so no surface of a plugin outside `plugins` is recorded.
- */
-function selectionOwnership(surfaces: readonly ManagedInstallSurface[], plugins: readonly PluginId[]): ManagedInstallSurface[] {
-  return mergeOwnership(surfaces.filter((surface) => ownerEnabled(surface.owner, plugins)));
-}
-
-/**
- * The current records that a rebuilt ledger carries: each surface still on
- * disk unchanged, a Pi package registration, and every surface of a kept
- * plugin. A record leaves the ledger only when the projection removed or
- * changed its surface, or `selectionOwnership` drops its owner.
- */
-function carriedOwnership(
-  current: Pick<InstallState, 'ownership_manifest'> | null,
-  env: NodeJS.ProcessEnv,
-  kept: readonly PluginId[] = [],
-): readonly ManagedInstallSurface[] {
-  return (current?.ownership_manifest ?? []).filter((surface) => (
-    surface.type === 'pi-package' || (kept as readonly SurfaceOwner[]).includes(surface.owner) || surfaceIsCurrent(surface, env)
-  ));
-}
-
-/**
  * Update paths run the fleet helper but may never reach applyInstallSelection
- * (partial or in-process reconciliation), so the verified fleet surfaces are
- * merged into the existing ownership manifest right after the helper succeeds.
- * Without installed state there is no manifest to extend.
+ * (partial or in-process reconciliation), so the verified fleet files are
+ * recorded right after the helper succeeds. Without installed state there is
+ * no install to extend.
  */
 export function recordVerifiedAgentFleetOwnership(env: NodeJS.ProcessEnv = process.env): void {
-  const current = readInstallState(env);
-  if (current === null) return;
-  const ownershipManifest = mergeOwnership([...current.ownership_manifest, ...verifiedAgentFleetSurfaces(env)]);
-  if (sameOwnership(ownershipManifest, current.ownership_manifest)) return;
-  writeState({ ...current, ownership_manifest: ownershipManifest }, env);
+  if (readInstallState(env) === null) return;
+  const prior = readPathRecords(env);
+  const records: RecordMap = new Map(Object.entries(prior));
+  for (const surface of verifiedAgentFleetSurfaces(env, prior)) recordCapture(env, records, surface, prior);
+  writePathRecords(env, Object.fromEntries(records));
 }
 
-/** Refresh held receipts. Callers must prove ownership of each newly claimed path. */
+/** Refresh held records. Callers must prove ownership of each newly claimed path. */
 export function recordRefreshedInstallOwnership(
   paths: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
@@ -588,83 +487,84 @@ export function recordRefreshedInstallOwnership(
   if (current === null) return;
   const selected = new Set(paths);
   const plugins = enabledPlugins(current);
-  const ownershipManifest = current.ownership_manifest.map((surface) => {
-    if (!selected.has(surface.path)) return surface;
-    // Recapture bytes without requiring or inventing a new owner marker.
-    const refreshed = captureOwnedPath(surface.path, surface.owner);
-    if (!refreshed || refreshed.type !== surface.type) throw new Error(`cannot refresh install ownership: ${surface.path}`);
-    return { ...surface, content_hash: refreshed.content_hash, symlink_target: refreshed.symlink_target };
-  });
+  const prior = readPathRecords(env);
+  const records: RecordMap = new Map(Object.entries(prior));
+  for (const path of selected) {
+    const key = pathRecordKey(env, path);
+    const record = prior[key];
+    // A Herdr record proves itself by its marker; a user's file is never refreshed.
+    if (!record || record.kind !== 'created' || 'proof' in record.committed) continue;
+    const refreshed = captureOwnedPath(path, record.owner as SurfaceOwner);
+    if (!refreshed || refreshed.committed.type !== record.committed.type) throw new Error(`cannot refresh install ownership: ${path}`);
+    records.set(key, { ...record, committed: refreshed.committed });
+  }
   for (const path of new Set(newlyOwnedPaths)) {
     if (!selected.has(path)) throw new Error(`new install ownership path is outside this refresh: ${path}`);
-    if (ownershipManifest.some((surface) => surface.path === path)) continue;
+    if (records.has(pathRecordKey(env, path))) continue;
     const owner = ownerForInstallPath(path, env);
     if (owner === null || !ownerEnabled(owner, plugins)) throw new Error(`no enabled owner for new install ownership: ${path}`);
     const created = captureOwnedPath(path, owner);
     if (!created) throw new Error(`cannot record new install ownership: ${path}`);
-    ownershipManifest.push(created);
+    recordCapture(env, records, created, prior);
   }
-  if (sameOwnership(ownershipManifest, current.ownership_manifest)) return;
-  writeState({ ...current, ...versions(plugins), ownership_manifest: canonicalOwnership(ownershipManifest) }, env);
+  if (!writePathRecords(env, Object.fromEntries(records))) return;
+  writeState({ ...current, ...versions(plugins) }, env);
 }
 
-export function recordPiInstallOwnership(surfaces: readonly ManagedInstallSurface[], env: NodeJS.ProcessEnv = process.env, transaction?: HostSurfaceSnapshots): void {
+/** A Pi package source that an install may own: the Bun global package root, with the `pi` plugin enabled. */
+function validPiPackage(source: string, env: NodeJS.ProcessEnv, plugins: readonly PluginId[]): boolean {
+  return plugins.includes('pi') && source === bunGlobalPackageRoot(env);
+}
+
+export function recordPiInstallOwnership(sources: readonly string[], env: NodeJS.ProcessEnv = process.env, transaction?: HostSurfaceSnapshots): void {
   const current = readInstallState(env);
   if (current === null) {
-    if (surfaces.length === 0) return;
+    if (sources.length === 0) return;
     throw new Error('Pi package ownership requires an install state');
   }
-  if (surfaces.some(surface => surface.type !== 'pi-package' || !validateManagedSurface(surface, env, enabledPlugins(current)))) throw new Error('invalid Pi package ownership');
-  const root = hostSkillRoot(env.HOME ?? homedir(), 'pi', env);
-  const skills = transaction
-    ? selectionOwnership(transactionOwnedSurfaces(transaction, current, env), enabledPlugins(current)).filter(surface => surface.path.startsWith(root + '/'))
-    : [];
-  if (surfaces.length === 0 && skills.length === 0) return;
-  const ownership = new Map(current.ownership_manifest.map(surface => [`${surface.path}\0${surface.type}`, surface]));
-  for (const surface of [...surfaces, ...skills]) ownership.set(`${surface.path}\0${surface.type}`, surface);
-  if (sameOwnership([...ownership.values()], current.ownership_manifest)) return;
-  writeState({ ...current, ownership_manifest: canonicalOwnership([...ownership.values()]) }, env);
-}
-
-/** The Pi package surface that a new registration owns. */
-export function piPackageSurface(path: string): ManagedInstallSurface {
-  return {
-    owner: 'pi', path, type: 'pi-package', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
-    content_hash: null, managed_marker: 'pi-package-source', symlink_target: null,
-  };
+  const plugins = enabledPlugins(current);
+  if (sources.some(source => !validPiPackage(source, env, plugins))) throw new Error('invalid Pi package ownership');
+  if (transaction) {
+    const root = hostSkillRoot(env.HOME ?? homedir(), 'pi', env);
+    const prior = readPathRecords(env);
+    const records: RecordMap = new Map(Object.entries(prior));
+    const { captures, absent } = transactionOwnedSurfaces(transaction, prior, env);
+    for (const surface of captures) {
+      if (ownerEnabled(surface.owner, plugins) && surface.path.startsWith(root + '/')) recordCapture(env, records, surface, prior, absent);
+    }
+    writePathRecords(env, Object.fromEntries(records));
+  }
+  const piPackages = [...new Set([...current.pi_packages, ...sources])];
+  if (piPackages.length !== current.pi_packages.length) writeState({ ...current, pi_packages: piPackages }, env);
 }
 
 /** Preserve only the external resources that rollback could not remove. */
 export function recordUnresolvedPiOwnership(
   selection: PluginSelection,
   plugins: readonly PluginId[],
-  surfaces: readonly ManagedInstallSurface[],
+  sources: readonly string[],
   env: NodeJS.ProcessEnv,
   transactionId: string,
 ): void {
-  if (surfaces.length === 0) return;
+  if (sources.length === 0) return;
   const current = readInstallState(env);
   // The state records the attempted selection. Probes still report the
   // missing filesystem surfaces of an incomplete, rolled-back installation.
   const state: InstallState = current ?? {
     protocol: INSTALL_STATE_PROTOCOL, ...versions(plugins), selection,
-    transaction_id: transactionId, applied_at: new Date().toISOString(), ownership_manifest: [], previous: null,
+    transaction_id: transactionId, applied_at: new Date().toISOString(), pi_packages: [], previous: null,
   };
-  if (surfaces.some(surface => surface.type !== 'pi-package' || !validateManagedSurface(surface, env, enabledPlugins(state)))) throw new Error('invalid Pi rollback ownership');
-  const pending = new Map(surfaces.map(surface => [surface.path, surface]));
-  const retained = state.ownership_manifest.filter(surface => surface.type !== 'pi-package' || !pending.has(surface.path));
-  writeState({ ...state, ownership_manifest: canonicalOwnership([...retained, ...pending.values()]) }, env);
+  if (sources.some(source => !validPiPackage(source, env, enabledPlugins(state)))) throw new Error('invalid Pi rollback ownership');
+  writeState({ ...state, pi_packages: [...new Set([...state.pi_packages, ...sources])] }, env);
 }
 
-/** Candidate processes publish ownership into the same ledger as the parent. */
-export function newPiPackagesSinceTransaction(transaction: InstallHostTransaction, env: NodeJS.ProcessEnv): readonly ManagedInstallSurface[] {
+/** Candidate processes publish Pi packages into the same state as the parent. */
+export function newPiPackagesSinceTransaction(transaction: InstallHostTransaction, env: NodeJS.ProcessEnv): readonly string[] {
   const snapshot = transaction.snapshots.find(entry => entry.path === installProfileStatePath(env));
   const before = snapshot?.existed && snapshot.backup_path
-    ? checkedState(parseRecordedInstallState(JSON.parse(readFileSync(snapshot.backup_path, 'utf8')), snapshot.backup_path), snapshot.backup_path, env).ownership_manifest
+    ? checkedState(parseRecordedInstallState(JSON.parse(readFileSync(snapshot.backup_path, 'utf8')), snapshot.backup_path), snapshot.backup_path, env).pi_packages
     : [];
-  const sources = new Set(before.filter(surface => surface.type === 'pi-package').map(surface => surface.path));
-  const current = readInstallState(env);
-  return (current?.ownership_manifest ?? []).filter(surface => surface.type === 'pi-package' && !sources.has(surface.path));
+  return (readInstallState(env)?.pi_packages ?? []).filter(source => !before.includes(source));
 }
 
 /**
@@ -724,6 +624,33 @@ export function installProfileHostMutationPaths(env: NodeJS.ProcessEnv = process
     if (globalContextBackupEligible(path)) paths.push(path);
   }
   return [...new Set(paths)];
+}
+
+/**
+ * The install surfaces that a path record may name: the host mutation paths,
+ * and a repo-harness-* facade in a host skill root (also one that later left
+ * the catalog), by key; a `user_managed` record names a fleet file only; the
+ * owner is `core` or a plugin. The protocol 3 reader accepted the same set. A
+ * record outside it never grants a write or a removal.
+ */
+export function supportedPathRecord(env: NodeJS.ProcessEnv): (key: string, record: PathRecord) => boolean {
+  const keyOf = (path: string): string | null => {
+    try { return pathRecordKey(env, path); } catch { return null; }
+  };
+  const keys = (paths: readonly string[]) => new Set(paths.map(keyOf).filter((key): key is string => key !== null));
+  const allowed = keys(installProfileHostMutationPaths(env));
+  const fleet = keys(agentFleetTargetPaths(env));
+  const facadeRoots = new Set([...keys(hostSkillRoots(env.HOME ?? homedir(), env).map((root) => join(root, FACADE_NAME_PREFIX)))].map((key) => dirname(key)));
+  return (key, record) => isSurfaceOwner(record.owner) && (record.kind === 'user_managed'
+    ? fleet.has(key)
+    : allowed.has(key) || (basename(key).startsWith(FACADE_NAME_PREFIX) && facadeRoots.has(dirname(key))));
+}
+
+registerSupportedPathRecords(supportedPathRecord);
+
+function skippedOwnership(env: NodeJS.ProcessEnv): Pick<InstallStateStatus, 'ownership_outside_root' | 'ownership_unsupported'> {
+  const { outside, unsupported } = readPathRecordSet(env);
+  return { ownership_outside_root: outside, ownership_unsupported: unsupported };
 }
 
 /**
@@ -928,16 +855,16 @@ function lstatExists(path: string): boolean {
 export function rollbackInstallHostTransaction(
   transaction: InstallHostTransaction,
   options: { readonly retainBackup?: boolean; readonly runtimeLock?: RuntimeTransactionContext;
-    readonly unresolvedPi?: { readonly selection: PluginSelection; readonly plugins: readonly PluginId[]; readonly surfaces: readonly ManagedInstallSurface[]; readonly env: NodeJS.ProcessEnv } } = {},
+    readonly unresolvedPi?: { readonly selection: PluginSelection; readonly plugins: readonly PluginId[]; readonly sources: readonly string[]; readonly env: NodeJS.ProcessEnv } } = {},
 ): void {
   assertTransactionLock(transaction, options.runtimeLock);
   try {
     const failures: string[] = [];
     const unresolved = options.unresolvedPi;
-    if (unresolved?.surfaces.length) {
+    if (unresolved?.sources.length) {
       try {
         writeFileSync(join(transaction.backup_root, 'pi-ownership.json'), JSON.stringify({ protocol: 1,
-          transaction_id: basename(transaction.backup_root), plugins: unresolved.plugins, ownership_manifest: unresolved.surfaces }), { mode: 0o600 });
+          transaction_id: basename(transaction.backup_root), plugins: unresolved.plugins, pi_packages: unresolved.sources }), { mode: 0o600 });
       } catch (error) { failures.push(`Pi recovery record: ${String((error as Error).message ?? error)}`); }
     }
     // The gate undoes its own writes by the ledger records before the ledger file goes back, so a linked host file needs no copy here.
@@ -973,8 +900,8 @@ export function rollbackInstallHostTransaction(
         failures.push(`${snapshot.path}: ${String((error as Error).message ?? error)}`);
       }
     }
-    if (unresolved?.surfaces.length) {
-      try { recordUnresolvedPiOwnership(unresolved.selection, unresolved.plugins, unresolved.surfaces, unresolved.env, basename(transaction.backup_root)); }
+    if (unresolved?.sources.length) {
+      try { recordUnresolvedPiOwnership(unresolved.selection, unresolved.plugins, unresolved.sources, unresolved.env, basename(transaction.backup_root)); }
       catch (error) { failures.push(`Pi ownership could not be restored to the ledger; recovery transaction ${transaction.backup_root}: ${String((error as Error).message ?? error)}`); }
     }
     if (failures.length === 0 && options.retainBackup !== true) {
@@ -1008,27 +935,30 @@ export function piSkillRootSnapshots(env: NodeJS.ProcessEnv = process.env): Host
   };
 }
 
+/**
+ * The paths that a transaction wrote: each path absent before it with an
+ * owner, and each existing path that already has a `created` record. `absent`
+ * holds the paths that the snapshot found absent, for their baseline.
+ */
 function transactionOwnedSurfaces(
   transaction: HostSurfaceSnapshots,
-  previous: Pick<InstallState, 'ownership_manifest'> | null,
+  prior: PathRecords,
   env: NodeJS.ProcessEnv,
-): readonly ManagedInstallSurface[] {
+): { readonly captures: readonly CapturedPath[]; readonly absent: ReadonlySet<string> } {
   const herdr = herdrSkillPaths(env.HOME ?? homedir(), env);
-  return transaction.snapshots.flatMap((snapshot) => {
-    // The marker proof alone records a Herdr directory, whatever an earlier receipt held.
+  const captures = transaction.snapshots.flatMap((snapshot) => {
+    // The marker proof alone records a Herdr directory, whatever an earlier record held.
     if (herdr.includes(snapshot.path)) {
       const owner = ownerForInstallPath(snapshot.path, env);
       const surface = owner === null ? null : captureHerdrSkill(snapshot.path, owner);
       return surface ? [surface] : [];
     }
     if (snapshot.existed) {
-      // A section record of an earlier version (CodeGraph MCP config, managed hook entries) owned a
-      // fragment of a shared file, never the whole file. Only a whole-path record is recaptured.
-      const previousSurface = previous?.ownership_manifest.find((surface) => (
-        surface.path === snapshot.path && !SECTION_MARKERS.has(surface.managed_marker ?? '')
-      ));
-      if (previousSurface === undefined) return [];
-      const refreshed = captureOwnedPath(snapshot.path, previousSurface.owner);
+      // A snapshot outside every install root, such as the install state, has no path record.
+      if (pathRecordHost(env, snapshot.path) === null) return [];
+      const previous = prior[pathRecordKey(env, snapshot.path)];
+      if (previous?.kind !== 'created' || !isSurfaceOwner(previous.owner)) return [];
+      const refreshed = captureOwnedPath(snapshot.path, previous.owner);
       return refreshed ? [refreshed] : [];
     }
     const owner = ownerForInstallPath(snapshot.path, env);
@@ -1036,6 +966,7 @@ function transactionOwnedSurfaces(
     const surface = captureOwnedPath(snapshot.path, owner);
     return surface ? [surface] : [];
   });
+  return { captures, absent: new Set(transaction.snapshots.filter((snapshot) => !snapshot.existed).map((snapshot) => snapshot.path)) };
 }
 
 function removeOwnedSkillLockEntries(env: NodeJS.ProcessEnv, skillNames: ReadonlySet<string>): void {
@@ -1052,34 +983,31 @@ function removeOwnedSkillLockEntries(env: NodeJS.ProcessEnv, skillNames: Readonl
   retryWindowsSharingRace(() => renameSync(temp, lockPath));
 }
 
-/** Remove the owned surfaces of each plugin that the target selection drops. A changed surface stops the switch. */
+/**
+ * Remove the owned paths and Pi packages of each plugin that the target
+ * selection drops. A changed path stops the switch. The selection commit then
+ * writes the records without them.
+ */
 function removeRetiredOwnedSurfaces(
   plugins: readonly PluginId[],
-  current: Pick<InstallState, 'ownership_manifest'>,
+  current: Pick<InstallState, 'pi_packages'>,
   env: NodeJS.ProcessEnv,
 ): readonly string[] {
-  const retired = current.ownership_manifest.filter((surface) => !ownerEnabled(surface.owner, plugins));
-  const unique = [...new Map(retired.map((surface) => [surface.path, surface])).values()];
-  for (const surface of unique) {
-    if (surface.type !== 'pi-package' && !surfaceIsCurrent(surface, env)) {
-      throw new Error(`refusing plugin switch because managed surface drifted: ${surface.path}`);
-    }
+  const retired = Object.entries(readPathRecords(env)).filter(([, record]) => !ownerSelected(record, plugins));
+  for (const [key, record] of retired) {
+    if (!pathRecordIsCurrent(key, record)) throw new Error(`refusing plugin switch because managed surface drifted: ${key}`);
   }
   const ownedSkills = new Set(selectionOwnedSkillNames(loadSkillSurfaceCatalog()));
   const removedSkills = new Set<string>();
-  for (const surface of unique) {
-    if (surface.type === 'pi-package') {
-      // Only a registration that this install created is in the ledger.
-      removePiPackage(surface.path, env);
-      continue;
-    }
-    const normalized = surface.path.replaceAll('\\', '/');
-    const name = normalized.split('/').at(-1) ?? '';
-    if (ownedSkills.has(name) && normalized.includes('/.agents/skills/')) removedSkills.add(name);
-    rmSync(surface.path, { recursive: true, force: true });
+  // Only a registration that this install created is in the state.
+  const piPackages = plugins.includes('pi') ? [] : current.pi_packages;
+  for (const source of piPackages) removePiPackage(source, env);
+  for (const [key, record] of retired) {
+    if (record.host === 'staged' && ownedSkills.has(basename(key))) removedSkills.add(basename(key));
+    rmSync(key, { recursive: true, force: true });
   }
   removeOwnedSkillLockEntries(env, removedSkills);
-  return unique.map(({ path }) => path);
+  return [...piPackages, ...retired.map(([key]) => key)];
 }
 
 /**
@@ -1098,7 +1026,7 @@ export function prepareInstallSelectionSwitch(
   plugins: readonly PluginId[],
   env: NodeJS.ProcessEnv = process.env,
 ): readonly string[] {
-  // The old records of the host files move to the ledger first, so the manifest holds no section record.
+  // The old records of the host files move to the ledger first, so the architecture revert below finds them.
   migrateCodexConfigRecords(env);
   migrateJsonConfigRecords(env);
   const current = readInstallState(env);
@@ -1108,7 +1036,7 @@ export function prepareInstallSelectionSwitch(
   return removed;
 }
 
-/** The path allowlist, type and hash shape of a recorded ownership surface. */
+/** The path allowlist, type and hash shape of a protocol 3 ownership surface. */
 function validSurfaceShape(raw: Record<string, unknown>, env: NodeJS.ProcessEnv): boolean {
   if (raw.type === 'pi-package') {
     return raw.authority === 'repo-harness-install-transaction' && raw.removal === 'managed-surfaces-only'
@@ -1133,25 +1061,20 @@ function validSurfaceShape(raw: Record<string, unknown>, env: NodeJS.ProcessEnv)
 
 const SURFACE_KEYS = ['authority', 'content_hash', 'managed_marker', 'owner', 'path', 'removal', 'symlink_target', 'type'].join(',');
 
-function validateManagedSurface(raw: unknown, env: NodeJS.ProcessEnv, plugins: readonly PluginId[]): raw is ManagedInstallSurface {
+/** The check of one protocol 3 `ownership_manifest` surface, for the one-shot migration (install-state-migration.ts) only. */
+export function isLegacyOwnershipSurface(raw: unknown, env: NodeJS.ProcessEnv, plugins: readonly PluginId[]): boolean {
   if (!isRecord(raw) || Object.keys(raw).sort().join(',') !== SURFACE_KEYS) return false;
   if (!isSurfaceOwner(raw.owner) || !ownerEnabled(raw.owner, plugins)) return false;
   if (raw.type === 'pi-package' && raw.owner !== 'pi') return false;
   return validSurfaceShape(raw, env);
 }
 
-/** The host-path check of each ownership surface, against the plugins of the same snapshot. */
-function checkedSurfaces(snapshot: RecordedInstallSnapshot, path: string, env: NodeJS.ProcessEnv): readonly ManagedInstallSurface[] {
-  const plugins = enabledPlugins(snapshot);
-  const surfaces = snapshot.ownership_manifest;
-  if (!surfaces.every((surface): surface is ManagedInstallSurface => validateManagedSurface(surface, env, plugins))) throw invalidOwnership(path);
-  return surfaces;
-}
-
-/** The read model's state with each ownership surface checked; the installer commands read state only through this. */
+/** The read model's state with each Pi package checked against the plugins of the same snapshot; the installer commands read state only through this. */
 function checkedState(recorded: RecordedInstallState, path: string, env: NodeJS.ProcessEnv): InstallState {
-  const previous = recorded.previous === null ? null : { ...recorded.previous, ownership_manifest: checkedSurfaces(recorded.previous, path, env) };
-  return { ...recorded, ownership_manifest: checkedSurfaces(recorded, path, env), previous };
+  for (const snapshot of [recorded, ...(recorded.previous ? [recorded.previous] : [])]) {
+    if (snapshot.pi_packages.some((source) => !validPiPackage(source, env, enabledPlugins(snapshot)))) throw invalidOwnership(path);
+  }
+  return recorded;
 }
 
 export function readInstallState(env: NodeJS.ProcessEnv = process.env): InstallState | null {
@@ -1269,6 +1192,7 @@ function probeOwners(plugins: readonly PluginId[], env: NodeJS.ProcessEnv): Part
 export function installStateStatus(
   state: InstallState,
   env: NodeJS.ProcessEnv = process.env,
+  records: PathRecords = readPathRecords(env),
 ): InstallStateStatus {
   const probes = probeOwners(enabledPlugins(state), env);
   const missing = (Object.entries(probes) as [SurfaceOwner, OwnerProbe][])
@@ -1277,12 +1201,18 @@ export function installStateStatus(
   // A valid selection may consume a pre-existing user-managed CLI, skill, or
   // CodeGraph installation. Ownership is required before removal, not before
   // truthful presence can be reported.
-  const surfaceDrift = state.ownership_manifest
-    .filter(surface => surface.type !== 'pi-package' || piExecutable(env) !== null)
-    .filter((surface) => !surfaceIsCurrent(surface, env))
-    .map((surface) => surface.path);
+  const ownership = Object.entries(records).map(([path, record]): OwnershipEntry => ({
+    path, owner: record.owner, host: record.host, kind: record.kind, type: record.committed.type, current: pathRecordIsCurrent(path, record),
+  }));
+  const piDrift = piExecutable(env) === null ? [] : state.pi_packages.filter((source) => {
+    try { return !piPackagePresent(source, env); } catch { return true; }
+  });
+  // A file that the user keeps is not rh's to keep current.
+  const surfaceDrift = [...ownership.filter((entry) => entry.kind === 'created' && !entry.current).map((entry) => entry.path), ...piDrift];
   return {
     ...state,
+    ownership,
+    ...skippedOwnership(env),
     probes,
     drift: {
       status: missing.length === 0 && surfaceDrift.length === 0 ? 'consistent' : 'drift',
@@ -1476,7 +1406,7 @@ export function applyInstallSelection(
   transaction?: HostSurfaceSnapshots,
   options: {
     readonly agentFleetVerified?: boolean;
-    readonly additionalSurfaces?: readonly ManagedInstallSurface[];
+    readonly additionalPiPackages?: readonly string[];
     readonly kept?: readonly PluginId[];
   } = {},
 ): { readonly plan: InstallPlan; readonly state: InstallState } {
@@ -1486,35 +1416,40 @@ export function applyInstallSelection(
   const kept = options.kept ?? [];
   const ran = plugins.filter(id => !kept.includes(id));
   const current = readInstallState(env);
-  if (options.additionalSurfaces?.some(surface => surface.type !== 'pi-package' || !validateManagedSurface(surface, env, plugins))) throw new Error('invalid Pi package ownership');
+  const additionalPi = options.additionalPiPackages ?? [];
+  if (additionalPi.some(source => !validPiPackage(source, env, plugins))) throw new Error('invalid Pi package ownership');
   const plan = planInstallSelection(selection, { run: ran, record: plugins }, current, env);
+  const { records: prior, outside, unsupported } = readPathRecordSet(env);
   const discovered = discoverManagedSurfaces(ran, env);
-  const preserved = carriedOwnership(current, env, kept);
-  const transactionOwned = transaction ? transactionOwnedSurfaces(transaction, current, env) : [];
-  const fleetOwned = options.agentFleetVerified === true ? verifiedAgentFleetSurfaces(env) : [];
+  const records = carriedRecords(prior, kept);
+  const transactionOwned = transaction ? transactionOwnedSurfaces(transaction, prior, env) : { captures: [], absent: new Set<string>() };
+  const fleetOwned = options.agentFleetVerified === true ? verifiedAgentFleetSurfaces(env, prior) : [];
   // Current verified link projections own their classification. Historical
   // records must not restore a retired owner.
-  const ownershipManifest = selectionOwnership([...discovered, ...preserved, ...transactionOwned, ...fleetOwned,
-    ...(options.additionalSurfaces ?? []), ...discovered.filter(surface => surface.type === 'symlink')], plugins);
+  for (const surface of [...discovered, ...transactionOwned.captures, ...fleetOwned, ...discovered.filter(surface => surface.committed.type === 'symlink')]) {
+    recordCapture(env, records, surface, prior, transactionOwned.absent);
+  }
+  const committed = selectionRecords(records, plugins);
+  const piPackages = [...new Set([...(current?.pi_packages ?? []), ...additionalPi])].filter(source => validPiPackage(source, env, plugins));
   const recordedVersions = versions(plugins);
   const unchanged = current !== null
     && JSON.stringify({ core: current.core, plugins: current.plugins }) === JSON.stringify(recordedVersions)
     && JSON.stringify(current.selection) === JSON.stringify(selection)
-    && sameOwnership(current.ownership_manifest, ownershipManifest);
+    && JSON.stringify(current.pi_packages) === JSON.stringify(piPackages)
+    && pathRecordsDigest(prior) === pathRecordsDigest(committed)
+    // A record outside its host root goes with the next write, so it never stays unacted forever.
+    && outside.length === 0 && unsupported.length === 0;
   const state: InstallState = {
     protocol: INSTALL_STATE_PROTOCOL,
     ...recordedVersions,
     selection,
     transaction_id: randomUUID(),
     applied_at: now.toISOString(),
-    ownership_manifest: ownershipManifest,
+    pi_packages: piPackages,
     previous: current === null ? null : snapshot(current),
   };
-  const status = installStateStatus({
-    ...state,
-    plugins: state.plugins.filter(plugin => !kept.includes(plugin.id)),
-    ownership_manifest: ownershipManifest.filter(surface => !(kept as readonly SurfaceOwner[]).includes(surface.owner)),
-  }, env);
+  const status = installStateStatus({ ...state, plugins: state.plugins.filter(plugin => !kept.includes(plugin.id)) }, env,
+    Object.fromEntries(Object.entries(committed).filter(([, record]) => !(kept as readonly string[]).includes(record.owner))));
   if (status.drift.status !== 'consistent') {
     throw new Error(
       `install projection is incomplete: missing=${status.drift.missing_owners.map(owner => `${owner}(${status.probes[owner]?.missing.join('+')})`).join(',') || '(none)'}; surface_drift=${status.drift.surface_drift.join(',') || '(none)'}`,
@@ -1522,6 +1457,7 @@ export function applyInstallSelection(
   }
   // A no-change apply writes nothing, so `previous` keeps the last real change for a rollback.
   if (unchanged) return { plan, state: current };
+  writePathRecords(env, committed);
   writeState(state, env);
   return { plan, state };
 }
@@ -1533,24 +1469,26 @@ export function rollbackInstallSelection(
   const current = readInstallState(env);
   if (!current?.previous) throw new Error('no previous install transaction to roll back');
   const plugins = enabledPlugins(current.previous);
+  const prior = readPathRecords(env);
+  const records = carriedRecords(prior);
+  const transactionOwned = transaction ? transactionOwnedSurfaces(transaction, prior, env) : { captures: [], absent: new Set<string>() };
+  for (const surface of [...discoverManagedSurfaces(plugins, env), ...transactionOwned.captures]) recordCapture(env, records, surface, prior, transactionOwned.absent);
+  const committed = selectionRecords(records, plugins);
   const restored: InstallState = {
     ...current.previous,
     ...versions(plugins),
     transaction_id: randomUUID(),
     applied_at: new Date().toISOString(),
-    ownership_manifest: selectionOwnership([
-      ...discoverManagedSurfaces(plugins, env),
-      ...carriedOwnership(current, env),
-      ...(transaction ? transactionOwnedSurfaces(transaction, current.previous, env) : []),
-    ], plugins),
+    pi_packages: current.pi_packages.filter(source => validPiPackage(source, env, plugins)),
     previous: null,
   };
-  const status = installStateStatus(restored, env);
+  const status = installStateStatus(restored, env, committed);
   if (status.drift.status !== 'consistent') {
     throw new Error(
       `rollback projection is incomplete: missing=${status.drift.missing_owners.map(owner => `${owner}(${status.probes[owner]?.missing.join('+')})`).join(',') || '(none)'}; surface_drift=${status.drift.surface_drift.join(',') || '(none)'}`,
     );
   }
+  writePathRecords(env, committed);
   writeState(restored, env);
   return restored;
 }

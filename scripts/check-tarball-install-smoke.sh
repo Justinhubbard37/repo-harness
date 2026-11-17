@@ -486,22 +486,23 @@ if (result.capability_id !== "apps-web") {
 JS_EOF
 
 # The earlier hook runs have no install state. Here the installed hook reads a
-# recorded protocol 3 state with a managed surface, and must exit 0 with no
+# recorded protocol 4 state and a ledger path record, and must exit 0 with no
 # error output. In 0.26.0 that read loaded the package skill-surface catalog in
 # the bundle and exited 1 (#1680).
 bun - "$INSTALLED_ROOT" "$SMOKE_HOME" <<'JS_EOF'
 const [, , installedRoot, home] = process.argv;
-const { mkdirSync, writeFileSync } = await import('node:fs');
+const { mkdirSync, realpathSync, writeFileSync } = await import('node:fs');
 const { dirname, join } = await import('node:path');
 const { version } = await Bun.file(`${installedRoot}/package.json`).json();
 const { PLUGIN_IDS } = await import(`${installedRoot}/src/core/skill-surface/plugin-manifest.ts`);
 const statePath = join(home, '.repo-harness', 'install-state.json');
-const settings = { owner: 'core', path: join(home, '.claude', 'settings.json'), type: 'managed-file',
-  authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
-  content_hash: `sha256:${'0'.repeat(64)}`, managed_marker: 'transaction-created-file', symlink_target: null };
-mkdirSync(dirname(statePath), { recursive: true });
-writeFileSync(statePath, JSON.stringify({ protocol: 3, core: { version }, plugins: PLUGIN_IDS.map((id) => ({ id, version })), selection: 'all',
-  transaction_id: 'tarball-smoke', applied_at: new Date().toISOString(), ownership_manifest: [settings], previous: null }));
+const ledgerPath = join(home, '.repo-harness', 'config', 'ledger.json');
+const agent = join(realpathSync(home), '.claude', 'agents', 'explorer.md');
+mkdirSync(dirname(ledgerPath), { recursive: true });
+writeFileSync(statePath, JSON.stringify({ protocol: 4, core: { version }, plugins: PLUGIN_IDS.map((id) => ({ id, version })), selection: 'all',
+  transaction_id: 'tarball-smoke', applied_at: new Date().toISOString(), pi_packages: [], previous: null }));
+writeFileSync(ledgerPath, JSON.stringify({ protocol: 2, files: {}, fragments: [], directories: [], paths: { [agent]: {
+  owner: 'core', host: 'claude', kind: 'created', baseline: { state: 'unknown' }, committed: { type: 'file', sha256: `sha256:${'0'.repeat(64)}` } } } }));
 JS_EOF
 run_recorded_selection_hook() {
   local event="$1" route="$2" payload="$3" status=0

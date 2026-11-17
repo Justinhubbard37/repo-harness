@@ -33,7 +33,8 @@ import {
 import type { PluginId } from "../../core/skill-surface/plugin-manifest";
 import { hostSkillRoot, SKILL_HOSTS, type SkillHost } from "../../effects/host-skill-roots";
 import { skillTreeSha256 } from "../../effects/skill-tree-integrity";
-import { assertArchitecturePolicySelection, beginInstallHostTransaction, commitInstallHostTransaction, rollbackInstallHostTransaction, managedInstallSurfaceIsCurrent, readInstallState } from "../installer/install-profile";
+import { ownedPath, pathRecordIsCurrent, pathRecordKey } from '../../effects/host-config/path-records';
+import { assertArchitecturePolicySelection, beginInstallHostTransaction, commitInstallHostTransaction, rollbackInstallHostTransaction, readInstallState } from "../installer/install-profile";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 import { validateRepoAdoptionTarget } from "../repo-adoption/target";
 import { runAdoptionApply, runAdoptionPlan } from "./adoption-plan";
@@ -210,7 +211,8 @@ function syncBundledItemsAtHome(
   env?: NodeJS.ProcessEnv,
 ): InitStep[] {
   const steps: InitStep[] = [];
-  const installed = home ? readInstallState({ ...env, HOME: home }) : null;
+  const ownerEnv = { ...env, HOME: home ?? undefined };
+  const installed = home ? readInstallState(ownerEnv) : null;
   const globalRoot = bunGlobalPackageRoot(env);
   const globalSource = isBunGlobalPackageSource(sourceRoot, env);
   const useLinks = globalSource
@@ -254,8 +256,8 @@ function syncBundledItemsAtHome(
       continue;
     }
     if (stat) {
-      const owned = installed?.ownership_manifest.find(surface => surface.path === dest);
-      if (!correctGlobalLink && !identicalCopy && (!owned || !managedInstallSurfaceIsCurrent(owned))) {
+      const owned = installed ? ownedPath(ownerEnv, dest) : null;
+      if (!correctGlobalLink && !identicalCopy && (!owned || !pathRecordIsCurrent(pathRecordKey(ownerEnv, dest), owned))) {
         steps.push({ step, status: 'failed', detail: `refusing to overwrite unowned or modified skill at ${dest}; preserve or move this path, then run: rh install --target ${host}` });
         continue;
       }

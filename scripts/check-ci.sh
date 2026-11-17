@@ -46,7 +46,7 @@ source "$ROOT/scripts/lib/architecture-plugin.sh"
 # needs that plugin; without a recorded selection the plugin is not loaded.
 record_architecture_selection() {
   mkdir -p "$1/.repo-harness"
-  bun -e 'const version = (await Bun.file("package.json").json()).version; await Bun.write(process.argv[1], `${JSON.stringify({ protocol: 3, core: { version }, plugins: [{ id: "architecture", version }], selection: ["architecture"], transaction_id: "ci", applied_at: new Date(0).toISOString(), ownership_manifest: [], previous: null })}\n`);' "$1/.repo-harness/install-state.json"
+  bun -e 'const version = (await Bun.file("package.json").json()).version; await Bun.write(process.argv[1], `${JSON.stringify({ protocol: 4, core: { version }, plugins: [{ id: "architecture", version }], selection: ["architecture"], transaction_id: "ci", applied_at: new Date(0).toISOString(), pi_packages: [], previous: null })}\n`);' "$1/.repo-harness/install-state.json"
 }
 
 # Runs "$@" with a private HOME that selects the architecture plugin.

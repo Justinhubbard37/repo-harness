@@ -6,7 +6,8 @@ import { configurationReceiptPath } from '../../src/cli/installer/configuration-
 import { migrateCodexConfigRecords, planCodexConfigMigration } from '../../src/cli/installer/codex-config-migration';
 import { migrateJsonConfigRecords, planJsonConfigMigration } from '../../src/cli/installer/json-config-migration';
 import { buildManagedHooks, canonicalManagedHookProjection, managedStatusLine } from '../../src/cli/installer/managed-entries';
-import { beginInstallHostTransaction, installProfileHostMutationPaths, rollbackInstallHostTransaction, versions, writeState } from '../../src/cli/installer/install-profile';
+import { beginInstallHostTransaction, installProfileHostMutationPaths, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
+import { installProfileStatePath } from '../../src/cli/installer/install-state';
 import { MANAGED_TAG } from '../../src/core/adoption/managed-hook-config';
 import { sha256Prefixed } from '../../src/core/evidence/sha256';
 import { jsonFragment, removeJsonFragment } from '../../src/core/host-config/json-fragment';
@@ -111,10 +112,12 @@ test('the JSON migration adopts a tagged entry with the old writer shape, keeps 
   for (const [name, [kept, edit, hashed]] of Object.entries(rows)) withClaudeHome((home, settings) => {
     const env = process.env;
     const hooks = buildManagedHooks('claude', env);
-    if (hashed) writeState({ protocol: 3, ...versions([]), selection: [], transaction_id: 'seeded', applied_at: '2026-11-01T00:00:00.000Z', previous: null, ownership_manifest: [{
+    // A protocol 3 manifest that proves the hook hashes: the uninstall entry migrates it once.
+    if (hashed) mkdirSync(join(home, '.repo-harness'), { recursive: true });
+    if (hashed) writeFileSync(installProfileStatePath(env), JSON.stringify({ protocol: 3, ...versions([]), selection: [], transaction_id: 'seeded', applied_at: '2026-11-01T00:00:00.000Z', previous: null, ownership_manifest: [{
       owner: 'core', path: settings, type: 'managed-file', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
       content_hash: sha256Prefixed(JSON.stringify(canonicalManagedHookProjection(hooks))), managed_marker: MANAGED_TAG, symlink_target: null,
-    }] }, env);
+    }] }));
     const data = { theme: 'dark', statusLine: managedStatusLine(env), hooks: structuredClone(hooks) };
     edit(data);
     writeFileSync(settings, `${JSON.stringify(data, null, 2)}\n`);

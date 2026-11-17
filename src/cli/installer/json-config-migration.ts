@@ -8,7 +8,8 @@ import { HostConfigError, type FragmentEdit } from '../../core/host-config/types
 import { openHostConfigGate, planFileRevert, type AdoptedFragment, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
 import { configurationReceiptPath, hostConfigurationRoot, readRawConfigurationReceipt, saveConfigurationReceipt, type ConfigurationReceipt } from './configuration-ownership';
 import { sha256Prefixed } from '../../core/evidence/sha256';
-import { CODEGRAPH_CONFIG_MARKER, readInstallState, writeState, type InstallState, type ManagedInstallSurface } from './install-profile';
+import { CODEGRAPH_CONFIG_MARKER } from './install-profile';
+import { readLegacyManifest, type LegacyManifestSurface } from './install-state';
 import { canonicalManagedHookProjection } from './managed-entries';
 
 /**
@@ -31,7 +32,6 @@ import { canonicalManagedHookProjection } from './managed-entries';
 export interface JsonConfigMigration {
   readonly files: readonly { readonly path: string; readonly adoption: HostConfigAdoption }[];
   readonly receipt: ConfigurationReceipt | null;
-  readonly state: InstallState | null;
 }
 
 /** An rh fragment of the old records: `before` undefined when rh added it; `installed` undefined when its text is not known to be rh's. */
@@ -99,14 +99,11 @@ function codegraphProjection(path: string): string | null {
   }
 }
 
-function isOldJsonSurface(paths: readonly string[]) {
-  return (surface: ManagedInstallSurface) => paths.includes(surface.path)
-    && (surface.managed_marker === MANAGED_TAG || surface.managed_marker === CODEGRAPH_CONFIG_MARKER);
-}
+type LegacyManifest = ReturnType<typeof readLegacyManifest>;
 
-/** The manifest's CodeGraph projection of a file, as added fragments while its hash still matches. */
-function manifestFragments(state: InstallState | null, path: string, content: string): { fragments: OldFragment[]; changed: boolean } {
-  const surfaces = state?.ownership_manifest.filter((surface) => surface.path === path && surface.managed_marker === CODEGRAPH_CONFIG_MARKER) ?? [];
+/** The protocol 3 manifest's CodeGraph projection of a file, as added fragments while its hash still matches. */
+function manifestFragments(manifest: LegacyManifest, path: string, content: string): { fragments: OldFragment[]; changed: boolean } {
+  const surfaces = manifest?.current.filter((surface: LegacyManifestSurface) => surface.path === path && surface.managed_marker === CODEGRAPH_CONFIG_MARKER) ?? [];
   if (!surfaces.length) return { fragments: [], changed: false };
   const current = existsSync(path) ? codegraphProjection(path) : null;
   if (current === null) return { fragments: [], changed: false };
@@ -153,9 +150,9 @@ function managedAdapterHash(content: string): string | null {
  * old writer's shape and, while the old manifest holds a hash of the file's
  * hook entries, that hash matches; any other one is not proved.
  */
-function taggedFragments(state: InstallState | null, path: string, content: string, hookFile: boolean): OldFragment[] {
+function taggedFragments(manifest: LegacyManifest, path: string, content: string, hookFile: boolean): OldFragment[] {
   if (!hookFile) return [];
-  const hashes = state?.ownership_manifest.filter((surface) => surface.path === path && surface.managed_marker === MANAGED_TAG).map((surface) => surface.content_hash) ?? [];
+  const hashes = manifest?.current.filter((surface) => surface.path === path && surface.managed_marker === MANAGED_TAG).map((surface) => surface.content_hash) ?? [];
   const hashMatches = !hashes.length || hashes.includes(managedAdapterHash(content));
   const selectors = managedHookSelectors(content);
   const statusLine = jsonFragmentValue(content, 'statusLine') as { command?: unknown } | undefined;
@@ -208,27 +205,21 @@ export function planJsonConfigMigration(env: NodeJS.ProcessEnv, only?: readonly 
   const home = hostConfigurationRoot(env);
   const paths = jsonPaths(home, only);
   const receipt = receiptFragments(readRawConfigurationReceipt(home), paths.all, configurationReceiptPath(home));
-  const state = readInstallState(env);
+  const manifest = readLegacyManifest(env);
   const gate = openHostConfigGate({ env });
   const files: JsonConfigMigration['files'][number][] = [];
   for (const path of paths.all) {
     if (gate.recorded(path).length) continue;
     const content = existsSync(path) ? readFileSync(path, 'utf8') : '';
-    const manifest = manifestFragments(state, path, content);
+    const projection = manifestFragments(manifest, path, content);
     const fromReceipt = receipt.byPath.get(path) ?? [];
     // A receipt entry is the older and more exact record of its fragment.
-    const old = [...fromReceipt, ...manifest.fragments.filter((fragment) => !fromReceipt.some((entry) => entry.selector === fragment.selector)), ...taggedFragments(state, path, content, paths.hooks.includes(path))];
-    const adopted = adoption(path, content, old, manifest.changed, paths.root);
+    const old = [...fromReceipt, ...projection.fragments.filter((fragment) => !fromReceipt.some((entry) => entry.selector === fragment.selector)), ...taggedFragments(manifest, path, content, paths.hooks.includes(path))];
+    const adopted = adoption(path, content, old, projection.changed, paths.root);
     if (adopted) files.push({ path, adoption: adopted });
   }
-  const surfaces = state ? [...state.ownership_manifest, ...(state.previous?.ownership_manifest ?? [])].some(isOldJsonSurface(paths.all)) : false;
-  const rest: InstallState | null = state && surfaces ? {
-    ...state,
-    ownership_manifest: state.ownership_manifest.filter((surface) => !isOldJsonSurface(paths.all)(surface)),
-    previous: state.previous && { ...state.previous, ownership_manifest: state.previous.ownership_manifest.filter((surface) => !isOldJsonSurface(paths.all)(surface)) },
-  } : null;
-  if (!files.length && !receipt.rest && !rest) return null;
-  return { files, receipt: receipt.rest, state: rest };
+  if (!files.length && !receipt.rest) return null;
+  return { files, receipt: receipt.rest };
 }
 
 /** Run the migration once: the ledger records come first, then the old records go. A later run finds none. */
@@ -238,7 +229,6 @@ export function migrateJsonConfigRecords(env: NodeJS.ProcessEnv, only?: readonly
   const gate = openHostConfigGate({ env });
   for (const file of migration.files) gate.adopt(file.path, file.adoption);
   if (migration.receipt) saveConfigurationReceipt(migration.receipt, hostConfigurationRoot(env));
-  if (migration.state) writeState(migration.state, env);
 }
 
 /** What a revert of the adopted files would report, for a dry run before the migration: the gate's own revert plan of each adopted record. */

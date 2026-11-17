@@ -227,35 +227,47 @@ current template.
 
 ```json
 {
-  "protocol": 3,
-  "core": { "version": "0.25.4" },
-  "plugins": [{ "id": "architecture", "version": "0.25.4" }],
+  "protocol": 4,
+  "core": { "version": "0.34.0" },
+  "plugins": [{ "id": "architecture", "version": "0.34.0" }],
   "selection": "all",
   "transaction_id": "…",
   "applied_at": "…",
-  "ownership_manifest": [
-    { "owner": "core", "path": "…", "type": "managed-file", "authority": "repo-harness-install-transaction",
-      "removal": "managed-surfaces-only", "content_hash": "…", "managed_marker": "…", "symlink_target": null }
-  ],
+  "pi_packages": [],
   "previous": null
 }
 ```
 
 The reader is strict. `plugins` holds the enabled plugins only, sorted and
 unique. Each plugin version equals the core version. `selection` is required:
-`"all"`, or a sorted list that equals the `plugins` ids. Each ledger entry has
-exactly one `owner`, which is `core` or an enabled plugin. Any other shape
-fails with `install_state_invalid` or `install_state_invalid_ownership`.
+`"all"`, or a sorted list that equals the `plugins` ids. `pi_packages` holds
+the Pi package sources that an install registered; each one is the Bun global
+package root and needs the `pi` plugin. Any other shape fails with
+`install_state_invalid` or `install_state_invalid_ownership`. A protocol 3
+state fails with `install_state_protocol_retired` and names `rh update`.
 
-Each ledger entry records a real managed surface: its absolute path, surface
-type, content hash, managed marker, and symlink target where relevant. For a
-shared host config file, the hash covers only the repo-harness-owned hook
-entries, so user sibling settings can change without false drift. `--state`
-verifies those host surfaces. A selection change and a rollback remove or
-rewrite only repo-harness-managed routes, exact package copies and
-package-owned links. Pre-existing or changed external Skills stay untouched.
-Repository changes stay under the adoption transaction and Git rollback.
-Secrets and provider state are never included.
+Host path ownership lives in the host-config ledger
+(`~/.repo-harness/config/ledger.json`, protocol 2), not in the state. Each
+path record has an `owner` (`core` or an enabled plugin), a `host` (`claude`,
+`codex`, `pi`, `staged` or `bin`, from the path before links are followed), a
+`kind` (`created`, or `user_managed` for a fleet file that the user keeps), a
+`baseline`, and `committed`: the file hash, the link text, the tree hash, or
+the Herdr marker proof. The key is the path with its parent links followed and
+the leaf kept. A record outside the root of its host fails closed. `--state`
+prints the records as `ownership: [{ path, owner, host, kind, type, current }]`
+and verifies them. A selection change and a rollback remove only `created`
+records that are still current; a `user_managed` file is never removed.
+Pre-existing or changed external Skills stay untouched. Repository changes
+stay under the adoption transaction and Git rollback. Secrets and provider
+state are never included.
+
+An install, update, uninstall, rollback or global CodeGraph configure moves a
+protocol 3 state once, under the runtime lock and before its transaction: a
+protocol 1 ledger gains an empty `paths` map with every text record kept, the
+manifest's section records go to the host-file migrations, every other
+manifest surface becomes a `created` record, each
+`agent-fleet-user-managed.json` entry becomes a `user_managed` record, the
+receipt goes, and the state becomes protocol 4.
 
 The host-runtime transaction snapshots the install state and the external
 Skills registry before any write. The registry path follows the Skills CLI

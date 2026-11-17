@@ -929,18 +929,20 @@ rh run install-agent-fleet --accept-user-managed
 ```
 
 The acknowledgement validates all twelve target files before writing
-`~/.repo-harness/agent-fleet-user-managed.json`. Claude files must have
+`user_managed` path records into the host-config ledger
+(`~/.repo-harness/config/ledger.json`). Claude files must have
 well-formed frontmatter with the target role identity, model, effort, and body;
 Codex files must be valid TOML with a pinned model, supported reasoning effort,
 and developer instructions. Symlinks, missing files, malformed files, or
-role-name mismatches fail closed without changing the receipt.
+role-name mismatches fail closed without changing the records.
 
 Only customized files are recorded, by absolute path and SHA-256. Later
 installer and full-profile runs report those exact bytes as `user-managed`
 and do not claim transaction ownership over them. Any subsequent byte change
 invalidates the acknowledgement and returns to `drift` until the operator
 reviews and accepts the new content. `--force` restores packaged content and
-removes the user-managed receipt. Re-running with no packaged-source changes
+drops the fleet's `user_managed` records. An uninstall releases a
+`user_managed` record and never removes its file. Re-running with no packaged-source changes
 reports packaged files as `up-to-date`.
 
 ### Readiness
@@ -948,12 +950,12 @@ reports packaged files as `up-to-date`.
 `rh run check-agent-tooling --host both --strict-readiness` reports
 `agent_fleet` alongside `codegraph`. With `--check-updates`, it compares each
 installed Claude-side `.md` against the packaged source hash without network
-access. When a file differs from that source, it consults the
-`--accept-user-managed` receipt (`~/.repo-harness/agent-fleet-user-managed.json`):
-an entry whose SHA-256 still matches the file's current installed content
-reports `user-managed` on its own report line instead of drift, while a
-missing or malformed receipt, an absent entry for that path, or a stale hash
-still reports `drift`, fail-closed. The per-host rollup is `up-to-date` once
+access. When a file differs from that source, it consults the ledger's
+`user_managed` records that `--accept-user-managed` wrote: a record whose
+SHA-256 still matches the file's current installed content reports
+`user-managed` on its own report line instead of drift, while an unreadable
+ledger, no record for that path, or a stale hash still reports `drift`,
+fail-closed. The per-host rollup is `up-to-date` once
 nothing is left in drift. The Codex `.toml` side is a generated artifact and
 is checked for presence; installer golden tests prove the deterministic
 generation.

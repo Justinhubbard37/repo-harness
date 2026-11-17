@@ -1,4 +1,5 @@
 import { migrateCodexConfigRecords } from '../installer/codex-config-migration';
+import { migrateInstallState } from '../installer/install-state-migration';
 import { migrateJsonConfigRecords } from '../installer/json-config-migration';
 import { CODEX_CONFIG_FRAGMENTS, codexConfigFragment, codexConfigValue, tomlFragment } from '../../core/host-config/toml-fragment';
 import { CLAUDE_ROOT_CONFIG_BACKUP, CODEGRAPH_MCP_SELECTOR, CODEGRAPH_PERMISSION_RULE, CODEGRAPH_PERMISSION_SELECTOR, LEGACY_CODEGRAPH_ALLOWED_TOOLS_SELECTOR } from '../../core/host-config/claude-config';
@@ -484,6 +485,8 @@ function configureCodegraphRuntime(opts: CodegraphConfigureOptions): CodegraphCo
 /** The old records of the host files move into the host-config ledger before the first gate write. */
 export function configureCodegraph(opts: CodegraphConfigureOptions): CodegraphConfigureResult {
   const env = { ...process.env, ...opts.env };
+  // A global configure holds the runtime lock, so it is a mutating entry of the one-shot state migration.
+  if (opts.location === 'global') migrateInstallState(env);
   migrateCodexConfigRecords(env);
   migrateJsonConfigRecords(env);
   return configureCodegraphRuntime(opts);

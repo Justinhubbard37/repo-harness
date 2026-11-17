@@ -1,11 +1,14 @@
-import { createHash } from 'crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { versions } from '../../src/cli/installer/install-profile';
 import { installProfileStatePath } from '../../src/cli/installer/install-state';
 import { bunGlobalPackageRoot } from '../../src/cli/installer/skill-projection';
+import { sha256Prefixed } from '../../src/core/evidence/sha256';
+import type { PathRecord } from '../../src/core/host-config/types';
 import type { PluginId, PluginSelection } from '../../src/core/skill-surface/plugin-manifest';
+import { pathRecordHost, pathRecordKey, writePathRecords } from '../../src/effects/host-config/path-records';
+import { hashManagedTree } from '../../src/effects/managed-tree';
 
 /**
  * Install state resolves to `homedir()` without HOME; a fixture write must never reach the real one.
@@ -65,32 +68,40 @@ export function withTempHome(prefix: string, fn: (home: string) => void): void {
   }
 }
 
-/** Seed the persisted protocol, independently of unrelated owner probes. */
+/** Seed a protocol 4 state and a `created` path record for each path, independently of unrelated owner probes. */
 export function recordInstallOwnership(paths: string[], env: NodeJS.ProcessEnv): void {
+  const records = Object.fromEntries(paths.map((path): [string, PathRecord] => {
+    const directory = lstatSync(path).isDirectory();
+    const host = pathRecordHost(env, path);
+    if (host === null) throw new Error(`no install root holds the fixture path: ${path}`);
+    return [pathRecordKey(env, path), {
+      owner: directory ? 'cross-review' : 'core', host, kind: 'created', baseline: { state: 'unknown' },
+      committed: directory ? { type: 'directory', sha256: hashManagedTree(path) } : { type: 'file', sha256: sha256Prefixed(readFileSync(path)) },
+    }];
+  }));
+  writeInstallState(env, ['architecture', 'cross-review', 'mcp', 'operator', 'peer-runtime', 'platform', 'product', 'strategy-memory'], 'all', 'owned-upgrade-fixture');
+  seedPathRecords(env, records);
+}
+
+/** Replace the ledger's path records; the ledger write creates the ledger when it is absent. */
+export function seedPathRecords(env: NodeJS.ProcessEnv, records: Readonly<Record<string, PathRecord>>): void {
+  installStateFixturePath(env);
+  writePathRecords(env, records);
+}
+
+/**
+ * A protocol 3 state whose `ownership_manifest` records each path, as a release
+ * before #2896 wrote it: the input of the one-shot migration.
+ */
+export function recordLegacyInstallOwnership(paths: string[], env: NodeJS.ProcessEnv): void {
   const ownership_manifest = paths.map(path => {
     const directory = lstatSync(path).isDirectory();
-    const hash = createHash('sha256');
-    if (directory) {
-      const files: string[] = [];
-      const visit = (root: string) => {
-        for (const entry of readdirSync(root, { withFileTypes: true })) {
-          if (entry.isDirectory()) visit(join(root, entry.name));
-          else files.push(relative(path, join(root, entry.name)));
-        }
-      };
-      visit(path);
-      for (const file of files.sort()) {
-        hash.update(`F\0${file}\0`);
-        hash.update(readFileSync(join(path, file)));
-        hash.update('\0');
-      }
-    } else hash.update(readFileSync(path));
     return {
       owner: directory ? 'cross-review' : 'core', path,
       authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
       type: directory ? 'directory-copy' : 'managed-file',
       managed_marker: directory ? 'transaction-created-directory' : 'transaction-created-file',
-      content_hash: `sha256:${hash.digest('hex')}`, symlink_target: null,
+      content_hash: directory ? hashManagedTree(path) : sha256Prefixed(readFileSync(path)), symlink_target: null,
     };
   });
   const statePath = installStateFixturePath(env);
@@ -99,15 +110,19 @@ export function recordInstallOwnership(paths: string[], env: NodeJS.ProcessEnv):
     transaction_id: 'owned-upgrade-fixture', applied_at: new Date().toISOString(), ownership_manifest, previous: null }));
 }
 
+function writeInstallState(env: NodeJS.ProcessEnv, plugins: readonly PluginId[], selection: PluginSelection, transactionId: string): void {
+  const statePath = installStateFixturePath(env);
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileSync(statePath, JSON.stringify({ protocol: 4, ...versions(plugins), selection,
+    transaction_id: transactionId, applied_at: new Date().toISOString(), pi_packages: [], previous: null }));
+}
+
 /**
  * Record an install selection without managed surfaces, as `rh install --plugins <plugins>` leaves it.
  * `selection: 'all'` with a subset is an `all` state recorded before the other plugin ids existed.
  */
 export function recordPluginSelection(env: NodeJS.ProcessEnv, plugins: readonly PluginId[] = ['architecture'], selection: PluginSelection = [...plugins]): void {
-  const statePath = installStateFixturePath(env);
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify({ protocol: 3, ...versions(plugins), selection,
-    transaction_id: 'plugin-selection-fixture', applied_at: new Date().toISOString(), ownership_manifest: [], previous: null }));
+  writeInstallState(env, plugins, selection, 'plugin-selection-fixture');
 }
 
 /**

@@ -6,7 +6,8 @@ import { isAbsolute, join } from 'path';
 import { execFileSync, spawnSync } from 'child_process';
 import { runMutationGuard } from '../src/cli/hook/mutation-guard';
 import { bashSafetyDenial, ledgerCreated, registerInstallLedger } from '../src/cli/hook/safety-hook';
-import { readInstallState } from '../src/cli/installer/install-profile';
+import { createdPaths } from '../src/effects/host-config/path-records';
+import { hostConfigPaths } from '../src/effects/host-config/store';
 import { getRoute } from '../src/cli/hook/route-registry';
 import { buildHookCommand } from '../src/cli/installer/managed-entries';
 import { stateVersionOwnerPath } from '../src/effects/state/git-state-version-store';
@@ -223,7 +224,7 @@ describe('safety hook: Bash host route', () => {
       symlinkSync(skill, join(home, 'links/user-link'));
       const env: NodeJS.ProcessEnv = { HOME: home, REPO_HARNESS_WORKTREE_ROOT: join(root, 'managed') };
       recordInstallOwnership([skill], env);
-      registerInstallLedger(ledgerEnv => readInstallState(ledgerEnv)?.ownership_manifest ?? []);
+      registerInstallLedger(createdPaths);
       process.env.TMPDIR = join(root, 'tmp');
       const refuse = 'UserFileGuard';
       const rows: Array<[string | null, string, string?]> = [
@@ -407,12 +408,12 @@ describe('safety hook: Bash host route', () => {
       writeFileSync(cli, 'cli');
       recordInstallOwnership([skill, cli], env);
       // hook-entry registers the installer's reader in the host process.
-      registerInstallLedger(ledgerEnv => readInstallState(ledgerEnv)?.ownership_manifest ?? []);
+      registerInstallLedger(createdPaths);
       expect(ledgerCreated(join(skill, 'SKILL.md'), env)).toBe(true);
       expect(ledgerCreated(cli, env)).toBe(true);
       expect(ledgerCreated(join(home, '.claude/settings.json'), env)).toBe(false);
       expect(ledgerCreated(join(home, '.bun/bin/rh-other'), env)).toBe(false);
-      writeFileSync(join(home, '.repo-harness/install-state.json'), '{');
+      writeFileSync(hostConfigPaths(env).ledger, '{');
       expect(ledgerCreated(cli, env)).toBe(false);
     } finally { rmSync(home, { recursive: true, force: true }); }
   });

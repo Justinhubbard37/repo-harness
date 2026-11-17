@@ -97,15 +97,49 @@ export interface FragmentRecord {
   readonly preimage?: string;
 }
 
+/** The host root that a path record lives under, from the path before links are followed: an uninstall selects by it. */
+export type PathRecordHost = 'claude' | 'codex' | 'pi' | 'staged' | 'bin';
+
+/**
+ * `created`: an install wrote the whole path and an uninstall removes it while
+ * it is current. `user_managed`: the user keeps the file; rh never writes or
+ * removes it, and dropping the record releases it.
+ */
+export type PathRecordKind = 'created' | 'user_managed';
+
+export type PathCommitted =
+  | { readonly type: 'file'; readonly sha256: Sha256 }
+  | { readonly type: 'symlink'; readonly target: string }
+  /** `hashManagedTree` of the directory. */
+  | { readonly type: 'directory'; readonly sha256: Sha256 }
+  /** A Herdr skill: Herdr rewrites it, so its marker proof (`ownedSkillIsIntact`) and not a tree hash shows it is rh's. */
+  | { readonly type: 'directory'; readonly proof: 'herdr-skill-marker' };
+
+/** A whole path that an install owns: a skill directory, a link, a CLI link or a generated file. */
+export interface PathRecord {
+  /** `core` or the plugin id. */
+  readonly owner: string;
+  readonly host: PathRecordHost;
+  readonly kind: PathRecordKind;
+  readonly baseline: FileBaseline;
+  /** The path as rh last recorded it; a removal acts only while the path still matches it. */
+  readonly committed: PathCommitted;
+}
+
+/** Protocol 2 adds `paths` (#2896); `migrateLedgerSchema` moves a protocol 1 ledger once at a mutating entry. */
+export const HOST_CONFIG_LEDGER_PROTOCOL = 2;
+
 export interface HostConfigLedger {
-  readonly protocol: 1;
+  readonly protocol: typeof HOST_CONFIG_LEDGER_PROTOCOL;
   readonly files: Readonly<Record<string, FileRecord>>;
   readonly fragments: readonly FragmentRecord[];
   /** Directories that rh created and did not remove yet; a revert drops one only when it removes it. */
   readonly directories: readonly string[];
+  /** Keyed by the path with its parent links followed and the leaf kept (`hostPathKey`). The gate refuses a path that has one. */
+  readonly paths: Readonly<Record<string, PathRecord>>;
 }
 
-export const EMPTY_LEDGER: HostConfigLedger = { protocol: 1, files: {}, fragments: [], directories: [] };
+export const EMPTY_LEDGER: HostConfigLedger = { protocol: HOST_CONFIG_LEDGER_PROTOCOL, files: {}, fragments: [], directories: [], paths: {} };
 
 /** The observed state of one path. Only regular files are writable targets. */
 export type FileObservation =

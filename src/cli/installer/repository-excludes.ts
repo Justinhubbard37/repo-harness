@@ -8,7 +8,7 @@ import { withoutRepositorySelectingGitEnv } from '../../effects/git/runner';
 import { isRepoHarnessAdoptedPath, readRepoHarnessRegistryStrictSnapshot } from '../../effects/repo-registry';
 import { writePrivateConfiguration } from './configuration-ownership';
 import { repoHarnessHome } from '../../effects/repo-harness-home';
-import { readInstallState } from './install-profile';
+import { readPathRecords } from '../../effects/host-config/path-records';
 import { installProfileStatePath } from './install-state';
 
 /** One repository write: the resolved `info/exclude` of a repository's Git common directory. */
@@ -72,7 +72,7 @@ function upsertRuntimeBlock(path: string, existing: string): { content: string; 
 
 /** rh refuses only a write into its own home or into a path that the install ledger records for another owner. */
 function assertWriteTarget(path: string, env: NodeJS.ProcessEnv): void {
-  const owned = (readInstallState(env)?.ownership_manifest ?? []).map((surface) => surface.path);
+  const owned = Object.keys(readPathRecords(env));
   for (const root of [repoHarnessHome(env), dirname(installProfileStatePath(env)), ...owned]) {
     const resolved = followLinks(root);
     if (path === resolved || path.startsWith(resolved + sep)) {

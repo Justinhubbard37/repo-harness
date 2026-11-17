@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FragmentEdit, HostConfigStrategy, HostPath } from '../../src/core/host-config/types';
 import { openHostConfigGate, type HostConfigFileChange } from '../../src/effects/host-config/gate';
-import { replaceTarget } from '../../src/effects/host-config/store';
+import { hostConfigPaths, migrateLedgerSchema, replaceTarget } from '../../src/effects/host-config/store';
 import { jsonFragment } from '../../src/core/host-config/json-fragment';
 
 /** A `key=value` line format: the selector is the key. */
@@ -39,6 +39,38 @@ const ownText: HostConfigStrategy<string> = { locate: () => null, apply: (conten
 const homes: string[] = [];
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
 
+test('an install-owned whole path refuses every gate operation and stays in the ledger; a protocol 1 ledger names rh update', () => {
+  const f = fixture();
+  const skill = join(f.home, '.claude', 'skills', 'owned');
+  const inside = join(skill, 'SKILL.md');
+  mkdirSync(skill, { recursive: true });
+  writeFileSync(inside, 'rh=user\n');
+  f.gate().apply([f.change(f.a, 'on')]);
+  const paths = { [skill]: { owner: 'core', host: 'claude', kind: 'created', baseline: { state: 'unknown' }, committed: { type: 'directory', sha256: `sha256:${'0'.repeat(64)}` } } };
+  writeFileSync(join(f.root, 'ledger.json'), JSON.stringify({ ...f.ledger(), paths }));
+  const operations = [
+    () => f.gate().apply([f.change(inside, 'on')]),
+    () => f.gate().delegate([inside], () => writeFileSync(inside, 'rh=delegate\n')),
+    () => f.gate().adopt(inside, { backup: null, fragments: [], externalChange: false }),
+    () => f.gate().revert([inside]),
+  ];
+  for (const operation of operations) expect(operation).toThrow(`an install owns this whole path (${skill})`);
+  expect(readFileSync(inside, 'utf8')).toBe('rh=user\n');
+  // A write elsewhere keeps the path records.
+  f.gate().apply([f.change(f.b, 'on')]);
+  expect(f.ledger().paths).toEqual(paths);
+
+  const { paths: _paths, ...textRecords } = f.ledger();
+  writeFileSync(join(f.root, 'ledger.json'), JSON.stringify({ ...textRecords, protocol: 1 }));
+  expect(() => f.gate().recorded(f.a)).toThrow('the ledger is protocol 1, which has no path records; run: rh update');
+  // The one-shot move keeps every text record and starts `paths` empty; a second run writes nothing.
+  migrateLedgerSchema(hostConfigPaths({ HOME: f.home }));
+  expect(f.ledger()).toEqual({ ...textRecords, protocol: 2, paths: {} });
+  const moved = readFileSync(join(f.root, 'ledger.json'));
+  migrateLedgerSchema(hostConfigPaths({ HOME: f.home }));
+  expect(readFileSync(join(f.root, 'ledger.json'))).toEqual(moved);
+});
+
 function fixture() {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'rh-host-config-')));
   homes.push(home);
@@ -71,7 +103,7 @@ test('every write has a ledger record before a revert, and a revert touches no p
   expect(f.gate().revert().map((entry) => [entry.path, entry.action])).toEqual([[f.a, 'text_removed'], [f.b, 'removed'], [b2, 'removed']]);
   expect({ a: readFileSync(f.a, 'utf8'), mode: statSync(f.a).mode & 0o777, tool: existsSync(join(f.home, '.tool')), c: readFileSync(c, 'utf8') })
     .toEqual({ a: 'keep=1\n', mode: 0o640, tool: false, c: 'rh=user\n' });
-  expect(f.ledger()).toEqual({ protocol: 1, files: {}, fragments: [], directories: [] });
+  expect(f.ledger()).toEqual({ protocol: 2, files: {}, fragments: [], directories: [], paths: {} });
 
   // The record is in the ledger before the writer runs, and a failed ledger write stops the file write.
   let seen: unknown;

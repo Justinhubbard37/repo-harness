@@ -48,20 +48,15 @@ function prospectiveCanonicalPath(path: string): string {
   return resolve(realpathSync(ancestor), relative(ancestor, path));
 }
 
-export interface OwnedSkillLinkRecord {
-  readonly path: string;
-  readonly type: string;
-  readonly symlink_target: string | null;
-  readonly authority?: string;
-  readonly removal?: string;
-}
+/** The link text that the ledger records for a skill link, or null when it records no link there. */
+export type RecordedLinkTarget = (link: string) => string | null;
 
-/** Remove missing-target links with current-package or exact manifest proof. */
+/** Remove missing-target links with current-package or exact path record proof. */
 export function removeOwnedDanglingSkillLinks(
   sourceRoot: string,
   skillRoots: readonly string[],
   dryRun = false,
-  ownershipManifest: readonly OwnedSkillLinkRecord[] = [],
+  recordedLinkTarget: RecordedLinkTarget = () => null,
 ): string[] {
   const packageRoot = realpathSync(sourceRoot);
   const removed: string[] = [];
@@ -82,9 +77,7 @@ export function removeOwnedDanglingSkillLinks(
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
         }
         const raw = readlinkSync(link);
-        manifestOwned = ownershipManifest.some((entry) => entry.authority === 'repo-harness-install-transaction'
-          && entry.removal === 'managed-surfaces-only'
-          && entry.type === 'symlink' && resolve(entry.path) === resolve(link) && entry.symlink_target === raw);
+        manifestOwned = recordedLinkTarget(link) === raw;
         const target = isAbsolute(raw) ? raw : `${dirname(link)}${sep}${raw}`;
         canonicalTarget = prospectiveCanonicalPath(target);
       } catch {

@@ -19,7 +19,9 @@ import { createInterface } from 'readline/promises';
 import { fileURLToPath } from 'url';
 import { runInstall, runUninstall } from './commands/install';
 import { planPiPackage, removePiPackage } from './installer/pi-package';
-import { newPiPackagesSinceTransaction, recordPiInstallOwnership, recordUnresolvedPiOwnership, type ManagedInstallSurface } from './installer/install-profile';
+import { newPiPackagesSinceTransaction, recordPiInstallOwnership, recordUnresolvedPiOwnership } from './installer/install-profile';
+import { migrateInstallState } from './installer/install-state-migration';
+import { ownedPath, pathRecordsDigest, readPathRecords, type PathRecords } from '../effects/host-config/path-records';
 import { parsePluginList, PLUGIN_IDS, selectionLabel, type PluginId, type PluginSelection } from '../core/skill-surface/plugin-manifest';
 import { writeAllSync } from './runtime/write-all-sync';
 import { runInit } from './commands/init';
@@ -274,11 +276,13 @@ function runTransactionalSelectionProjection(
   // An invalid XDG_STATE_HOME must fail before the lock creates transaction state.
   providerSkillLock(transactionEnv.HOME!, transactionEnv);
   return withRuntimeTransactionLock(globalRuntimeScope(transactionEnv), (lock) => {
+    // The one-shot state migration commits on its own before the snapshot, so a rollback keeps it.
+    migrateInstallState(transactionEnv);
     const transaction = beginInstallHostTransaction(runtimeHostMutationPaths(transactionEnv), transactionEnv, { runtimeLock: lock });
     let result: GlobalRuntimeResult;
-    let priorReceipts: readonly ManagedInstallSurface[];
+    let priorReceipts: PathRecords;
     try {
-      priorReceipts = readInstallState(transactionEnv)?.ownership_manifest ?? [];
+      priorReceipts = readInstallState(transactionEnv) ? readPathRecords(transactionEnv) : {};
       prepareInstallSelectionSwitch(selected.record, options.env);
       if (plugins.includes('architecture')) registerArchitecturePlugin();
       result = runGlobalRuntimeSetup({ ...options, plugins, runtimeLock: lock });
@@ -316,16 +320,16 @@ function runTransactionalSelectionProjection(
   });
 }
 
-function newPiSurfaces(result?: GlobalRuntimeResult) {
-  return result?.steps.flatMap(step => step.owned_surface ? [step.owned_surface] : []) ?? [];
+function newPiPackages(result?: GlobalRuntimeResult): string[] {
+  return result?.steps.flatMap(step => step.owned_pi_package ? [step.owned_pi_package] : []) ?? [];
 }
 
-function compensatePiPackages(surfaces: Iterable<ManagedInstallSurface>, env: NodeJS.ProcessEnv) {
-  const unresolved: ManagedInstallSurface[] = [];
+function compensatePiPackages(sources: Iterable<string>, env: NodeJS.ProcessEnv) {
+  const unresolved: string[] = [];
   const failures: unknown[] = [];
-  for (const surface of surfaces) {
-    try { removePiPackage(surface.path, env); }
-    catch (error) { unresolved.push(surface); failures.push(error); }
+  for (const source of sources) {
+    try { removePiPackage(source, env); }
+    catch (error) { unresolved.push(source); failures.push(error); }
   }
   return { unresolved, failures };
 }
@@ -342,17 +346,17 @@ function rollbackRuntimeTransaction(
   recorded: { readonly selection: PluginSelection; readonly plugins: readonly PluginId[] }, cause: unknown, result?: GlobalRuntimeResult,
 ): void {
   const failures: unknown[] = [];
-  const surfaces = new Map(newPiSurfaces(result).map(surface => [surface.path, surface]));
+  const sources = new Set(newPiPackages(result));
   try {
-    for (const surface of newPiPackagesSinceTransaction(transaction, env)) surfaces.set(surface.path, surface);
+    for (const source of newPiPackagesSinceTransaction(transaction, env)) sources.add(source);
   } catch (error) { failures.push(error); }
-  const compensation = compensatePiPackages(surfaces.values(), env);
+  const compensation = compensatePiPackages(sources, env);
   const unresolved = compensation.unresolved;
   failures.push(...compensation.failures);
   // The filesystem contains the ownership ledger. Restore it even when Pi
   // cleanup fails, then retain the unresolved external resources in that ledger.
   try {
-    rollbackInstallHostTransaction(transaction, { unresolvedPi: unresolved.length ? { ...recorded, surfaces: unresolved, env } : undefined });
+    rollbackInstallHostTransaction(transaction, { unresolvedPi: unresolved.length ? { ...recorded, sources: unresolved, env } : undefined });
   } catch (error) { failures.push(error); }
   if (failures.length) {
     const errors = [cause, ...failures];
@@ -365,6 +369,20 @@ function runtimeHostTransactionEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.P
     ...process.env,
     ...env,
     HOME: env?.HOME ?? process.env.HOME ?? homedir(),
+  };
+}
+
+/** The one-shot state migration under the runtime lock, for an entry point that reads the state before its transaction. */
+function migrateInstallStateLocked(env: NodeJS.ProcessEnv): void {
+  // An invalid XDG_STATE_HOME must fail before the lock creates transaction state.
+  providerSkillLock(env.HOME ?? homedir(), env);
+  withRuntimeTransactionLock(globalRuntimeScope(env), () => migrateInstallState(env));
+}
+
+function recordedLinkTarget(records: PathRecords): (link: string) => string | null {
+  return (link) => {
+    const committed = ownedPath(process.env, link, records)?.committed;
+    return committed?.type === 'symlink' ? committed.target : null;
   };
 }
 
@@ -409,6 +427,8 @@ export function runCandidateRuntimeReconciliation(
   // The parent reads and writes no install state after this handoff: this commit owns
   // the whole state, including the Pi package and Pi skill-root receipts.
   const complete = request.sync_skill && request.host_adapters;
+  // A released parent holds the lock; its transaction keeps the state, and the ledger keeps the records.
+  migrateInstallState(env);
   const state = requireInstallState(env);
   const resolved = resolveRecordedSelection(state, request.target, env, { partial: !complete });
   const plugins = resolved.run;
@@ -457,12 +477,13 @@ export function runCandidateRuntimeReconciliation(
       : {};
     let ownershipManifestDigest: string | null = null;
     if (complete) {
-      const applied = applyInstallSelection(state.selection, resolved.record, env, new Date(), piSkillRoot, {
-        additionalSurfaces: newPiSurfaces(runtime), kept: resolved.kept.map(entry => entry.id),
+      applyInstallSelection(state.selection, resolved.record, env, new Date(), piSkillRoot, {
+        additionalPiPackages: newPiPackages(runtime), kept: resolved.kept.map(entry => entry.id),
       });
-      ownershipManifestDigest = sha256Prefixed(JSON.stringify(applied.state.ownership_manifest));
+      // Released parents parse this receipt field by name in a handoff and its rollback; its value is now the path-record digest.
+      ownershipManifestDigest = pathRecordsDigest(readPathRecords(env));
     } else if (request.target === 'both') {
-      recordPiInstallOwnership(newPiSurfaces(runtime), env, piSkillRoot);
+      recordPiInstallOwnership(newPiPackages(runtime), env, piSkillRoot);
     }
     const receipt: CandidateReconciliationReceipt = {
       protocol: CANDIDATE_RECONCILIATION_PROTOCOL,
@@ -486,7 +507,7 @@ export function runCandidateRuntimeReconciliation(
     }, env);
     return receipt;
   } catch (error) {
-    const compensation = compensatePiPackages(newPiSurfaces(runtime), env);
+    const compensation = compensatePiPackages(newPiPackages(runtime), env);
     // The parent must still see ownership when candidate cleanup fails, so
     // its filesystem rollback can preserve the unresolved external effect.
     try { recordUnresolvedPiOwnership(state.selection, resolved.record, compensation.unresolved, env, request.transaction_id); }
@@ -527,6 +548,8 @@ export function runTransactionalRuntimeRefresh(
   // An invalid XDG_STATE_HOME must fail before the lock creates transaction state.
   providerSkillLock(transactionEnv.HOME!, transactionEnv);
   return withRuntimeTransactionLock(globalRuntimeScope(transactionEnv), (lock) => {
+    // The one-shot state migration commits on its own before the snapshot, so a rollback keeps it.
+    migrateInstallState(transactionEnv);
     const transaction = beginInstallHostTransaction(runtimeHostMutationPaths(transactionEnv), transactionEnv, { runtimeLock: lock });
     let plugins: readonly PluginId[];
     // Null when the caller passes its own plugin set; then the recorded state does not change.
@@ -573,12 +596,12 @@ export function runTransactionalRuntimeRefresh(
           const { state, resolved } = recordedSelection;
           if (selectionChanged(state, resolved)) {
             applyInstallSelection(state.selection, resolved.record, transactionEnv, new Date(), transaction, {
-              agentFleetVerified: agentFleetVerified(result), additionalSurfaces: newPiSurfaces(result), kept: resolved.kept.map(entry => entry.id),
+              agentFleetVerified: agentFleetVerified(result), additionalPiPackages: newPiPackages(result), kept: resolved.kept.map(entry => entry.id),
             });
           }
           result = { ...result, lines: [...selectionLines(resolved), ...commandPluginRepairLines(state.selection), ...result.lines] };
         }
-        if ((options.target ?? 'both') === 'both') recordPiInstallOwnership(newPiSurfaces(result), transactionEnv, transaction);
+        if ((options.target ?? 'both') === 'both') recordPiInstallOwnership(newPiPackages(result), transactionEnv, transaction);
         migrateCodexConfigRecords(transactionEnv);
       }
       commitInstallHostTransaction(transaction);
@@ -609,6 +632,7 @@ async function runGlobalRuntimeBootstrap(
   cmd?: OptionSourceLookup,
 ): Promise<never> {
   const target = assertTarget(rawOpts.target, 'install');
+  if (rawOpts.dryRun !== true) migrateInstallStateLocked(process.env);
   const current = readInstallState();
   // `--plugins` selects exactly its ids, `--no-plugins` core only, and neither `all`.
   const selection: PluginSelection = rawOpts.plugins === false ? [] : rawOpts.plugins === undefined ? 'all' : parsePluginList(rawOpts.plugins);
@@ -625,7 +649,7 @@ async function runGlobalRuntimeBootstrap(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..'),
       effectiveSkillRoots(plugins),
       true,
-      current?.ownership_manifest,
+      recordedLinkTarget(current === null ? {} : readPathRecords(process.env)),
     );
     if (rawOpts.json === true) console.log(JSON.stringify({ ...plan, removedDanglingSkillLinks }, null, 2));
     else {
@@ -673,7 +697,7 @@ async function runGlobalRuntimeBootstrap(
       process.env,
       new Date(),
       transaction,
-      { agentFleetVerified: agentFleetVerified(result), additionalSurfaces: newPiSurfaces(result), kept: resolved.kept.map(entry => entry.id) },
+      { agentFleetVerified: agentFleetVerified(result), additionalPiPackages: newPiPackages(result), kept: resolved.kept.map(entry => entry.id) },
     ).state
   ));
   const result = transaction.result;
@@ -732,6 +756,7 @@ export function buildProgram(): Command {
         process.exit(state ? 0 : 1);
       }
       if (rawOpts.rollback === true) {
+        migrateInstallStateLocked(process.env);
         const current = readInstallState();
         if (!current?.previous) throw new Error('no previous install transaction to roll back');
         const plugins = enabledPlugins(current.previous);
@@ -760,8 +785,11 @@ export function buildProgram(): Command {
       // Adapter-only installs still mutate a core-owned host surface. Validate
       // the install-state protocol before touching it so an older state
       // cannot be mixed with the current route projection.
-      readInstallState();
-      const installAdapters = () => runInstall({ target, location });
+      const installAdapters = () => {
+        migrateInstallState(process.env);
+        readInstallState();
+        return runInstall({ target, location });
+      };
       const result = withRuntimeTransactionLock(globalRuntimeScope(process.env), installAdapters);
       for (const line of result.lines) console.log(line);
       process.exit(result.exitCode);

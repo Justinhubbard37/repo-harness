@@ -7,7 +7,8 @@
  */
 
 import { bunGlobalPackageRoot, expectedSkillProjections, skillLinkMatches, type SkillProjection } from '../installer/skill-projection';
-import { defaultPluginSelection, installStateStatus, managedInstallSurfaceIsCurrent, readInstallState, type InstallState } from '../installer/install-profile';
+import { defaultPluginSelection, installStateStatus, readInstallState, type InstallState } from '../installer/install-profile';
+import { ownedPath, pathRecordIsCurrent, pathRecordKey, readPathRecords } from '../../effects/host-config/path-records';
 import { enabledPlugins } from '../installer/install-state';
 import { installSelectionCommand, type PluginId, type PluginSelection } from '../../core/skill-surface/plugin-manifest';
 import { hashManagedTree, installedCopyTreeOptions } from '../../effects/managed-tree';
@@ -504,6 +505,7 @@ export function checkSkillProjection(target: DoctorTarget = 'both', env: NodeJS.
     const plugins = judgedPlugins(installed, env);
     // Without a ledger the install default is `all`.
     const selection: PluginSelection = installed?.selection ?? 'all';
+    const pathRecords = installed ? readPathRecords(env) : {};
     const sourceRoot = skillProjectionSourceRoot(env);
     const contractPath = path.join(sourceRoot, 'assets', 'workflow-contract.v1.json');
     const contract = JSON.parse(fs.readFileSync(contractPath, 'utf8'));
@@ -523,14 +525,14 @@ export function checkSkillProjection(target: DoctorTarget = 'both', env: NodeJS.
     for (const projection of expectedSkillProjections(catalog.catalog, sourceRoot, home, plugins, env)) {
       if (target !== 'both' && target !== projection.host) continue;
       const state = skillProjectionState(projection, contract);
-      const records = installed?.ownership_manifest.filter(surface => surface.path === projection.destination) ?? [];
+      const record = installed ? ownedPath(env, projection.destination, pathRecords) : null;
       // The ledger has no install target, so a single-target install leaves the other hosts' paths absent and unowned.
       // Without a ledger no install sets the hosts, so every projection is judged.
-      if (installed && state === 'missing' && records.length === 0) {
+      if (installed && state === 'missing' && record === null) {
         details.push(`${projection.destination}: na; not in the install ledger`);
         continue;
       }
-      const ledgerDrift = records.some(surface => !managedInstallSurfaceIsCurrent(surface, env));
+      const ledgerDrift = record !== null && !pathRecordIsCurrent(pathRecordKey(env, projection.destination), record);
       const judgment: SkillProjectionJudgment = {
         row: { host: projection.host, name: projection.name, state, ok: state.startsWith('ok ') && !ledgerDrift },
         projection,
@@ -541,9 +543,15 @@ export function checkSkillProjection(target: DoctorTarget = 'both', env: NodeJS.
     }
     let warning = judgments.some(judgment => !judgment.row.ok);
     if (installed) {
-      const drift = installStateStatus(installed, env).drift;
+      const status = installStateStatus(installed, env);
+      const drift = status.drift;
       if (drift.status === 'drift') warning = true;
       details.push(`install ledger: ${JSON.stringify(drift)}${drift.status === 'drift' ? `; inspect: rh install --state; run: ${installSelectionCommand(selection)}` : ''}`);
+      const skipped = [...status.ownership_outside_root, ...status.ownership_unsupported];
+      if (skipped.length) {
+        warning = true;
+        details.push(`install ledger: path records outside their host root or on no install surface, not acted on: ${skipped.join(', ')}; run: ${installSelectionCommand(selection)} (it records the paths again and drops these records)`);
+      }
     } else {
       warning = true;
       details.push('install ledger: missing; run: rh install');

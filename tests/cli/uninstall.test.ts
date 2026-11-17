@@ -1,7 +1,10 @@
 import { createHash } from 'crypto';
 import { versions } from '../../src/cli/installer/install-profile';
 import { beforeAll, test, expect } from 'bun:test';
-import { installStateFixturePath, seedGlobalPackageFixture } from '../helpers/install-ownership';
+import { installStateFixturePath, recordLegacyInstallOwnership, seedGlobalPackageFixture, seedPathRecords } from '../helpers/install-ownership';
+import type { PathCommitted } from '../../src/core/host-config/types';
+import { pathRecordHost, pathRecordKey } from '../../src/effects/host-config/path-records';
+import { hashManagedTree } from '../../src/effects/managed-tree';
 import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync, symlinkSync, lstatSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, relative } from 'path';
@@ -144,10 +147,19 @@ test('restores Codex MCP section while preserving other TOML tables',()=>fixture
  expect(readFileSync(path,'utf8')).toBe('model = "user"\n[mcp_servers.other]\ncommand = "keep"\n');
 }));
 
-function profile(home: string, entries: any[]) {
- put(home,relative(home,installStateFixturePath({HOME:home})),JSON.stringify({protocol:3,...versions(['architecture']),selection:['architecture'],transaction_id:'fixture',applied_at:new Date().toISOString(),ownership_manifest:entries,previous:null}));
+/** A protocol 4 state and a `created` core record of each path, as an install leaves them. */
+function profile(home: string, entries: readonly { path: string; committed: PathCommitted; kind?: 'user_managed' }[]) {
+ const env={HOME:home};
+ put(home,relative(home,installStateFixturePath(env)),JSON.stringify({protocol:4,...versions(['architecture']),selection:['architecture'],transaction_id:'fixture',applied_at:new Date().toISOString(),pi_packages:[],previous:null}));
+ seedPathRecords(env,Object.fromEntries(entries.map(({path,committed,kind})=>[pathRecordKey(env,path),{owner:'core',host:pathRecordHost(env,path)!,kind:kind??'created' as const,baseline:{state:'unknown' as const},committed}])));
 }
-function ownedFile(path: string, content: string) { return {owner:'core',authority:'repo-harness-install-transaction',removal:'managed-surfaces-only',path,type:'managed-file',content_hash:`sha256:${createHash('sha256').update(content).digest('hex')}`,managed_marker:'transaction-created-file',symlink_target:null}; }
+function ownedFile(path: string, content: string) { return {path,committed:{type:'file' as const,sha256:`sha256:${createHash('sha256').update(content).digest('hex')}`}}; }
+function ownedLink(path: string, target: string) { return {path,committed:{type:'symlink' as const,target}}; }
+/** A protocol 3 state with a manifest section record: the uninstall entry migrates it once. */
+function legacyProfile(home: string, path: string, content: string) {
+ const entry={owner:'architecture',authority:'repo-harness-install-transaction',removal:'managed-surfaces-only',path,type:'managed-file',content_hash:`sha256:${createHash('sha256').update(content).digest('hex')}`,managed_marker:'codegraph-config-projection',symlink_target:null};
+ put(home,relative(home,installStateFixturePath({HOME:home})),JSON.stringify({protocol:3,...versions(['architecture']),selection:['architecture'],transaction_id:'fixture',applied_at:new Date().toISOString(),ownership_manifest:[entry],previous:null}));
+}
 test('removes profile-owned rules and retires profile but preserves user files',()=>fixture((home,env)=>{
  const path=join(home,'.codex/rules/anti-patterns.md');put(home,'.codex/rules/anti-patterns.md','owned');put(home,'.codex/rules/user.md','user');
  profile(home,[ownedFile(path,'owned')]);
@@ -157,21 +169,48 @@ test('removes profile-owned rules and retires profile but preserves user files',
 test('modified profile-owned rule remains retryable with ownership retained',()=>fixture((home,env)=>{
  const path=join(home,'.codex/rules/anti-patterns.md');put(home,'.codex/rules/anti-patterns.md','user-edited');profile(home,[ownedFile(path,'owned')]);
  expect(runUserUninstall({target:'both',env}).status).toBe('partial');expect(readFileSync(path,'utf8')).toBe('user-edited');expect(existsSync(join(home,'.repo-harness/install-state.json'))).toBe(true);
+ expect(Object.keys(ledger(home).paths)).toEqual([pathRecordKey({HOME:home},path)]);
 }));
 test('owned symlink removal never follows the skill source',()=>fixture((home,env)=>{
  put(home,'source/SKILL.md','keep');mkdirSync(join(home,'.codex/skills'),{recursive:true});const path=join(home,'.codex/skills/check');symlinkSync(join(home,'source'),path);
- profile(home,[{...ownedFile(path,''),type:'symlink',content_hash:null,managed_marker:null,symlink_target:join(home,'source')}]);
+ profile(home,[ownedLink(path,join(home,'source'))]);
  expect(runUserUninstall({target:'both',env}).status).toBe('complete');expect(existsSync(path)).toBe(false);expect(readFileSync(join(home,'source/SKILL.md'),'utf8')).toBe('keep');
+}));
+test('a codex uninstall keeps every claude record under a linked ~/.claude, and no uninstall removes a user-managed file',()=>fixture((home,env)=>{
+ const dotfiles=join(home,'dotfiles/claude');mkdirSync(join(dotfiles,'skills'),{recursive:true});symlinkSync(dotfiles,join(home,'.claude'));
+ put(home,'source/SKILL.md','keep');const link=join(home,'.claude/skills/check');symlinkSync(join(home,'source'),link);
+ const rule=join(home,'.codex/rules/anti-patterns.md');put(home,'.codex/rules/anti-patterns.md','owned');
+ const kept=join(home,'.codex/agents/explorer.toml');put(home,'.codex/agents/explorer.toml','mine');
+ profile(home,[ownedLink(link,join(home,'source')),ownedFile(rule,'owned'),{...ownedFile(kept,'mine'),kind:'user_managed'}]);
+ const key=(path: string)=>pathRecordKey({HOME:home},path);
+ expect(runUserUninstall({target:'codex',env}).status).toBe('complete');
+ expect([existsSync(rule),lstatSync(link).isSymbolicLink(),readFileSync(kept,'utf8')]).toEqual([false,true,'mine']);
+ expect(Object.keys(ledger(home).paths).sort()).toEqual([key(link),key(kept)].sort());
+ expect(runUserUninstall({target:'both',env}).status).toBe('complete');
+ expect([existsSync(link),readFileSync(kept,'utf8'),ledger(home).paths]).toEqual([false,'mine',{}]);
+}));
+test('an uninstall keeps a personal file and a foreign skill that a path record names outside every install surface',()=>fixture((home,env)=>{
+ const personal=join(home,'.codex/rules/personal.md');const foreign=join(home,'.claude/skills/foreign-skill');
+ put(home,'.codex/rules/personal.md','mine');put(home,'.claude/skills/foreign-skill/SKILL.md','mine');
+ profile(home,[ownedFile(personal,'mine'),{path:foreign,committed:{type:'directory' as const,sha256:hashManagedTree(foreign)}}]);
+ expect(runUserUninstall({target:'both',env}).status).toBe('complete');
+ expect([readFileSync(personal,'utf8'),readFileSync(join(foreign,'SKILL.md'),'utf8')]).toEqual(['mine','mine']);
+}));
+test('a dry run on a protocol 3 install plans the migrated records and writes nothing',()=>fixture((home,env)=>{
+ const rule=join(home,'.codex/rules/anti-patterns.md');put(home,'.codex/rules/anti-patterns.md','owned');
+ recordLegacyInstallOwnership([rule],env);const before=tree(home);
+ expect(runUserUninstall({target:'both',dryRun:true,env}).lines).toContain(`[remove] ${pathRecordKey(env,rule)}: unchanged transaction-owned surface`);
+ expect(tree(home)).toBe(before);
 }));
 test('staging skill removal edits the provider lock under an XDG_STATE_HOME outside HOME, after a failed cleanup',()=>fixture((home,env)=>{
  const state=mkdtempSync(join(tmpdir(),'user-uninstall-state-'));const lockPath=join(state,'skills/.skill-lock.json');
  try {
   put(home,'source/SKILL.md','keep');mkdirSync(join(home,'.agents/skills'),{recursive:true});const path=join(home,'.agents/skills/think');symlinkSync(join(home,'source'),path);
-  profile(home,[{...ownedFile(path,''),type:'symlink',content_hash:null,managed_marker:null,symlink_target:join(home,'source')}]);
+  profile(home,[ownedLink(path,join(home,'source'))]);
   put(state,'skills/.skill-lock.json','{"skills":[]}');put(home,'.agents/.skill-lock.json','{"skills":{"think":{}}}');
   const xdg={...env,XDG_STATE_HOME:state};
   expect(runUserUninstall({target:'both',env:xdg}).status).toBe('partial');
-  expect(existsSync(path)).toBe(true);expect(readFileSync(join(home,'.repo-harness/install-state.json'),'utf8')).toContain(path);
+  expect(existsSync(path)).toBe(true);expect(Object.keys(ledger(home).paths)).toContain(pathRecordKey({HOME:home},path));
   writeFileSync(lockPath,JSON.stringify({version:3,skills:{think:{source:'tw93/Waza'},'user-skill':{source:'user/repo'}}}));
   expect(runUserUninstall({target:'both',env:xdg}).status).toBe('complete');expect(existsSync(path)).toBe(false);
   expect(JSON.parse(readFileSync(lockPath,'utf8')).skills).toEqual({'user-skill':{source:'user/repo'}});
@@ -181,10 +220,10 @@ test('staging skill removal edits the provider lock under an XDG_STATE_HOME outs
 test.skipIf(process.platform==='win32'||process.getuid?.()===0)('a failed provider lock write keeps the staging skill for a retry',()=>fixture((home,env)=>{
  const lockDir=join(home,'.local/state/skills');const xdg={...env,XDG_STATE_HOME:join(home,'.local/state')};
  put(home,'source/SKILL.md','keep');mkdirSync(join(home,'.agents/skills'),{recursive:true});const path=join(home,'.agents/skills/think');symlinkSync(join(home,'source'),path);
- profile(home,[{...ownedFile(path,''),type:'symlink',content_hash:null,managed_marker:null,symlink_target:join(home,'source')}]);
+ profile(home,[ownedLink(path,join(home,'source'))]);
  put(home,'.local/state/skills/.skill-lock.json',JSON.stringify({skills:{think:{},'user-skill':{}}}));chmodSync(lockDir,0o500);
  expect(runUserUninstall({target:'both',env:xdg}).status).toBe('partial');
- expect(existsSync(path)).toBe(true);expect(readFileSync(join(home,'.repo-harness/install-state.json'),'utf8')).toContain(path);
+ expect(existsSync(path)).toBe(true);expect(Object.keys(ledger(home).paths)).toContain(pathRecordKey({HOME:home},path));
  chmodSync(lockDir,0o700);
  expect(runUserUninstall({target:'both',env:xdg}).status).toBe('complete');expect(existsSync(path)).toBe(false);
  expect(JSON.parse(readFileSync(join(lockDir,'.skill-lock.json'),'utf8')).skills).toEqual({'user-skill':{}});
@@ -225,7 +264,7 @@ test('old transaction-owned MCP projection composes with hook removal',()=>fixtu
  const server={command:'cg'};const allowedTools=['user-tool','mcp__codegraph__*'];
  put(home,'.claude/settings.json',JSON.stringify({mcpServers:{codegraph:server,user:{command:'keep'}},allowedTools,hooks:buildManagedHooks('claude')}));
  const projection=JSON.stringify({server,allowedTools:['mcp__codegraph__*']});
- profile(home,[{...ownedFile(path,''),owner:'architecture',managed_marker:'codegraph-config-projection',content_hash:`sha256:${createHash('sha256').update(projection).digest('hex')}`}]);
+ legacyProfile(home,path,projection);
  const result=runUserUninstall({target:'both',env});expect(result.status,result.lines.join('\n')).toBe('complete');
  expect(JSON.parse(readFileSync(path,'utf8'))).toEqual({mcpServers:{user:{command:'keep'}},allowedTools:['user-tool'],hooks:Object.fromEntries(Object.keys(buildManagedHooks('claude')).map(event=>[event,[]]))});
 }));
@@ -244,7 +283,7 @@ test('an old manifest record of the Codex CodeGraph table migrates to the ledger
  for(const table of ['[mcp_servers.codegraph]\ncommand = "cg"\n','  [mcp_servers.codegraph]\ncommand = "cg"\n'])fixture((home,env)=>{
   const path=join(home,'.codex/config.toml');
   put(home,'.codex/config.toml',`model = "user"\n${table}`);
-  profile(home,[{...ownedFile(path,''),owner:'architecture',managed_marker:'codegraph-config-projection',content_hash:`sha256:${createHash('sha256').update(table.trim()).digest('hex')}`}]);
+  legacyProfile(home,path,table.trim());
   const result=runUserUninstall({target:'both',env});expect(result.status,result.lines.join('\n')).toBe('complete');
   expect(readFileSync(path,'utf8')).toBe('model = "user"\n');expect(existsSync(join(home,'.repo-harness/install-state.json'))).toBe(false);
  });

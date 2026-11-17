@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { sha256Hex, sha256Prefixed } from '../../core/evidence/sha256';
 import {
   EMPTY_LEDGER,
+  HOST_CONFIG_LEDGER_PROTOCOL,
   HostConfigError,
   matchesExpected,
   type ExpectedFile,
@@ -67,6 +68,27 @@ export function resolveHostPath(paths: HostConfigPaths, path: unknown): HostPath
   const resolved = followLinks(resolve(path));
   if (isPathInside(paths.harness, resolved)) throw new HostConfigError('host_config_invalid_path', `rh does not write host configuration inside ${paths.harness}: ${path}`);
   return resolved as HostPath;
+}
+
+/**
+ * The key of a path record: the parent chain with links followed and the leaf
+ * kept, the entry that a removal acts on. A recorded skill link stays the link,
+ * not the package directory that it names.
+ */
+export function hostPathKey(paths: HostConfigPaths, path: string): string {
+  if (!isAbsolute(path)) throw new HostConfigError('host_config_invalid_path', `not an absolute path: ${path}`);
+  const absolute = resolve(path);
+  const key = join(followLinks(dirname(absolute)), basename(absolute));
+  if (isPathInside(paths.harness, key)) throw new HostConfigError('host_config_invalid_path', `rh records no host path inside ${paths.harness}: ${path}`);
+  return key;
+}
+
+/** The path record that owns a gate target: the same entry, or a recorded directory above it. */
+export function pathRecordOf(ledger: HostConfigLedger, target: HostPath): string | null {
+  for (const [key, record] of Object.entries(ledger.paths)) {
+    if (key === target || (record.committed.type === 'directory' && isPathInside(key, target))) return key;
+  }
+  return null;
 }
 
 export function ensurePrivateDirectory(directory: string): void {
@@ -165,6 +187,23 @@ function validFileRecord(record: unknown): boolean {
     && typeof record.external_change === 'boolean';
 }
 
+const PATH_RECORD_HOSTS: readonly string[] = ['claude', 'codex', 'pi', 'staged', 'bin'];
+
+function validPathCommitted(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  const keys = Object.keys(value).sort().join(',');
+  if (value.type === 'file') return keys === 'sha256,type' && isSha(value.sha256);
+  if (value.type === 'symlink') return keys === 'target,type' && isText(value.target) && value.target !== '';
+  if (value.type !== 'directory') return false;
+  return (keys === 'sha256,type' && isSha(value.sha256)) || (keys === 'proof,type' && value.proof === 'herdr-skill-marker');
+}
+
+function validPathRecord(record: unknown): boolean {
+  return isObject(record) && isText(record.owner) && record.owner !== '' && PATH_RECORD_HOSTS.includes(record.host as string)
+    && validBaseline(record.baseline) && validPathCommitted(record.committed)
+    && (record.kind === 'created' || (record.kind === 'user_managed' && isObject(record.committed) && record.committed.type === 'file'));
+}
+
 /** `created` is a member path that holds the fragment's container: a prefix of its selector. */
 function validCreated(selector: string, created: unknown): boolean {
   return created === undefined || (isText(created) && /^[^.[\]]+(?:\.[^.[\]]+)*$/.test(created)
@@ -184,16 +223,50 @@ export function readLedger(paths: HostConfigPaths): HostConfigLedger {
   return parseLedger(bytes, paths.ledger);
 }
 
-/** The ledger in `bytes`, also a copy of it; `label` names the file in an error. */
-export function parseLedger(bytes: Buffer, label: string): HostConfigLedger {
-  let value: unknown;
-  try { value = JSON.parse(bytes.toString('utf8')); } catch { throw invalidState(`the ledger is not valid JSON: ${label}`); }
-  const valid = isObject(value) && value.protocol === 1
-    && isObject(value.files) && Object.entries(value.files).every(([path, record]) => isAbsolute(path) && validFileRecord(record))
+function parseJson(bytes: Buffer, label: string): unknown {
+  try { return JSON.parse(bytes.toString('utf8')); } catch { throw invalidState(`the ledger is not valid JSON: ${label}`); }
+}
+
+/** The text records that protocols 1 and 2 share. */
+function validTextRecords(value: Record<string, unknown>): boolean {
+  return isObject(value.files) && Object.entries(value.files).every(([path, record]) => isAbsolute(path) && validFileRecord(record))
     && Array.isArray(value.fragments) && value.fragments.every(validFragment)
     && Array.isArray(value.directories) && value.directories.every((directory) => isText(directory) && isAbsolute(directory));
+}
+
+/** The ledger in `bytes`, also a copy of it; `label` names the file in an error. A protocol 1 ledger names the update step. */
+export function parseLedger(bytes: Buffer, label: string): HostConfigLedger {
+  const value = parseJson(bytes, label);
+  if (isObject(value) && value.protocol === 1) throw invalidState(`the ledger is protocol 1, which has no path records; run: rh update (${label})`);
+  const valid = isObject(value) && value.protocol === HOST_CONFIG_LEDGER_PROTOCOL && validTextRecords(value)
+    && isObject(value.paths) && Object.entries(value.paths).every(([path, record]) => isAbsolute(path) && validPathRecord(record));
   if (!valid) throw invalidState(`the ledger has an invalid shape: ${label}`);
   return value as unknown as HostConfigLedger;
+}
+
+/**
+ * The one-shot move of a protocol 1 ledger (written by #3022 and later, before
+ * #2896) to protocol 2: every text record stays as it is, and `paths` starts
+ * empty. A mutating entry runs it under the runtime lock; a later run finds protocol 2.
+ */
+export function migrateLedgerSchema(paths: HostConfigPaths): void {
+  const { observation, bytes } = observeFile(paths.ledger);
+  if (!observation.existed) return;
+  if (bytes === null) throw invalidState(`the ledger is not a regular file: ${paths.ledger}`);
+  const value = parseJson(bytes, paths.ledger);
+  if (!isObject(value) || value.protocol !== 1) return;
+  if (!validTextRecords(value) || 'paths' in value) throw invalidState(`the protocol 1 ledger has an invalid shape: ${paths.ledger}`);
+  writeLedger(paths, { ...(value as unknown as Omit<HostConfigLedger, 'protocol' | 'paths'>), protocol: HOST_CONFIG_LEDGER_PROTOCOL, paths: {} });
+}
+
+/** The path records as the schema move would leave them: none for a protocol 1 ledger, which a dry run reads without moving it. */
+export function projectedLedgerPaths(paths: HostConfigPaths): HostConfigLedger['paths'] {
+  const { observation, bytes } = observeFile(paths.ledger);
+  if (!observation.existed) return {};
+  if (bytes === null) throw invalidState(`the ledger is not a regular file: ${paths.ledger}`);
+  const value = parseJson(bytes, paths.ledger);
+  if (isObject(value) && value.protocol === 1 && validTextRecords(value) && !('paths' in value)) return {};
+  return parseLedger(bytes, paths.ledger).paths;
 }
 
 export function writeLedger(paths: HostConfigPaths, ledger: HostConfigLedger): void {

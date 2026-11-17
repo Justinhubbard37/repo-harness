@@ -147,7 +147,6 @@ const SKILL_SURFACE_MANIFEST_PATH = path.join(PACKAGE_ROOT, "assets", "skill-com
 const AGENT_FLEET_SOURCE_LABEL = "package:agents/fleet";
 const AGENT_FLEET_DEFAULT_MANAGED = ["explorer", "deep-reasoner", "fast-worker", "deep-worker", "gatekeeper", "root-cause-prover", "harness-evaluator"];
 const AGENT_FLEET_INSTALL_COMMAND = "rh run install-agent-fleet";
-const AGENT_FLEET_USER_MANAGED_RECEIPT_PATH = path.join(HOME, ".repo-harness", "agent-fleet-user-managed.json");
 const CODEGRAPH_PACKAGE = "@colbymchenry/codegraph";
 const CODEGRAPH_GLOBAL_INSTALL_COMMAND = `bun add -g ${CODEGRAPH_PACKAGE} && rh arch codegraph configure --target codex --location global`;
 const CODEGRAPH_MCP_CONFIGURE_COMMAND = "rh arch codegraph configure --target <codex|claude|both> --location global";
@@ -1074,22 +1073,34 @@ function detectObsidianRuntimeSkills() {
 };
 }
 
-// The install ledger comes only from the strict install-state reader, run under
-// Bun from this package. An unreadable state proves no managed receipt.
+// The install ledger comes only from the host-config ledger reader and the strict
+// install-state reader, run under Bun from this package. `paths` are the path-record
+// keys of an install; `userManaged` maps each fleet file that the user keeps to its
+// recorded hash. An unreadable ledger or state proves no managed receipt.
+let installLedger = null;
 function readInstallLedgerPaths() {
+  installLedger ??= readInstallLedgerOnce();
+  return installLedger;
+}
+
+function readInstallLedgerOnce() {
   const bun = bunExecutable();
-  if (!bun) return { ok: false, reason: "bun is not available, so the install state cannot be read", paths: [] };
+  if (!bun) return { ok: false, reason: "bun is not available, so the install state cannot be read", paths: [], userManaged: {} };
   const script = [
-    "const [reader] = process.argv.slice(1);",
-    "const { readInstallState } = await import(reader);",
-    "try { console.log(JSON.stringify({ ok: true, paths: (readInstallState()?.ownership_manifest ?? []).map((surface) => surface.path) })); }",
-    "catch (error) { console.log(JSON.stringify({ ok: false, reason: error instanceof Error ? error.message : String(error), paths: [] })); }",
+    "const [profile, ledger] = process.argv.slice(1);",
+    "const { agentFleetTargetPaths, readInstallState } = await import(profile);",
+    "const { ownedPath, readPathRecords } = await import(ledger);",
+    "try {",
+    "  const records = readPathRecords(process.env);",
+    "  const userManaged = Object.fromEntries(agentFleetTargetPaths().flatMap((file) => { const record = ownedPath(process.env, file, records); return record?.kind === 'user_managed' ? [[file, record.committed.sha256]] : []; }));",
+    "  console.log(JSON.stringify({ ok: true, paths: readInstallState() ? Object.keys(records) : [], userManaged }));",
+    "} catch (error) { console.log(JSON.stringify({ ok: false, reason: error instanceof Error ? error.message : String(error), paths: [], userManaged: {} })); }",
   ].join("\n");
-  const result = run(bun, ["-e", script, path.join(PACKAGE_ROOT, "src", "cli", "installer", "install-profile.ts")],
+  const result = run(bun, ["-e", script, path.join(PACKAGE_ROOT, "src", "cli", "installer", "install-profile.ts"), path.join(PACKAGE_ROOT, "src", "effects", "host-config", "path-records.ts")],
     { cwd: PACKAGE_ROOT, timeoutMs: 15000 });
   const answer = result.ok ? parseJson(result.stdout.trim()) : null;
   if (!answer || typeof answer !== "object") {
-    return { ok: false, reason: `the install-state reader did not run: ${(result.error || result.stderr || result.stdout).trim().slice(0, 300) || `exit ${result.status}`}`, paths: [] };
+    return { ok: false, reason: `the install-state reader did not run: ${(result.error || result.stderr || result.stdout).trim().slice(0, 300) || `exit ${result.status}`}`, paths: [], userManaged: {} };
   }
   return answer;
 }
@@ -1149,37 +1160,6 @@ function readAgentFleetSource(agent) {
   return { status: "read", path: sourcePath, hash: source.hash };
 }
 
-// Read-only mirror of install-profile.ts's readAgentFleetUserManagedReceipt(): this
-// checker never writes ~/.repo-harness/agent-fleet-user-managed.json, it only
-// consults it so an operator-accepted customized file is not misreported as
-// drift. Any malformation invalidates the whole receipt (fail-closed) rather
-// than exempting individual entries.
-function loadAgentFleetUserManagedReceipt() {
-  if (!fs.existsSync(AGENT_FLEET_USER_MANAGED_RECEIPT_PATH)) return { ok: true, hashes: new Map() };
-  try {
-    const parsed = JSON.parse(fs.readFileSync(AGENT_FLEET_USER_MANAGED_RECEIPT_PATH, "utf8"));
-    if (
-      parsed?.protocol !== 1
-      || parsed?.authority !== "user-managed-agent-fleet"
-      || !Array.isArray(parsed.files)
-    ) return { ok: false, hashes: new Map() };
-    const hashes = new Map();
-    for (const entry of parsed.files) {
-      if (
-        !entry
-        || typeof entry.path !== "string"
-        || typeof entry.sha256 !== "string"
-        || !/^sha256:[a-f0-9]{64}$/.test(entry.sha256)
-        || hashes.has(entry.path)
-      ) return { ok: false, hashes: new Map() };
-      hashes.set(entry.path, entry.sha256);
-    }
-    return { ok: true, hashes };
-  } catch (_error) {
-    return { ok: false, hashes: new Map() };
-  }
-}
-
 function detectAgentFleetHost(host, managedAgents) {
   const meta = HOSTS[host];
   const files = managedAgents.map((agent) => inspectAgentFleetFile(host, agent));
@@ -1196,7 +1176,9 @@ function detectAgentFleetHost(host, managedAgents) {
 
   if (checkUpdates) {
     if (host === "claude") {
-      const receipt = loadAgentFleetUserManagedReceipt();
+      // The ledger's `user_managed` records name the files that the operator keeps.
+      const ledger = readInstallLedgerPaths();
+      const receipt = { ok: ledger.ok, hashes: new Map(Object.entries(ledger.userManaged ?? {})) };
       for (const entry of files) {
         if (!entry.present) continue;
         const source = readAgentFleetSource(entry.name);
@@ -1208,9 +1190,9 @@ function detectAgentFleetHost(host, managedAgents) {
           syncedAgents.push(entry.name);
           continue;
         }
-        // Differs from the packaged source: only a valid receipt entry whose
+        // Differs from the packaged source: only a `user_managed` record whose
         // sha256 matches the file's *current* installed content exempts it.
-        // A missing/invalid receipt, a path with no entry, or a hash mismatch
+        // An unreadable ledger, a path with no record, or a hash mismatch
         // (edited again after acceptance) all fall through to drift.
         if (receipt.ok && receipt.hashes.get(entry.path) !== undefined) {
           let installedHash = null;

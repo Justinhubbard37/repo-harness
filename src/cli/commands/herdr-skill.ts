@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { hostSkillRoot, stagedSkillRoot, SKILL_HOSTS, type SkillHost } from "../../effects/host-skill-roots";
 import type { InstallTargetSpec } from "./install";
-import { HERDR_SKILL_MARKER as MARKER, ownedSkillIsIntact } from "../installer/herdr-skill-marker";
+import { HERDR_SKILL_MARKER as MARKER, ownedSkillIsIntact } from "../../effects/host-config/herdr-skill-marker";
 
 const STEP = "configure required Herdr skill";
 const STALE_STAGE_AGE_MS = 10 * 60 * 1_000;

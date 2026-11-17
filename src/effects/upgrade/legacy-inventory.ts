@@ -1,4 +1,5 @@
 import { isRecord } from '../../core/evidence/is-record';
+import type { PathRecord } from '../../core/host-config/types';
 import { SHA256_PREFIXED_PATTERN } from '../../core/evidence/sha256-pattern';
 import { sha256Prefixed } from '../../core/evidence/sha256';
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from 'fs';
@@ -43,11 +44,10 @@ export interface LegacyInventoryOptions {
   readonly packageRoot: string;
   readonly includeStateArtifacts?: boolean;
   /**
-   * The install ledger, read through the strict install-state reader at the
-   * CLI boundary. It is a function because an upgrade run refreshes receipts
-   * between its plans.
+   * The ledger's path records as a lookup by path, read at the CLI boundary.
+   * It is a function because an upgrade run refreshes records between its plans.
    */
-  readonly installOwnership: () => readonly ManifestSurface[];
+  readonly installOwnership: () => OwnedPathLookup;
 }
 
 interface RetirementAction {
@@ -67,14 +67,10 @@ interface RetirementAction {
   readonly sourcePaths?: Readonly<Record<string, string>>;
 }
 interface Contract { readonly installedCopyIncludes?: readonly string[]; readonly installedCopyExcludes?: readonly string[]; readonly helpers?: { readonly scripts?: readonly string[]; readonly internal?: readonly string[] }; readonly migrations?: { readonly upgrade?: { readonly actions?: readonly RetirementAction[] } } }
-export interface ManifestSurface {
-  readonly authority?: string;
-  readonly removal?: string;
-  readonly path?: string;
-  readonly type?: string;
-  readonly content_hash?: string | null;
-  readonly symlink_target?: string | null;
-}
+/** The path record of a host path, or null when the install owns no record of it. */
+export type OwnedPathLookup = (path: string) => PathRecord | null;
+
+const NONE_OWNED: OwnedPathLookup = () => null;
 
 function stat(path: string): ReturnType<typeof lstatSync> | null {
   try { return lstatSync(path); } catch (error) {
@@ -264,14 +260,14 @@ function readJson(path: string): unknown {
 
 function classify(
   path: string, snapshot: LegacyPathSnapshot, action: RetirementAction, contractPath: string,
-  manifest: readonly ManifestSurface[],
+  owned: OwnedPathLookup,
 ): Pick<LeftoverItem, 'ownership' | 'proof' | 'reason'> {
-  const declared = manifest.find((surface) => resolve(surface.path!) === path);
+  const declared = owned(path)?.committed;
   if (declared) {
     const matches = snapshot.kind === 'symlink'
-      ? declared.type === 'symlink' && declared.symlink_target === snapshot.symlinkTarget
-      : declared.content_hash === snapshot.contentHash;
-    return { ownership: matches ? 'owned-clean' : 'owned-modified', proof: 'manifest', reason: matches ? undefined : 'Install manifest does not match current bytes.' };
+      ? declared.type === 'symlink' && declared.target === snapshot.symlinkTarget
+      : 'sha256' in declared && declared.sha256 === snapshot.contentHash;
+    return { ownership: matches ? 'owned-clean' : 'owned-modified', proof: 'manifest', reason: matches ? undefined : 'The path record does not match current bytes.' };
   }
   if (snapshot.kind === 'directory') {
     const markerPath = join(path, OWNER_MARKER);
@@ -311,7 +307,7 @@ type AddItem = (item: LeftoverItem) => void;
 
 function refreshItem(
   options: LegacyInventoryOptions, location: LeftoverItem['location'], path: string, sourcePath: string,
-  action: RetirementAction, contractPath: string, manifest: readonly ManifestSurface[], surface: LeftoverItem['surface'],
+  action: RetirementAction, contractPath: string, owned: OwnedPathLookup, surface: LeftoverItem['surface'],
   sourceSurface?: LeftoverItem['sourceSurface'],
 ): LeftoverItem | null {
   const root = location === 'project' ? options.cwd : options.home;
@@ -323,7 +319,7 @@ function refreshItem(
   if (expectedSourceHash === null || (surface === 'skill' && !stat(sourcePath)?.isDirectory())) return { ...base, ownership: 'unowned', proof: null, action: 'report', reason: 'Package source has a protected symlink or is missing.' };
   // A current source link needs no refresh. No link target is opened here.
   if (snapshot.kind === 'symlink' && resolve(dirname(path), snapshot.symlinkTarget!) === resolve(sourcePath)) return null;
-  const ownership = classify(path, snapshot, action, contractPath, manifest);
+  const ownership = classify(path, snapshot, action, contractPath, owned);
   if (snapshot.contentHash === expectedSourceHash) {
     // This item also prevents a retired-facade action from removing a current package copy.
     return { ...base, ...ownership, action: 'report',
@@ -345,7 +341,7 @@ function currentCatalogPackages(packageRoot: string): readonly SkillSurfacePacka
   return parsed.catalog.packages.filter((pkg) => pkg.source !== null && pkg.provider === null && pkg.kind !== 'external');
 }
 
-function scanInstalledSkills(options: LegacyInventoryOptions, actions: readonly RetirementAction[], manifest: readonly ManifestSurface[], add: AddItem, packages: readonly SkillSurfacePackage[]): void {
+function scanInstalledSkills(options: LegacyInventoryOptions, actions: readonly RetirementAction[], owned: OwnedPathLookup, add: AddItem, packages: readonly SkillSurfacePackage[]): void {
   for (const pkg of packages) {
     const sourcePath = resolve(options.packageRoot, pkg.source!);
     for (const host of ['.claude', '.codex', '.agents']) {
@@ -359,20 +355,20 @@ function scanInstalledSkills(options: LegacyInventoryOptions, actions: readonly 
         return values;
       }, {});
       const item = refreshItem(options, 'global', path, sourcePath,
-        { id: 'stale-installed-skills', historicalFingerprints }, contractPath, manifest, 'skill',
+        { id: 'stale-installed-skills', historicalFingerprints }, contractPath, owned, 'skill',
         pkg.kind === 'router' ? 'canonical-skill' : 'command-facade');
       if (item && item.reason !== 'Installed copy already matches the current package.') add(item);
     }
   }
 }
 
-function scanProjectRefresh(options: LegacyInventoryOptions, actions: readonly RetirementAction[], manifest: readonly ManifestSurface[], add: AddItem): void {
+function scanProjectRefresh(options: LegacyInventoryOptions, actions: readonly RetirementAction[], owned: OwnedPathLookup, add: AddItem): void {
   for (const action of actions) {
     if (action.action !== 'refresh' || action.location !== 'project' || action.ownership !== 'known_generated') continue;
     for (const contractPath of action.paths ?? []) {
       const source = action.sourcePaths?.[contractPath];
       if (!source || isAbsolute(contractPath) || contractPath.split('/').includes('..') || isAbsolute(source) || source.split('/').includes('..')) throw new Error(`unsafe or missing refresh source for ${contractPath}`);
-      const item = refreshItem(options, 'project', resolve(options.cwd, contractPath), resolve(options.packageRoot, source), action, contractPath, manifest, 'file');
+      const item = refreshItem(options, 'project', resolve(options.cwd, contractPath), resolve(options.packageRoot, source), action, contractPath, owned, 'file');
       if (item && item.reason !== 'Installed copy already matches the current package.') add(item);
     }
   }
@@ -435,7 +431,7 @@ function versionBefore(value: string, current: string): boolean {
   return false;
 }
 
-function scanStateArtifacts(options: LegacyInventoryOptions, manifest: readonly ManifestSurface[], add: AddItem): void {
+function scanStateArtifacts(options: LegacyInventoryOptions, owned: OwnedPathLookup, add: AddItem): void {
   const stateRoot = join(options.home, '.repo-harness');
   const packagePath = join(options.packageRoot, 'package.json');
   const pkg = isLegacyPathSafe(options.packageRoot, packagePath, false) ? readJson(packagePath) : undefined;
@@ -446,7 +442,7 @@ function scanStateArtifacts(options: LegacyInventoryOptions, manifest: readonly 
     const snapshot = legacyPathSnapshot(path);
     if (!snapshot) return;
     const ownership: Pick<LeftoverItem, 'ownership' | 'proof' | 'reason'> = !retiredPath
-      ? classify(path, snapshot, { id: 'legacy-state-artifacts' }, '', manifest)
+      ? classify(path, snapshot, { id: 'legacy-state-artifacts' }, '', owned)
       : snapshot.kind === 'file'
         ? { ownership: 'owned-clean', proof: 'state-root-retired-path' }
         : { ownership: 'unowned', proof: null, reason: 'Retired state path is not a regular file. Preserve it.' };
@@ -631,7 +627,7 @@ function directoryHasOtherEntries(directory: string, ownName: string): boolean {
 /** Read-only inventory. Shipped retirement records define candidates and ownership proof. */
 export function planLegacyLeftovers(options: LegacyInventoryOptions): { items: LeftoverItem[] } {
   const actions = actionsOf();
-  const manifest = options.installOwnership();
+  const owned = options.installOwnership();
   const packages = options.scope === 'project' ? [] : currentCatalogPackages(options.packageRoot);
   const livePaths = new Set(packages.flatMap((pkg) => ['.claude', '.codex', '.agents'].map((host) => `${host}/skills/${pkg.name}`)));
   const hookAction = actions.find((action) => action.surface === 'hook-entry');
@@ -659,7 +655,7 @@ export function planLegacyLeftovers(options: LegacyInventoryOptions): { items: L
       }
       const snapshot = legacyPathSnapshot(path);
       if (!snapshot) continue;
-      const ownership = classify(path, snapshot, action, contractPath, location === 'global' ? manifest : []);
+      const ownership = classify(path, snapshot, action, contractPath, location === 'global' ? owned : NONE_OWNED);
       // A placeholder file is removable only when no sibling entry needs its
       // directory; a populated directory is user content, so it stays reported.
       const soleEntryBlocked = snapshot.kind === 'file' && (action.onlyWhenSoleEntry ?? []).includes(contractPath)
@@ -697,9 +693,10 @@ export function planLegacyLeftovers(options: LegacyInventoryOptions): { items: L
         const path = join(root, name);
         if (!stat(path)?.isSymbolicLink() || existsSync(path)) continue;
         const target = readlinkSync(path);
-        // An older package path is owned only by an exact manifest link record.
-        const owned = manifest.some((surface) => resolve(surface.path!) === path && surface.type === 'symlink' && surface.symlink_target === target);
-        add({ location: 'global', surface: 'symlink', path, retiredBy: 'dangling-skill-link', ownership: owned ? 'owned-clean' : 'unowned', proof: owned ? 'manifest' : null, action: owned ? 'remove' : 'report', expectedSymlinkTarget: target, reason: owned ? undefined : 'Dangling link has no exact install manifest record.' });
+        // An older package path is owned only by an exact link record in the ledger.
+        const record = owned(path)?.committed;
+        const linkOwned = record?.type === 'symlink' && record.target === target;
+        add({ location: 'global', surface: 'symlink', path, retiredBy: 'dangling-skill-link', ownership: linkOwned ? 'owned-clean' : 'unowned', proof: linkOwned ? 'manifest' : null, action: linkOwned ? 'remove' : 'report', expectedSymlinkTarget: target, reason: linkOwned ? undefined : 'Dangling link has no exact path record in the host-config ledger.' });
       }
     }
   }
@@ -747,12 +744,12 @@ export function planLegacyLeftovers(options: LegacyInventoryOptions): { items: L
       }
     }
   }
-  if (projectEnabled) scanProjectRefresh(options, actions, manifest, add);
+  if (projectEnabled) scanProjectRefresh(options, actions, owned, add);
   if (options.scope !== 'project') {
-    scanInstalledSkills(options, actions, manifest, add, packages);
+    scanInstalledSkills(options, actions, owned, add, packages);
     scanGlobalDocuments(options, actions, add, packages);
     scanCodexPlugin(options, add);
-    scanStateArtifacts(options, manifest, add);
+    scanStateArtifacts(options, owned, add);
   }
   const planned = [...items.values()];
   const liveRefreshPaths = new Set(planned.filter((item) => item.surface === 'skill' && (item.action === 'refresh' || item.retiredBy === 'current-package-skill')).map((item) => item.path));

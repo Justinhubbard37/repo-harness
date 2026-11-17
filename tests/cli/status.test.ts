@@ -18,12 +18,12 @@ function writeInstallStateFixture(plugins: readonly PluginId[]): void {
   const statePath = installStateFixturePath(process.env);
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   fs.writeFileSync(statePath, JSON.stringify({
-    protocol: 3,
+    protocol: 4,
     ...versions(plugins),
     selection: plugins === FULL_PLUGINS ? 'all' : plugins,
     transaction_id: `test-${plugins.join('-') || 'core'}`,
     applied_at: '2026-01-01T00:00:00.000Z',
-    ownership_manifest: [],
+    pi_packages: [],
     previous: null,
   }));
 }
@@ -373,13 +373,13 @@ describe('status command (Phase 1C)', () => {
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
       const { core } = versions([]);
       fs.writeFileSync(statePath, JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         core,
         plugins: [{ id: 'not-a-real-plugin', version: core.version }],
         selection: 'all',
         transaction_id: 'test-txn',
         applied_at: '2026-01-01T00:00:00.000Z',
-        ownership_manifest: [],
+        pi_packages: [],
         previous: null,
       }));
 
@@ -389,7 +389,7 @@ describe('status command (Phase 1C)', () => {
     });
   });
 
-  test('installState names the next step for protocol 1 and protocol 2 states', () => {
+  test('installState names the next step for protocol 1, 2 and 3 states', () => {
     withTempHome('repo-harness-status', () => {
       const statePath = installStateFixturePath(process.env);
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
@@ -432,6 +432,12 @@ describe('status command (Phase 1C)', () => {
         code: 'install_state_protocol_retired',
       });
       expect(formatStatus(retired, false)).toContain('bun add -g repo-harness@0.25.4 --no-cache && repo-harness update --version 0.25.4');
+
+      // Protocol 3 kept host path ownership in its manifest; a reader names the update that moves it to the ledger.
+      fs.writeFileSync(statePath, JSON.stringify({ protocol: 3, ...versions([]), selection: [], transaction_id: 'legacy-3', applied_at: '2026-07-14T00:00:00.000Z', ownership_manifest: [], previous: null }));
+      const protocol3 = runStatus();
+      expect(protocol3.installState).toMatchObject({ recorded: 'invalid', code: 'install_state_protocol_retired' });
+      expect(formatStatus(protocol3, false)).toContain('Run: rh update');
     });
   });
 
@@ -442,12 +448,12 @@ describe('status command (Phase 1C)', () => {
       const statePath = installStateFixturePath(process.env);
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
       fs.writeFileSync(statePath, JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         core: versions([]).core,
         selection: 'all',
         transaction_id: 'test-txn',
         applied_at: '2026-01-01T00:00:00.000Z',
-        ownership_manifest: [],
+        pi_packages: [],
         previous: null,
       }));
 
@@ -465,13 +471,13 @@ describe('status command (Phase 1C)', () => {
       const statePath = installStateFixturePath(process.env);
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
       fs.writeFileSync(statePath, JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         core: versions([]).core,
         plugins: 'architecture,product',
         selection: 'all',
         transaction_id: 'test-txn',
         applied_at: '2026-01-01T00:00:00.000Z',
-        ownership_manifest: [],
+        pi_packages: [],
         previous: null,
       }));
 

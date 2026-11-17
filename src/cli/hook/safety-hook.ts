@@ -152,11 +152,10 @@ function leafPath(path: string): string {
   return name === '' || name === '.' || name === '..' ? writeThroughPath(path) : join(writeThroughPath(dirname(path)), name);
 }
 
-/** One surface of rh's install ledger, as the installer records it. */
+/** One `created` path record of the host-config ledger: its key and the type that rh wrote there. */
 export interface LedgerSurface {
   readonly path: string;
-  readonly type: string;
-  readonly managed_marker: string | null;
+  readonly type: 'file' | 'symlink' | 'directory';
 }
 
 /**
@@ -176,10 +175,7 @@ export function ledgerCreated(path: string, env: NodeJS.ProcessEnv): boolean {
   return surfaces.some((surface) => {
     let recorded: string;
     try { recorded = leafPath(resolve(surface.path)); } catch { return false; }
-    if (surface.type === 'directory-copy') return atOrBelow(recorded, path);
-    if (surface.type === 'symlink') return recorded === path;
-    // Other managed-file markers name an rh block inside a user file.
-    return surface.type === 'managed-file' && surface.managed_marker === 'transaction-created-file' && recorded === path;
+    return surface.type === 'directory' ? atOrBelow(recorded, path) : recorded === path;
   });
 }
 

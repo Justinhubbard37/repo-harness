@@ -14,7 +14,8 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { installStateFixturePath, recordPluginSelection } from "./helpers/install-ownership";
+import { installStateFixturePath, recordPluginSelection, seedPathRecords } from "./helpers/install-ownership";
+import { pathRecordHost, pathRecordKey } from "../src/effects/host-config/path-records";
 import { createHash } from "crypto";
 import { runSubagentContext } from "../src/cli/hook/subagent-context";
 import { createStateInputCollector } from "../src/effects/loop/state-input-collector";
@@ -116,21 +117,14 @@ function sha256Text(content: string) {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
-function writeAgentFleetReceipt(home: string, files: Array<{ path: string; sha256: string }>, authority = "user-managed-agent-fleet") {
-  mkdirSync(join(home, ".repo-harness"), { recursive: true });
-  writeFileSync(
-    join(home, ".repo-harness", "agent-fleet-user-managed.json"),
-    JSON.stringify(
-      {
-        protocol: 1,
-        authority,
-        accepted_at: "2026-07-30T00:00:00.000Z",
-        files,
-      },
-      null,
-      2
-    )
-  );
+/** The fleet files that the user keeps, as `user_managed` path records; `valid: false` writes a shape that the ledger reader rejects. */
+function writeUserManagedRecords(home: string, files: Array<{ path: string; sha256: string }>, valid = true) {
+  const env = { HOME: home };
+  seedPathRecords(env, Object.fromEntries(files.map(({ path, sha256 }) => [pathRecordKey(env, path), {
+    owner: "core", host: pathRecordHost(env, path)!, kind: "user_managed" as const, baseline: { state: "unknown" as const },
+    // A `user_managed` record is always a file.
+    committed: valid ? { type: "file" as const, sha256 } : { type: "directory" as const, sha256 },
+  }])));
 }
 
 function writeExecutable(filePath: string, content: string) {
@@ -573,23 +567,19 @@ describe("check-agent-tooling", () => {
       mkdirSync(join(envRoot.home, ".repo-harness"), { recursive: true });
       const statePath = installStateFixturePath({ HOME: envRoot.home });
       writeFileSync(statePath, JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         ...versions(["strategy-memory"]),
         selection: ["strategy-memory"],
         transaction_id: "obsidian-receipt",
         applied_at: "2026-01-01T00:00:00.000Z",
         previous: null,
-        ownership_manifest: [{
-          owner: "strategy-memory",
-          path: join(envRoot.home, ".agents", "skills", "obsidian-markdown"),
-          type: "symlink",
-          authority: "repo-harness-install-transaction",
-          removal: "managed-surfaces-only",
-          content_hash: null,
-          managed_marker: null,
-          symlink_target: join(envRoot.root, "obsidian-markdown-source"),
-        }],
+        pi_packages: [],
       }));
+      const managed = join(envRoot.home, ".agents", "skills", "obsidian-markdown");
+      seedPathRecords({ HOME: envRoot.home }, { [pathRecordKey({ HOME: envRoot.home }, managed)]: {
+        owner: "strategy-memory", host: "staged", kind: "created", baseline: { state: "unknown" },
+        committed: { type: "symlink", target: join(envRoot.root, "obsidian-markdown-source") },
+      } });
       writeFakeSkillsCli(envRoot.fakeBin);
 
       const res = spawnSync("bash", [SCRIPT, "--json", "--strict-readiness", "--host", "codex"], {
@@ -1573,7 +1563,7 @@ describe("check-agent-tooling", () => {
         writeFileSync(join(envRoot.home, ".codex", "agents", `${agent}.toml`), `name = "${agent}"\n`);
       }
 
-      writeAgentFleetReceipt(envRoot.home, [
+      writeUserManagedRecords(envRoot.home, [
         {
           path: join(envRoot.home, ".claude", "agents", "deep-reasoner.md"),
           sha256: sha256Text(localContent["deep-reasoner"]),
@@ -1653,9 +1643,9 @@ describe("check-agent-tooling", () => {
         writeFileSync(join(envRoot.home, ".codex", "agents", `${agent}.toml`), `name = "${agent}"\n`);
       }
 
-      // The receipt records the hash of the previously accepted bytes, not the
+      // The record holds the hash of the previously accepted bytes, not the
       // file's current (further-edited) content, so it must not exempt it.
-      writeAgentFleetReceipt(envRoot.home, [
+      writeUserManagedRecords(envRoot.home, [
         {
           path: join(envRoot.home, ".claude", "agents", "fast-worker.md"),
           sha256: sha256Text(acceptedContent),
@@ -1689,7 +1679,7 @@ describe("check-agent-tooling", () => {
     }
   }, 15000);
 
-  test("fails closed on a malformed receipt and exempts nothing even if a hash would otherwise match", () => {
+  test("fails closed on a malformed ledger and exempts nothing even if a hash would otherwise match", () => {
     const envRoot = setupFakeEnvironment("check-agent-tooling-fleet-receipt-invalid");
     try {
       const localContent: Record<string, string> = {};
@@ -1705,10 +1695,10 @@ describe("check-agent-tooling", () => {
         writeFileSync(join(envRoot.home, ".codex", "agents", `${agent}.toml`), `name = "${agent}"\n`);
       }
 
-      // The hash entry matches the current file exactly, but the receipt's
-      // authority tag is wrong: the whole receipt must be rejected rather than
-      // exempting the one entry that "would" match.
-      writeAgentFleetReceipt(
+      // The hash matches the current file exactly, but the record's shape is
+      // invalid: the whole ledger must be rejected rather than exempting the
+      // one entry that "would" match.
+      writeUserManagedRecords(
         envRoot.home,
         [
           {
@@ -1716,7 +1706,7 @@ describe("check-agent-tooling", () => {
             sha256: sha256Text(localContent["deep-reasoner"]),
           },
         ],
-        "not-the-expected-authority"
+        false
       );
 
       writeFakeSkillsCli(envRoot.fakeBin);

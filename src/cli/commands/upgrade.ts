@@ -40,8 +40,11 @@ import {
   recordRefreshedInstallOwnership,
   rollbackInstallHostTransaction,
   type InstallHostTransaction,
-  type ManagedInstallSurface,
 } from '../installer/install-profile';
+import { ownedPath, readPathRecords } from '../../effects/host-config/path-records';
+import { hostConfigPaths } from '../../effects/host-config/store';
+import type { OwnedPathLookup } from '../../effects/upgrade/legacy-inventory';
+import { HostConfigError } from '../../core/host-config/types';
 import {
   installProfileStatePath,
 } from '../installer/install-state';
@@ -96,9 +99,20 @@ export interface UpgradeResult {
 
 type PlannerOptions = Parameters<typeof planLegacyLeftovers>[0];
 
-/** The strict install-state reader is the only source of the ledger that classifies leftovers. */
-export function installOwnershipReader(env: NodeJS.ProcessEnv): () => readonly ManagedInstallSurface[] {
-  return () => readInstallState(env)?.ownership_manifest ?? [];
+/**
+ * The ledger's path records classify leftovers; without an install state there is no install to own them.
+ * A leftover inside `~/.repo-harness` (a hook shim, a state artifact) has no record key, so no record owns it.
+ */
+export function installOwnershipReader(env: NodeJS.ProcessEnv): () => OwnedPathLookup {
+  return () => {
+    const records = readInstallState(env) ? readPathRecords(env) : {};
+    return (path) => {
+      try { return ownedPath(env, path, records); } catch (error) {
+        if (error instanceof HostConfigError && error.code === 'host_config_invalid_path') return null;
+        throw error;
+      }
+    };
+  };
 }
 
 function removable(item: LeftoverItem): boolean {
@@ -269,6 +283,9 @@ function applyLocked(
   const manifestRefreshPaths = candidates.filter((item) => item.location === 'global'
     && item.action === 'refresh' && item.proof === 'manifest').map((item) => item.path);
   const statePath = installProfileStatePath(env);
+  // The refresh rewrites the ledger's path records, and the state's versions with them.
+  const ledgerPath = hostConfigPaths(env).ledger;
+  const ledgerBefore = manifestRefreshPaths.length > 0 ? legacyPathSnapshot(ledgerPath)?.contentHash ?? null : null;
   const stateBefore = manifestRefreshPaths.length > 0 && isLegacyPathSafe(options.home, statePath, false)
     ? legacyPathSnapshot(statePath)?.contentHash : undefined;
   let hostBackup: InstallHostTransaction | undefined;
@@ -295,7 +312,7 @@ function applyLocked(
       if (!isLegacyPathSafe(root, item.path)) throw new Error(`unsafe cleanup target: ${item.path}`);
     }
     if (!isLegacyPathSafe(options.home, auditPath, false)) throw new Error(`unsafe audit path: ${auditPath}`);
-    const hostPaths = [...globalPaths, ...(manifestRefreshPaths.length > 0 ? [statePath] : [])];
+    const hostPaths = [...globalPaths, ...(manifestRefreshPaths.length > 0 ? [statePath, ledgerPath] : [])];
     if (hostPaths.length > 0) hostBackup = beginInstallHostTransaction(hostPaths, env, { retainBackup: true, runtimeLock });
     projectBackup = backupProject(options.cwd, projectPaths, transactionId);
     if (projectBackup) writeProjectManifest(options.cwd, projectBackup);
@@ -376,6 +393,7 @@ function applyLocked(
         || legacyPathSnapshot(hostBackup!.snapshots.find((snapshot) => snapshot.path === statePath)!.backup_path!)?.contentHash !== stateBefore) {
         throw new Error(`install ownership state changed before refresh: ${statePath}`);
       }
+      if ((legacyPathSnapshot(ledgerPath)?.contentHash ?? null) !== ledgerBefore) throw new Error(`install ownership ledger changed before refresh: ${ledgerPath}`);
       for (const path of receiptPaths) {
         const item = candidates.find((candidate) => candidate.path === path && candidate.action === 'refresh')!;
         if (!isLegacyPathSafe(options.home, path, item.expectedSymlinkTarget !== undefined) || !refreshedTargetMatches(item, path)) {
@@ -383,6 +401,7 @@ function applyLocked(
         }
       }
       mutatedPaths.add(statePath);
+      mutatedPaths.add(ledgerPath);
       recordRefreshedInstallOwnership(receiptPaths, env);
     }
     audit();

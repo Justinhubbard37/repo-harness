@@ -1,17 +1,19 @@
 import { globalConfigurationPath, mutateGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { globalRuntimeScope, withRuntimeTransactionContext, type RuntimeTransactionContext } from '../../effects/locking/runtime-transaction-lock';
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
-import { MANAGED_TAG } from '../../core/adoption/managed-hook-config';
 import { stagedSkillRoot, hostSkillRoot, providerSkillLock, type ProviderSkillLock } from '../../effects/host-skill-roots';
 import { piPackagePresent, removePiPackage } from './pi-package';
 import { piExecutable } from '../../effects/pi-executable';
 import { globalContextPath, inspectUnrecordedGlobalRules, previewGlobalRulesAdoptedRevert } from './global-context';
 import { removeRuntimeStateIgnoreBlock } from '../../effects/adoption/gitignore-plan';
 import { readRepositoryExcludes, repositoryCommonDirectory, repositoryExcludesLedgerPath, repositoryExcludeTarget, serializeRepositoryExcludes, type RepositoryExclude } from './repository-excludes';
-import { CODEGRAPH_CONFIG_MARKER, managedInstallSurfaceIsCurrent, readInstallState, type ManagedInstallSurface } from './install-profile';
+import { readInstallState } from './install-profile';
+import { installStatePendingMigration, migrateInstallState, planInstallStateMigration } from './install-state-migration';
+import type { PathRecord } from '../../core/host-config/types';
+import { pathRecordIsCurrent, pathRecordsDigest, readPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
 import { installProfileStatePath } from './install-state';
 import { assertConfigurationPath, configurationReceiptPath, hostConfigurationRoot, writePrivateConfiguration } from './configuration-ownership';
 import { migrateCodexConfigRecords, planCodexConfigMigration, previewAdoptedRevert } from './codex-config-migration';
@@ -52,7 +54,8 @@ export function runUserUninstall(opts: UninstallOptions): UninstallResult {
   if (opts.dryRun) return runUserUninstallLocked(opts);
   // Reject invalid authority without creating a lock directory. Read it again
   // under the lock before planning any mutation, since another writer can run here.
-  try { readUninstallState(opts); }
+  // A protocol 3 state is read after its migration under the lock.
+  try { if (!installStatePendingMigration(opts.env ?? process.env)) readUninstallState(opts); }
   catch (error) {
     return uninstallResult([{ path: configurationReceiptPath(hostConfigurationRoot(opts.env)), action: 'unresolved', reason: String((error as Error).message) }], false);
   }
@@ -79,7 +82,11 @@ function readUninstallState(opts: UninstallOptions) {
   const files = hostConfigFiles(home, opts.target);
   const codexMigration = files.codex ? planCodexConfigMigration(env) : null;
   const jsonMigration = files.json.length ? planJsonConfigMigration(env, files.json) : null;
-  return { state: readInstallState(env), lock, files, codexMigration, jsonMigration };
+  // A dry run on a protocol 3 state plans with the migration's projection and writes nothing.
+  const projected = opts.dryRun && installStatePendingMigration(env) ? planInstallStateMigration(env) : null;
+  const state = projected?.state ?? readInstallState(env);
+  const records = projected ? projected.records : state ? readPathRecords(env) : {};
+  return { state, records, lock, files, codexMigration, jsonMigration };
 }
 
 const REVERT_ITEMS: Readonly<Record<Exclude<HostConfigRevertEntry['action'], 'released'>, Pick<UninstallItem, 'action' | 'reason'>>> = {
@@ -111,14 +118,17 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   const items: UninstallItem[] = [];
   const writes = new Map<string, string | null>();
   const originals = new Map<string, string | null>();
-  const surfaceRemovals: ManagedInstallSurface[] = [];
+  const surfaceRemovals: string[] = [];
   const piRemovals: string[] = [];
   const piSkills = hostSkillRoot(home, 'pi', env);
   let lock: ProviderSkillLock;
   // A repository exclude file, its links followed, has its own directory as its root.
   const repositoryExcludes = new Set<string>();
-  const surfaceRoot = (path: string) => path === lock.path ? lock.root : repositoryExcludes.has(path) ? dirname(path) : path.startsWith(piSkills + '/') ? dirname(piSkills) : home;
-  const removedSurfaces = new Set<ManagedInstallSurface>();
+  // A path record's key has its parent links followed, so it is checked under the root with links followed.
+  const recordRoots = new Map<string, string>();
+  const surfaceRoot = (path: string) => recordRoots.get(path) ?? (path === lock.path ? lock.root : repositoryExcludes.has(path) ? dirname(path) : path.startsWith(piSkills + '/') ? dirname(piSkills) : home);
+  const removedSurfaces = new Set<string>();
+  const removedPi = new Set<string>();
   const remember = (path: string): void => { if (!originals.has(path)) originals.set(path, fingerprint(path)); };
   const read = (path: string): string => writes.has(path) ? writes.get(path) ?? '' : existsSync(path) ? readFileSync(path, 'utf8') : '';
   const change = (path: string, value: string | null, reason: string, action: 'remove' | 'restore' = 'remove'): void => {
@@ -126,14 +136,16 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   };
   const unresolved = (path: string, reason: string): void => { items.push({ path, action: 'unresolved', reason }); };
   let state: ReturnType<typeof readInstallState> = null;
+  let records: PathRecords = {};
   let files: ReturnType<typeof hostConfigFiles>;
   let codexMigration: ReturnType<typeof planCodexConfigMigration>;
   let jsonMigration: ReturnType<typeof planJsonConfigMigration>;
   try {
+    if (!opts.dryRun) migrateInstallState(env);
     const targets = hostConfigFiles(home, opts.target);
     if (!opts.dryRun && targets.codex) migrateCodexConfigRecords(env);
     if (!opts.dryRun && targets.json.length) migrateJsonConfigRecords(env, targets.json);
-    ({ state, lock, files, codexMigration, jsonMigration } = readUninstallState(opts));
+    ({ state, records, lock, files, codexMigration, jsonMigration } = readUninstallState(opts));
   } catch (error) { unresolved(configurationReceiptPath(home), String((error as Error).message)); return result(); }
 
   const gate = openHostConfigGate({ env });
@@ -182,38 +194,39 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
     } catch (error) { unresolved(files.codex, String((error as Error).message)); }
   }
 
-  for (const surface of state?.ownership_manifest ?? []) {
-    if (!selected(surface.path, opts.target, home)) continue;
-    if (surface.type === 'pi-package') {
-      try {
-        if (piExecutable(env) === null) {
-          items.push({ path: surface.path, action: 'preserve', reason: 'pi not found on PATH; package removal skipped; ownership retained for retry' });
-          continue;
-        }
-        if (piPackagePresent(surface.path, env)) {
-          piRemovals.push(surface.path);
-          items.push({ path: surface.path, action: 'remove', reason: 'transaction-owned Pi package entry through pi remove' });
-        }
-        removedSurfaces.add(surface);
-      } catch (error) { unresolved(surface.path, (error as Error).message); }
-      continue;
-    }
-    // A section record of a host file is the migration's: in a dry run it is still in the manifest.
-    if (surface.managed_marker === MANAGED_TAG || surface.managed_marker === CODEGRAPH_CONFIG_MARKER) continue;
-    if (!surface.path.startsWith(join(home, '.codex') + '/') && !surface.path.startsWith(join(home, '.claude') + '/')
-      && !surface.path.startsWith(join(home, '.agents') + '/') && !surface.path.startsWith(piSkills + '/') && surface.path !== join(home, '.claude.json')) {
-      items.push({ path: surface.path, action: 'preserve', reason: 'package-manager installation retained; remove separately after configuration cleanup' });
+  for (const source of opts.target === 'both' ? state?.pi_packages ?? [] : []) {
+    try {
+      if (piExecutable(env) === null) {
+        items.push({ path: source, action: 'preserve', reason: 'pi not found on PATH; package removal skipped; ownership retained for retry' });
+        continue;
+      }
+      if (piPackagePresent(source, env)) {
+        piRemovals.push(source);
+        items.push({ path: source, action: 'remove', reason: 'transaction-owned Pi package entry through pi remove' });
+      }
+      removedPi.add(source);
+    } catch (error) { unresolved(source, (error as Error).message); }
+  }
+  const realRoot = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
+  for (const [key, record] of Object.entries(records) as [string, PathRecord][]) {
+    // The host comes from the path as the install named it, so a linked ~/.claude still is `claude`.
+    if (opts.target !== 'both' && record.host !== opts.target) continue;
+    // The user keeps the file; the uninstall only releases the record.
+    if (record.kind === 'user_managed') { if (opts.target === 'both') removedSurfaces.add(key); continue; }
+    if (record.host === 'bin') {
+      items.push({ path: key, action: 'preserve', reason: 'package-manager installation retained; remove separately after configuration cleanup' });
       continue;
     }
     try {
-      // A receipt may own the final symlink, but never a symlinked parent directory.
-      assertConfigurationPath(dirname(surface.path), surfaceRoot(surface.path));
-      if (!fileExists(surface.path)) { removedSurfaces.add(surface); continue; }
-      if (!managedInstallSurfaceIsCurrent(surface, env)) { unresolved(surface.path, 'owned surface changed since installation; preserved'); continue; }
-      remember(surface.path); surfaceRemovals.push(surface);
-      items.push({ path: surface.path, action: 'remove', reason: 'unchanged transaction-owned surface' });
-      removedSurfaces.add(surface);
-    } catch (error) { unresolved(surface.path, String((error as Error).message)); }
+      recordRoots.set(key, realRoot(record.host === 'pi' ? dirname(piSkills) : home));
+      // A record may own the final symlink, but never a symlinked parent directory.
+      assertConfigurationPath(dirname(key), surfaceRoot(key));
+      if (!fileExists(key)) { removedSurfaces.add(key); continue; }
+      if (!pathRecordIsCurrent(key, record)) { unresolved(key, 'owned surface changed since installation; preserved'); continue; }
+      remember(key); surfaceRemovals.push(key);
+      items.push({ path: key, action: 'remove', reason: 'unchanged transaction-owned surface' });
+      removedSurfaces.add(key);
+    } catch (error) { unresolved(key, String((error as Error).message)); }
   }
 
   if (opts.target === 'both') {
@@ -246,38 +259,41 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       } catch (error) { unresolved(entry.exclude_path, String((error as Error).message)); return true; }
     });
     if (retained.length !== ledger.length) change(ledgerPath, serializeRepositoryExcludes(retained), 'repository excludes ledger');
-    for (const name of ['agent-fleet-user-managed.json']) {
-      const path = join(home, '.repo-harness', name);
-      try { assertConfigurationPath(path, home); if (existsSync(path)) change(path, null, 'product configuration'); }
-      catch (error) { unresolved(path, String((error as Error).message)); }
-    }
   }
 
   // Only remove lock entries for staging skills actually removed in this operation.
-  const staging = surfaceRemovals.filter((surface) => dirname(surface.path) === stagedSkillRoot(home));
+  const staging = surfaceRemovals.filter((key) => records[key]!.host === 'staged' && basename(dirname(key)) === basename(stagedSkillRoot(home)));
   if (staging.length && existsSync(lock.path)) {
     try {
       assertConfigurationPath(lock.path, lock.root);
       const data = object(read(lock.path));
       if (!data.skills || typeof data.skills !== 'object' || Array.isArray(data.skills)) throw new Error('invalid skills lock; preserved');
-      for (const surface of staging) delete data.skills[surface.path.split('/').at(-1)!];
+      for (const key of staging) delete data.skills[basename(key)];
       change(lock.path, `${JSON.stringify(data, null, 2)}\n`, 'removed staging skill registrations');
     } catch (error) {
       unresolved(lock.path, String((error as Error).message));
       // A retry selects lock entries from staging ownership, so keep both.
-      for (const surface of staging) {
-        surfaceRemovals.splice(surfaceRemovals.indexOf(surface), 1);
-        removedSurfaces.delete(surface);
-        Object.assign(items.find((item) => item.path === surface.path && item.action === 'remove')!, { action: 'preserve', reason: 'staging skill retained until its lock entry can be removed' });
+      for (const key of staging) {
+        surfaceRemovals.splice(surfaceRemovals.indexOf(key), 1);
+        removedSurfaces.delete(key);
+        Object.assign(items.find((item) => item.path === key && item.action === 'remove')!, { action: 'preserve', reason: 'staging skill retained until its lock entry can be removed' });
       }
     }
   }
 
   const statePath = installProfileStatePath(env);
+  // The path records that stay: all go with a retired state, and a partial run keeps the rest for a retry or the other host.
+  let pendingRecords: PathRecords | null = null;
+  const recordsDigest = pathRecordsDigest(records);
   if (state) {
-    const pending = state.ownership_manifest.filter((surface) => !removedSurfaces.has(surface));
-    if (opts.target === 'both' && !pending.some(surface => surface.type === 'pi-package') && !items.some((item) => item.action === 'unresolved')) change(statePath, null, 'install state retired');
-    else if (removedSurfaces.size) change(statePath, `${JSON.stringify({ ...state, ownership_manifest: pending, previous: null }, null, 2)}\n`, 'retain remaining ownership for retry/other host');
+    const pendingPi = state.pi_packages.filter((source) => !removedPi.has(source));
+    if (opts.target === 'both' && !pendingPi.length && !items.some((item) => item.action === 'unresolved')) {
+      change(statePath, null, 'install state retired');
+      pendingRecords = {};
+    } else if (removedSurfaces.size || removedPi.size) {
+      pendingRecords = Object.fromEntries(Object.entries(records).filter(([key]) => !removedSurfaces.has(key)));
+      if (removedPi.size) change(statePath, `${JSON.stringify({ ...state, pi_packages: pendingPi, previous: null }, null, 2)}\n`, 'retain remaining ownership for retry/other host');
+    }
   }
   items.push({ path: join(home, '.repo-harness'), action: 'preserve', reason: 'archives, runtime history and the MCP config retained; third-party packages/plugins retained' });
 
@@ -293,9 +309,10 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       if (typeof lockCleanup === 'string') { writePrivateConfiguration(lock.path, lockCleanup, lock.root); writes.delete(lock.path); }
       // A failed Pi readback stops before the ownership ledger is written.
       for (const source of piRemovals) removePiPackage(source, env);
-      for (const surface of surfaceRemovals) {
-        rmSync(surface.path, { recursive: true, force: true });
-      }
+      if (pendingRecords !== null && pathRecordsDigest(readPathRecords(env)) !== recordsDigest) throw new Error(`configuration changed after preview: ${hostConfigPaths(env).ledger}`);
+      for (const key of surfaceRemovals) rmSync(key, { recursive: true, force: true });
+      // The records go after their paths, so a stop between them leaves a record of a missing path, which a retry drops.
+      if (pendingRecords !== null) writePathRecords(env, pendingRecords);
       for (const [path, content] of writes) {
         assertConfigurationPath(path, surfaceRoot(path));
         if (path === globalConfigurationPath(env)) {

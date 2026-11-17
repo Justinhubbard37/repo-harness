@@ -3,7 +3,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import wazaRules from '../../core/skill-surface/waza-shared-rules.json';
 import { runProcess } from '../../effects/process-runner';
-import { managedInstallSurfaceIsCurrent, readInstallState, recordRefreshedInstallOwnership, type ManagedInstallSurface } from './install-profile';
+import { readInstallState, recordRefreshedInstallOwnership } from './install-profile';
+import { ownedPath, pathRecordIsCurrent, pathRecordKey, readPathRecords, type PathRecords } from '../../effects/host-config/path-records';
 import { atomicWriteFileSync } from './shared';
 
 interface RulesResult {
@@ -50,14 +51,14 @@ export function wazaStagingRulesAbsent(home: string): boolean {
 /**
  * One preflight covers staging and all hosts before the first rule write.
  * `hostReceipts` judges host-rule ownership when a caller's own state write
- * has already renewed the current receipts.
+ * has already renewed the current path records.
  */
 export function syncWazaSharedRules(
   home: string | null,
   hosts: readonly ('claude' | 'codex')[],
   env: NodeJS.ProcessEnv,
   refresh = false,
-  hostReceipts?: readonly ManagedInstallSurface[],
+  hostReceipts?: PathRecords,
 ): RulesResult {
   if (!home) return { status: 'failed', detail: 'HOME is required' };
   const sourceDir = join(home, '.agents', 'rules');
@@ -71,6 +72,11 @@ export function syncWazaSharedRules(
     if (missing.length > 0) return { status: 'failed', detail: `missing ${missing.join(', ')}` };
 
     const state = refresh ? readInstallState(env) : null;
+    const records = state ? readPathRecords(env) : {};
+    const ownedCurrent = (path: string, from: PathRecords) => {
+      const record = ownedPath(env, path, from);
+      return record !== null && pathRecordIsCurrent(pathRecordKey(env, path), record);
+    };
     const adoptedPaths: string[] = [];
     if (refresh) {
       for (const rule of wazaRules.files) {
@@ -80,8 +86,8 @@ export function syncWazaSharedRules(
         }
         if (current === undefined) continue;
         const source = join(sourceDir, rule);
-        const receipt = state?.ownership_manifest.find((surface) => surface.path === source);
-        if (receipt && (current === next.get(rule) || managedInstallSurfaceIsCurrent(receipt))) continue;
+        const receipt = ownedPath(env, source, records);
+        if (receipt && (current === next.get(rule) || ownedCurrent(source, records))) continue;
         const hostCopies = hosts.map((host) => join(home, `.${host}`, 'rules', rule));
         if (!receipt) {
           const existingHosts = hostCopies.filter((path) => readRule(path) !== undefined);
@@ -116,8 +122,7 @@ export function syncWazaSharedRules(
         const current = readRule(destination);
         const value = next.get(rule)!;
         if (current !== undefined && current !== value && current !== previous.get(rule)) {
-          const receipt = (hostReceipts ?? state?.ownership_manifest)?.find((surface) => surface.path === destination);
-          if (!receipt || !managedInstallSurfaceIsCurrent(receipt)) {
+          if (!ownedCurrent(destination, hostReceipts ?? records)) {
             return { status: 'failed', detail: `refusing to overwrite unowned rule ${destination}` };
           }
         }

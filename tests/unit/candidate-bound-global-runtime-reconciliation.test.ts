@@ -26,6 +26,7 @@ import {
 } from '../../src/cli/commands/candidate-reconciliation';
 import { sha256Prefixed } from '../../src/core/evidence/sha256';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
+import { readPathRecords } from '../../src/effects/host-config/path-records';
 import { acquireExclusiveDirectoryLock } from '../../src/effects/locking/exclusive-directory-lock';
 
 const ROOT = join(import.meta.dir, '..', '..');
@@ -126,12 +127,12 @@ function requireLegacyRenderer(packageRoot: string): void {
 function writeCoreOnlyInstallState(home: string): void {
   mkdirSync(join(home, '.repo-harness'), { recursive: true });
   writeFileSync(installStateFixturePath({ HOME: home }), `${JSON.stringify({
-    protocol: 3,
+    protocol: 4,
     selection: [],
     ...versions([]),
     transaction_id: 'fixture-install',
     applied_at: '2026-09-04T00:00:00.000Z',
-    ownership_manifest: [],
+    pi_packages: [],
     previous: null,
   }, null, 2)}\n`);
 }
@@ -540,7 +541,9 @@ describe('candidate-bound global runtime reconciliation', () => {
 
       const installed = readInstallState(env);
       expect(receipt.reconciliation_scope).toBe('complete');
-      expect(receipt.ownership_manifest_digest).toBe(`sha256:${createHash('sha256').update(JSON.stringify(installed?.ownership_manifest)).digest('hex')}`);
+      // The receipt binds the ledger's path records, in key order.
+      const records = Object.entries(readPathRecords(env)).sort(([left], [right]) => (left < right ? -1 : 1));
+      expect(receipt.ownership_manifest_digest).toBe(`sha256:${createHash('sha256').update(JSON.stringify(records)).digest('hex')}`);
       expect(installed?.plugins).toEqual([]);
       // The hook file is in the host-config ledger, not in the manifest.
       expect(openHostConfigGate({ env }).recorded(join(home, '.codex', 'hooks.json')).length).toBeGreaterThan(0);
@@ -917,12 +920,12 @@ describe('candidate-bound global runtime reconciliation', () => {
       seedGlobalPackageFixture({ HOME: home, BUN_INSTALL: join(home, '.bun') });
       mkdirSync(join(home, '.repo-harness'), { recursive: true });
       writeFileSync(installStateFixturePath({ HOME: home }), `${JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         selection: [],
         ...versions([]),
         transaction_id: 'predecessor-install',
         applied_at: '2026-09-04T00:00:00.000Z',
-        ownership_manifest: [],
+        pi_packages: [],
         previous: null,
       }, null, 2)}\n`);
       const predecessor = structuredClone(buildManagedHooks('codex'));

@@ -15,10 +15,12 @@ import { writeAllSync } from './runtime/write-all-sync';
 import { PROCESS_GROUP_LAUNCHER_FLAG, runProcessGroupLauncherCli } from '../effects/process-group-launcher';
 import { PROCESS_SUPERVISOR_FLAG, runProcessSupervisorCli } from '../effects/process-supervisor';
 import { readRecordedSelection, registerSelectedArchitecturePorts } from './installer/architecture-selection';
-import { readInstallState } from './installer/install-profile';
+import { createdPaths } from '../effects/host-config/path-records';
+// The installer registers the install surfaces that a path record may name; without them no record counts as rh-created.
+import './installer/install-profile';
 import { registerInstallLedger } from './hook/safety-hook';
 
-registerInstallLedger(env => readInstallState(env)?.ownership_manifest ?? []);
+registerInstallLedger(createdPaths);
 
 // The hook process root reads the recorded selection once. Core hook code
 // reaches the architecture code only through the ports, which load only for a

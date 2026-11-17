@@ -13,16 +13,18 @@ import { registerArchitecturePlugin, resolveOptionalRuntimeDeps, runCli, runTran
 import { copyPackageRuntimeFixture, writeBunWrapper, writeShellExecutableFixture } from '../helpers/repo-fixture';
 import { ARCHITECTURE_DOCS_RENDERER_VERSION } from 'archctx-contracts';
 import { dependencies, devDependencies } from '../../package.json';
-import { installStateFixturePath, recordInstallOwnership, recordPluginSelection, RETIRED_CLI_LINES, seedGlobalPackageFixture } from '../helpers/install-ownership';
+import { installStateFixturePath, recordInstallOwnership, recordPluginSelection, RETIRED_CLI_LINES, seedGlobalPackageFixture, seedPathRecords } from '../helpers/install-ownership';
 import { writeFakeHc } from '../helpers/fake-hc';
 import wazaRules from '../../src/core/skill-surface/waza-shared-rules.json';
-import { applyInstallSelection, beginInstallHostTransaction, installProfileHostMutationPaths, managedInstallSurfaceIsCurrent, readInstallState, recordRefreshedInstallOwnership, loadSkillSurfaceCatalog, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
+import { applyInstallSelection, beginInstallHostTransaction, installProfileHostMutationPaths, readInstallState, recordRefreshedInstallOwnership, loadSkillSurfaceCatalog, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
 import { buildManagedHooks } from '../../src/cli/installer/managed-entries';
 import { MANAGED_AGENTS } from '../../src/effects/terminal/task-role-profiles';
 import { applyGlobalContextRefresh, GLOBAL_RULES_EDITED, GLOBAL_RULES_END, inspectGlobalContext, preflightGlobalContextRefresh, renderGlobalRulesBlock, setReportingLanguage } from '../../src/cli/installer/global-context';
 import { CandidateRequestProtocolRetiredError, encodeCandidateRequest, parseCandidateRequest, type CandidateReconciliationRequest } from '../../src/cli/commands/candidate-reconciliation';
 import type { PluginId } from '../../src/core/skill-surface/plugin-manifest';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
+import { hostConfigPaths } from '../../src/effects/host-config/store';
+import { ownedPath, pathRecordIsCurrent, pathRecordKey, readPathRecords } from '../../src/effects/host-config/path-records';
 
 const ROOT = join(import.meta.dir, '..', '..');
 beforeAll(() => { seedGlobalPackageFixture(); });
@@ -950,23 +952,18 @@ exit 0
       }
       mkdirSync(join(home, '.repo-harness'), { recursive: true });
       writeFileSync(installStateFixturePath({ HOME: home }), `${JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         selection: ['strategy-memory'],
         ...versions(['strategy-memory']),
         transaction_id: 'obsidian-fixture',
         applied_at: '2026-08-21T00:00:00.000Z',
-        ownership_manifest: ['obsidian-markdown', 'obsidian-cli'].map((skill) => ({
-          owner: 'strategy-memory',
-          authority: 'repo-harness-install-transaction',
-          removal: 'managed-surfaces-only',
-          path: join(home, '.agents', 'skills', skill),
-          type: 'directory-copy',
-          content_hash: singleFileManagedTreeHash(`# old ${skill}\n`),
-          managed_marker: 'transaction-created-directory',
-          symlink_target: null,
-        })),
+        pi_packages: [],
         previous: null,
       }, null, 2)}\n`);
+      seedPathRecords({ HOME: home }, Object.fromEntries(['obsidian-markdown', 'obsidian-cli'].map((skill) => [
+        pathRecordKey({ HOME: home }, join(home, '.agents', 'skills', skill)),
+        { owner: 'strategy-memory', host: 'staged', kind: 'created', baseline: { state: 'unknown' }, committed: { type: 'directory', sha256: singleFileManagedTreeHash(`# old ${skill}\n`) } },
+      ] as const)));
 
       rmSync(join(home, '.codex', 'skills', 'obsidian-cli'));
       const verifiedUpdate = runGlobalRuntimeSetup({
@@ -2255,12 +2252,12 @@ exit 0
       setupManagedRuntimeReadback(home, fakeBin);
       installCandidateRuntimeFixture(home, JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version as string);
       writeFileSync(installStateFixturePath({ HOME: home }), `${JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         selection: FULL_PLUGINS,
         ...versions(FULL_PLUGINS),
         transaction_id: 'existing-full-install',
         applied_at: '2026-07-14T00:00:00.000Z',
-        ownership_manifest: [],
+        pi_packages: [],
         previous: null,
       })}\n`);
       const candidateVersion = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version;
@@ -2845,6 +2842,12 @@ test('a fleet failure after the CLI install restores the predecessor hoisted arc
 });
 
 describe('Waza shared rule refresh', () => {
+  /** The ledger's path records, keyed as the product keys a host path. */
+  const recordsOf = (env: NodeJS.ProcessEnv) => Object.entries(readPathRecords(env));
+  const keysOf = (env: NodeJS.ProcessEnv, paths: readonly string[]) => paths.map(path => pathRecordKey(env, path)).sort();
+  const staleRecords = (env: NodeJS.ProcessEnv) => recordsOf(env).filter(([key, record]) => !pathRecordIsCurrent(key, record)).map(([key]) => key);
+  /** The state and ledger bytes: the ownership records live in the ledger. */
+  const storedBytes = (env: NodeJS.ProcessEnv) => [installStateFixturePath(env), hostConfigPaths(env).ledger].map(path => existsSync(path) ? readFileSync(path) : null);
   function withRules(body: (fixture: {
     home: string; upstream: string; fakeBin: string; env: NodeJS.ProcessEnv;
     paths: string[]; run: (refresh?: boolean, target?: 'both' | 'claude' | 'codex') => ReturnType<typeof runGlobalRuntimeSetup>;
@@ -2913,18 +2916,17 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
     withRules(({ upstream, env, paths, run }) => {
       // Model an interrupted refresh: rule writes finished, receipt persistence did not.
       for (const path of paths) writeFileSync(path, readFileSync(join(upstream, path.split('/').at(-1)!)));
-      const selected = paths.filter(path => target === 'both' || !path.includes('/.claude/'));
-      const unselectedBefore = readInstallState(env)!.ownership_manifest.filter(receipt => !selected.includes(receipt.path));
-      expect(readInstallState(env)!.ownership_manifest.some(receipt => !managedInstallSurfaceIsCurrent(receipt))).toBe(true);
+      const selected = keysOf(env, paths.filter(path => target === 'both' || !path.includes('/.claude/')));
+      const unselected = () => recordsOf(env).filter(([key]) => !selected.includes(key));
+      const unselectedBefore = unselected();
+      expect(staleRecords(env).length).toBeGreaterThan(0);
       expect(run(true, target).exitCode).toBe(0);
-      for (const receipt of readInstallState(env)!.ownership_manifest.filter(receipt => selected.includes(receipt.path))) {
-        expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
-      }
-      expect(readInstallState(env)!.ownership_manifest.filter(receipt => !selected.includes(receipt.path))).toEqual(unselectedBefore);
+      expect(staleRecords(env).filter(key => selected.includes(key))).toEqual([]);
+      expect(unselected()).toEqual(unselectedBefore);
       writeFileSync(join(upstream, 'english.md'), '# next English\n');
       expect(run(true, target).exitCode).toBe(0);
-      for (const path of selected.filter(path => path.endsWith('/english.md'))) expect(readFileSync(path, 'utf8')).toBe('# next English\n');
-      expect(readInstallState(env)!.ownership_manifest.filter(receipt => !selected.includes(receipt.path))).toEqual(unselectedBefore);
+      for (const path of paths.filter(path => selected.includes(pathRecordKey(env, path)) && path.endsWith('/english.md'))) expect(readFileSync(path, 'utf8')).toBe('# next English\n');
+      expect(unselected()).toEqual(unselectedBefore);
     });
   });
 
@@ -2934,7 +2936,7 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       for (const path of paths) expect(readFileSync(path, 'utf-8')).toBe(`# new ${path.split('/').at(-1)}\npassword=example\n`);
       expect(readFileSync(join(home, 'fetch.log'), 'utf-8').trim().split('\n'))
         .toEqual(wazaRules.files.map((rule) => `${wazaRules.rawBaseUrl}/rules/${rule}`));
-      for (const receipt of readInstallState(env)!.ownership_manifest) expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
+      expect(staleRecords(env)).toEqual([]);
       writeFileSync(join(upstream, 'english.md'), '# next English\n');
       expect(run().exitCode).toBe(0);
       expect(readFileSync(join(home, '.codex', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
@@ -2954,11 +2956,11 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       for (const path of paths) rmSync(path);
       recordInstallOwnership([], env);
       expect(run().exitCode).toBe(0);
-      expect(readInstallState(env)!.ownership_manifest.map(({ path }) => path).sort()).toEqual([...paths].sort());
-      for (const receipt of readInstallState(env)!.ownership_manifest) expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
+      expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths));
+      expect(staleRecords(env)).toEqual([]);
       writeFileSync(join(upstream, 'english.md'), '# next English\n');
       expect(run().exitCode).toBe(0);
-      for (const receipt of readInstallState(env)!.ownership_manifest) expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
+      expect(staleRecords(env)).toEqual([]);
       expect(readFileSync(join(home, '.agents', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
       expect(readFileSync(join(home, '.codex', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
     });
@@ -2970,11 +2972,11 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       const setup = run(false);
       expect(setup.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({ status: 'skipped' });
       recordInstallOwnership([], env);
-      const owned = ownFreshWazaSharedRules(setup, 'both', env, []);
+      const owned = ownFreshWazaSharedRules(setup, 'both', env, {});
       expect(owned.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({ status: 'ok' });
-      expect(readInstallState(env)!.ownership_manifest.map(({ path }) => path).sort()).toEqual([...paths].sort());
-      for (const receipt of readInstallState(env)!.ownership_manifest) expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
-      expect(ownFreshWazaSharedRules(owned, 'both', env, [])).toBe(owned);
+      expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths));
+      expect(staleRecords(env)).toEqual([]);
+      expect(ownFreshWazaSharedRules(owned, 'both', env, {})).toBe(owned);
     });
   });
 
@@ -3021,15 +3023,14 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       applyInstallSelection([], [], env);
       expect(run().exitCode).toBe(0);
       applyInstallSelection([], [], env);
-      expect(readInstallState(env)!.ownership_manifest.filter(({ path }) => paths.includes(path))).toHaveLength(paths.length);
+      const ruleRecords = () => recordsOf(env).filter(([key]) => keysOf(env, paths).includes(key));
+      expect(ruleRecords()).toHaveLength(paths.length);
       writeFileSync(join(upstream, 'english.md'), '# next English\n');
       expect(run().exitCode).toBe(0);
       applyInstallSelection([], [], env);
       expect(readFileSync(join(home, '.agents', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
       expect(readFileSync(join(home, '.codex', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
-      for (const receipt of readInstallState(env)!.ownership_manifest.filter(({ path }) => paths.includes(path))) {
-        expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
-      }
+      expect(ruleRecords().filter(([key, record]) => !pathRecordIsCurrent(key, record))).toEqual([]);
     });
   });
 
@@ -3047,9 +3048,9 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
           expect(run(true, 'codex').exitCode).toBe(0);
           expect(unchangedHost(claudePaths)).toEqual(claudeBefore);
           for (const path of paths) {
-            const receipt = readInstallState(env)!.ownership_manifest.find((surface) => surface.path === path);
-            expect(receipt).toBeDefined();
-            expect(managedInstallSurfaceIsCurrent(receipt!)).toBe(true);
+            const receipt = ownedPath(env, path);
+            expect(receipt).not.toBeNull();
+            expect(pathRecordIsCurrent(pathRecordKey(env, path), receipt!)).toBe(true);
           }
           for (const rule of wazaRules.files) writeFileSync(join(upstream, rule), `# second ${rule}\n`);
           const codexPaths = wazaRules.files.map((rule) => join(home, '.codex', 'rules', rule));
@@ -3060,7 +3061,7 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
           for (const rule of wazaRules.files) writeFileSync(join(upstream, rule), `# third ${rule}\n`);
           expect(run(true, 'both').exitCode).toBe(0);
           for (const path of paths) expect(readFileSync(path, 'utf-8')).toBe(`# third ${path.split('/').at(-1)}\n`);
-          for (const receipt of readInstallState(env)!.ownership_manifest) expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
+          expect(staleRecords(env)).toEqual([]);
         });
       });
     }
@@ -3072,20 +3073,19 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
         writeFileSync(edited, '# local Claude rule\n');
         expect(run(true, 'codex').exitCode).toBe(0);
         expect(readFileSync(edited, 'utf-8')).toBe('# local Claude rule\n');
-        const receipt = readInstallState(env)!.ownership_manifest.find(({ path }) => path === edited);
-        if (ownership === 'legacy') expect(receipt).toBeUndefined();
-        else expect(managedInstallSurfaceIsCurrent(receipt!)).toBe(false);
+        const receipt = ownedPath(env, edited);
+        if (ownership === 'legacy') expect(receipt).toBeNull();
+        else expect(pathRecordIsCurrent(pathRecordKey(env, edited), receipt!)).toBe(false);
         for (const rule of wazaRules.files) writeFileSync(join(upstream, rule), `# next ${rule}\n`);
         const before = paths.map((path) => readFileSync(path));
-        const statePath = join(home, '.repo-harness', 'install-state.json');
-        const beforeState = readFileSync(statePath);
+        const beforeState = storedBytes(env);
         const result = run(true, 'claude');
         expect(result.exitCode).toBe(1);
         expect(result.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({
           status: 'failed', detail: expect.stringContaining(`refusing to overwrite unowned rule ${edited}`),
         });
         expect(paths.map((path) => readFileSync(path))).toEqual(before);
-        expect(readFileSync(statePath)).toEqual(beforeState);
+        expect(storedBytes(env)).toEqual(beforeState);
       });
     });
   }
@@ -3094,14 +3094,12 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
     withRules(({ home, upstream, env, paths, run }) => {
       expect(run(true, 'codex').exitCode).toBe(0);
       const before = paths.map((path) => readFileSync(path));
-      const statePath = join(home, '.repo-harness', 'install-state.json');
-      const beforeState = readFileSync(statePath);
+      const beforeState = storedBytes(env);
       expect(run(false, 'claude').exitCode).toBe(1);
       expect(paths.map((path) => readFileSync(path))).toEqual(before);
-      expect(readFileSync(statePath)).toEqual(beforeState);
+      expect(storedBytes(env)).toEqual(beforeState);
       const destination = join(home, '.claude', 'rules', 'english.md');
-      const receipt = readInstallState(env)!.ownership_manifest.find(({ path }) => path === destination);
-      expect(managedInstallSurfaceIsCurrent(receipt!)).toBe(true);
+      expect(pathRecordIsCurrent(pathRecordKey(env, destination), ownedPath(env, destination)!)).toBe(true);
       writeFileSync(join(upstream, 'english.md'), '# next English\n');
       expect(run(true, 'codex').exitCode).toBe(0);
       expect(run(true, 'claude').exitCode).toBe(0);
@@ -3119,8 +3117,8 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
           }
         }
         expect(run().exitCode).toBe(0);
-        expect(readInstallState(env)!.ownership_manifest.map(({ path }) => path).sort()).toEqual([...paths].sort());
-        for (const receipt of readInstallState(env)!.ownership_manifest) expect(managedInstallSurfaceIsCurrent(receipt)).toBe(true);
+        expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths));
+        expect(staleRecords(env)).toEqual([]);
         for (const path of paths) expect(readFileSync(path, 'utf-8')).toBe(readFileSync(join(upstream, path.split('/').at(-1)!), 'utf-8'));
         writeFileSync(join(upstream, 'english.md'), '# next legacy English\n');
         expect(run().exitCode).toBe(0);
@@ -3143,15 +3141,14 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
           }
           const snapshot = () => paths.map((path) => existsSync(path) ? readFileSync(path) : null);
           const before = snapshot();
-          const statePath = join(home, '.repo-harness', 'install-state.json');
-          const beforeState = readFileSync(statePath);
+          const beforeState = storedBytes(env);
           const result = run();
           expect(result.exitCode).toBe(1);
           expect(result.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({
             status: 'failed', detail: expect.stringContaining('refusing to refresh unowned or drifted staging rule'),
           });
           expect(snapshot()).toEqual(before);
-          expect(readFileSync(statePath)).toEqual(beforeState);
+          expect(storedBytes(env)).toEqual(beforeState);
         });
       });
     }
@@ -3164,7 +3161,7 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       expect(run().exitCode).toBe(0);
       for (const rule of wazaRules.files) {
         const source = join(home, '.agents', 'rules', rule);
-        expect(readInstallState(env)!.ownership_manifest.some(({ path }) => path === source)).toBe(true);
+        expect(ownedPath(env, source)).not.toBeNull();
         expect(readFileSync(join(home, '.claude', 'rules', rule))).toEqual(readFileSync(source));
       }
     });
@@ -3177,8 +3174,7 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       writeFileSync(unselected, '# unselected local host edit\n');
       expect(run(true, 'codex').exitCode).toBe(0);
       expect(readFileSync(unselected, 'utf-8')).toBe('# unselected local host edit\n');
-      expect(readInstallState(env)!.ownership_manifest.map(({ path }) => path).sort())
-        .toEqual(paths.filter((path) => path !== unselected).sort());
+      expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths.filter((path) => path !== unselected)));
     });
   });
 
@@ -3189,7 +3185,7 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       const before = paths.map((path) => existsSync(path) ? readFileSync(path) : null);
       expect(run(true, 'codex').exitCode).toBe(1);
       expect(paths.map((path) => existsSync(path) ? readFileSync(path) : null)).toEqual(before);
-      expect(readInstallState(env)!.ownership_manifest).toHaveLength(0);
+      expect(recordsOf(env)).toHaveLength(0);
     });
   });
 
@@ -3202,7 +3198,7 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
       const before = paths.map((path) => readFileSync(path));
       expect(run().exitCode).toBe(1);
       expect(paths.map((path) => readFileSync(path))).toEqual(before);
-      expect(readInstallState(env)!.ownership_manifest).toHaveLength(0);
+      expect(recordsOf(env)).toHaveLength(0);
     });
   });
 

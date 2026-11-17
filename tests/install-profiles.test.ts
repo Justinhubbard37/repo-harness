@@ -1,7 +1,7 @@
 import { syncCrossReviewSkills } from '../src/cli/commands/init';
 import { architectureSelectionReport, assertPluginCommandSelected, readRecordedSelection } from '../src/cli/installer/architecture-selection';
 import { configureRequiredHerdrSkill } from '../src/cli/commands/herdr-skill';
-import { ownedSkillIsIntact } from '../src/cli/installer/herdr-skill-marker';
+import { ownedSkillIsIntact } from '../src/effects/host-config/herdr-skill-marker';
 import { describe, expect, test } from 'bun:test';
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
@@ -18,7 +18,6 @@ import {
   installProfileTransactionPaths,
   installStateStatus,
   loadSkillSurfaceCatalog,
-  piPackageSurface,
   planInstallSelection,
   prepareInstallSelectionSwitch,
   readInstallState,
@@ -40,11 +39,13 @@ import { runTransactionalRuntimeRefresh } from '../src/cli/index';
 import { CANDIDATE_RECONCILE_STEP, type GlobalRuntimeOptions, type GlobalRuntimeResult } from '../src/cli/commands/global-runtime';
 import { CandidateRequestProtocolRetiredError, parseCandidateRequest } from '../src/cli/commands/candidate-reconciliation';
 import { installPiPackage } from '../src/cli/installer/pi-package';
+import { migrateInstallState } from '../src/cli/installer/install-state-migration';
 import { bunGlobalPackageRoot } from '../src/cli/installer/skill-projection';
 import { hostSkillRoot, providerSkillLock } from '../src/effects/host-skill-roots';
 import { MANAGED_AGENTS } from '../src/effects/terminal/task-role-profiles';
-import { installStateFixturePath, recordInstallOwnership, recordPluginSelection, seedGlobalPackageFixture } from './helpers/install-ownership';
+import { installStateFixturePath, recordInstallOwnership, recordPluginSelection, seedGlobalPackageFixture, seedPathRecords } from './helpers/install-ownership';
 import { hashManagedTree } from '../src/effects/managed-tree';
+import type { PathRecord } from '../src/core/host-config/types';
 import { buildManagedHooks } from '../src/cli/installer/managed-entries';
 import { runUserUninstall } from '../src/cli/installer/uninstall';
 import { copyUpgradeFixture } from './helpers/upgrade-fixtures';
@@ -53,6 +54,7 @@ import { writeBunWrapper } from './helpers/repo-fixture';
 import { HC_MIN_VERSION } from '../src/core/terminal/herdr-pin';
 import { openHostConfigGate } from '../src/effects/host-config/gate';
 import { hostConfigPaths } from '../src/effects/host-config/store';
+import { ownedPath, pathRecordKey, readPathRecords, readPathRecordSet } from '../src/effects/host-config/path-records';
 import { tomlFragment } from '../src/core/host-config/toml-fragment';
 import { currentProcessStartTime } from '../src/effects/locking/process-start-time';
 import { jsonFragment } from '../src/core/host-config/json-fragment';
@@ -235,8 +237,13 @@ function writeManagedHostSurfaces(
   return { canonical, source };
 }
 
-function seededState(plugins: readonly PluginId[], selection: PluginSelection, ownership: readonly object[] = []): object {
-  return { protocol: 3, ...versions(plugins), selection, transaction_id: 'seeded', applied_at: '2026-11-01T00:00:00.000Z', ownership_manifest: ownership, previous: null };
+function seededState(plugins: readonly PluginId[], selection: PluginSelection, piPackages: readonly string[] = []): object {
+  return { protocol: 4, ...versions(plugins), selection, transaction_id: 'seeded', applied_at: '2026-11-01T00:00:00.000Z', pi_packages: piPackages, previous: null };
+}
+
+/** The ledger's path records as a list, keyed as the product keys them (parent links followed). */
+function records(env: NodeJS.ProcessEnv) {
+  return Object.entries(readPathRecords(env)).map(([path, record]) => ({ path, ...record }));
 }
 
 function installStateCode(run: () => unknown): string | undefined {
@@ -299,38 +306,36 @@ describe('install selection', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
-  test('refresh retains a markerless owned directory receipt under its owner and writes the ledger in canonical order', () => withHome((env) => {
+  test('refresh retains a markerless owned directory record under its owner and writes the records in key order', () => withHome((env) => {
     const path = join(env.HOME!, '.codex/skills/repo-harness-cross-review');
     const fleet = join(env.HOME!, '.codex/agents/explorer.toml');
     copyUpgradeFixture('upgrade-v0.19.5-home', '.codex/skills/repo-harness-cross-review', path);
     writePath(fleet, '# managed\n');
     const previousHash = hashManagedTree(path);
-    // The helper keeps the given order, so this ledger is not in canonical order.
     recordInstallOwnership([path, fleet], env);
-    const statePath = installProfileStatePath(env);
-    const unsorted = readFileSync(statePath);
-    // A refresh that changes nothing rewrites no bytes, whatever the stored order.
+    const written = [installProfileStatePath(env), hostConfigPaths(env).ledger];
+    const before = written.map(file => readFileSync(file));
+    // A refresh that changes nothing rewrites no bytes.
     recordRefreshedInstallOwnership([path, fleet], env);
-    expect(readFileSync(statePath)).toEqual(unsorted);
+    expect(written.map(file => readFileSync(file))).toEqual(before);
 
     rmSync(path, { recursive: true });
     cpSync(join(ROOT, 'assets/skills/repo-harness-cross-review'), path, { recursive: true });
     expect(existsSync(join(path, '.repo-harness-owner.json'))).toBe(false);
     expect(() => recordRefreshedInstallOwnership([path], env)).not.toThrow();
-    const refreshed = readInstallState(env)!;
-    const receipt = refreshed.ownership_manifest.find((surface) => surface.path === path)!;
+    const receipt = ownedPath(env, path)!;
     expect(receipt.owner).toBe('cross-review');
-    expect(receipt.content_hash).toBe(hashManagedTree(path));
-    expect(receipt.content_hash).not.toBe(previousHash);
-    expect(receipt.managed_marker).toBe('transaction-created-directory');
-    expect(refreshed.ownership_manifest.map(surface => surface.path)).toEqual([fleet, path]);
+    expect(receipt.committed).toEqual({ type: 'directory', sha256: hashManagedTree(path) });
+    expect(hashManagedTree(path)).not.toBe(previousHash);
+    expect(receipt.kind).toBe('created');
+    expect(Object.keys(readPathRecords(env))).toEqual([fleet, path].map(entry => pathRecordKey(env, entry)));
   }));
 
-  test('install state protocol 3 names the plugins, and every hook route is core', () => withHome((env) => {
+  test('install state protocol 4 names the plugins, and every hook route is core', () => withHome((env) => {
     expect(PLUGIN_IDS).toEqual(['architecture', 'cross-review', 'mcp', 'operator', 'peer-runtime', 'pi', 'platform', 'product', 'strategy-memory']);
     expect(Object.values(buildManagedHooks('codex', env)).flat()).toHaveLength(5);
     expect(Object.values(buildManagedHooks('claude', env)).flat()).toHaveLength(6);
-    expect(planInstallSelection('all', { run: ALL_PLUGINS, record: ALL_PLUGINS }, null, env).protocol).toBe(3);
+    expect(planInstallSelection('all', { run: ALL_PLUGINS, record: ALL_PLUGINS }, null, env).protocol).toBe(4);
   }));
 
   test('protocol 1 and 2 refuse a state and a candidate request before any write, and name the bridges', () => {
@@ -428,7 +433,7 @@ describe('install selection', () => {
       writePath(join(staged, 'SKILL.md'), '# think\n');
       applyInstallSelection(['product'], ['product'], env, new Date('2026-01-02T00:00:00Z'), forward);
       commitInstallHostTransaction(forward);
-      const productSurfaces = readInstallState(env)!.ownership_manifest.filter(({ owner }) => owner === 'product').map(({ path }) => path);
+      const productSurfaces = records(env).filter(({ owner }) => owner === 'product').map(({ path }) => path);
       expect(productSurfaces.length, writer).toBeGreaterThan(0);
 
       // Back to platform: the switch removes product, and the projection writes the platform facade again.
@@ -441,9 +446,9 @@ describe('install selection', () => {
 
       const state = readInstallState(env)!;
       expect(state.selection, writer).toEqual(['platform']);
-      const owned = state.ownership_manifest.map(({ path }) => path);
-      expect([owned.includes(rule), owned.includes(staged)], writer).toEqual([true, true]);
-      expect(state.ownership_manifest.filter(({ owner }) => owner === 'product'), writer).toEqual([]);
+      const owned = records(env).map(({ path }) => path);
+      expect([owned.includes(pathRecordKey(env, rule)), owned.includes(pathRecordKey(env, staged))], writer).toEqual([true, true]);
+      expect(records(env).filter(({ owner }) => owner === 'product'), writer).toEqual([]);
       for (const path of productSurfaces) expect(existsSync(path), `${writer}: ${path}`).toBe(false);
       const planned = new Set(runUserUninstall({ target: 'both', dryRun: true, env }).items.map(({ path }) => path));
       expect(owned.filter(path => !planned.has(path)), writer).toEqual([]);
@@ -458,24 +463,27 @@ describe('install selection', () => {
     expect(() => rollbackInstallSelection(env)).toThrow('rollback projection is incomplete: missing=product(skills)');
   }));
 
-  test('state is machine readable: protocol 3 with versions, selection and owned surfaces', () => withHome((env) => {
+  test('state is machine readable: protocol 4 with versions and selection, and the ledger records the owned paths', () => withHome((env) => {
     writeManagedHostSurfaces(env, ALL_PLUGINS);
     const applied = applyInstallSelection('all', ALL_PLUGINS, env);
     const persisted = JSON.parse(readFileSync(applied.plan.state_path, 'utf-8'));
     const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-    expect(persisted.protocol).toBe(3);
+    expect(persisted.protocol).toBe(4);
+    expect(persisted.pi_packages).toEqual([]);
+    expect('ownership_manifest' in persisted).toBe(false);
     expect(persisted.core).toEqual({ version });
     expect(persisted.plugins).toEqual(ALL_PLUGINS.map(id => ({ id, version })));
     expect(persisted.selection).toBe('all');
-    expect(persisted.ownership_manifest.every((entry: { owner: string; authority: string; path: string; type: string; content_hash: string | null }) => (
+    const owned = records(env);
+    expect(owned.length).toBeGreaterThan(0);
+    expect(owned.every(entry => (
       ['core', ...ALL_PLUGINS].includes(entry.owner)
-      && entry.authority === 'repo-harness-install-transaction'
-      && entry.path.startsWith(env.HOME!)
-      && ['symlink', 'managed-file', 'directory-copy'].includes(entry.type)
-      && (entry.type === 'symlink' || entry.content_hash?.startsWith('sha256:') === true)
+      && entry.kind === 'created'
+      && entry.path.startsWith(pathRecordKey(env, join(env.HOME!, 'x')).slice(0, -1))
+      && (entry.committed.type === 'symlink' || ('sha256' in entry.committed && entry.committed.sha256.startsWith('sha256:')) || 'proof' in entry.committed)
     ))).toBe(true);
-    expect(persisted.ownership_manifest.some((entry: { path: string }) => entry.path === join(env.HOME!, '.bun', 'bin', 'rh'))).toBe(false);
-    expect(persisted.ownership_manifest.some((entry: { path: string }) => entry.path === join(env.HOME!, '.codex', 'skills', 'repo-harness'))).toBe(false);
+    expect(ownedPath(env, join(env.HOME!, '.bun', 'bin', 'rh'))).toBeNull();
+    expect(ownedPath(env, join(env.HOME!, '.codex', 'skills', 'repo-harness'))).toBeNull();
     expect(installStateStatus(applied.state, env).drift.status).toBe('consistent');
   }));
 
@@ -523,50 +531,40 @@ describe('install selection', () => {
       const retiredDest = join(row.root(env), 'repo-harness-retired-demo');
       writeMarkedFacade(retiredDest, '---\nname: repo-harness-retired-demo\n---\n');
 
-      const additionalSurfaces = row.plugins.includes('pi')
-        ? [piPackageSurface(installPiPackage(bunGlobalPackageRoot(env)!, true, env).source)]
+      const additionalPiPackages = row.plugins.includes('pi')
+        ? [installPiPackage(bunGlobalPackageRoot(env)!, true, env).source]
         : [];
-      const applied = applyInstallSelection([...row.plugins], row.plugins, env, new Date('2026-01-01T00:00:00Z'), undefined, { additionalSurfaces });
-      const planSurface = applied.state.ownership_manifest.find(({ path }) => path === join(codexSkills, 'repo-harness-product'));
-      const retiredSurface = applied.state.ownership_manifest.find(({ path }) => path === retiredDest);
+      const applied = applyInstallSelection([...row.plugins], row.plugins, env, new Date('2026-01-01T00:00:00Z'), undefined, { additionalPiPackages });
+      const planSurface = ownedPath(env, join(codexSkills, 'repo-harness-product'));
+      const retiredSurface = ownedPath(env, retiredDest);
       expect(planSurface?.owner, row.label).toBe('product');
       expect(retiredSurface, row.label).toBeDefined();
       expect(retiredSurface?.owner, row.label).toBe(row.owner);
       expect(installStateStatus(applied.state, env).drift.status, row.label).toBe('consistent');
-      expect(readInstallState(env)?.ownership_manifest, row.label).toEqual(applied.state.ownership_manifest);
+      expect(readInstallState(env), row.label).toEqual(applied.state);
     });
   });
 
-  test('state keeps a formerly managed facade receipt readable after its catalog retirement', () => withHome((env) => {
+  test('the ledger keeps a formerly managed facade record readable after its catalog retirement', () => withHome((env) => {
     writeManagedHostSurfaces(env);
     const retired = join(env.HOME!, '.claude', 'skills', 'repo-harness-handoff');
     const oldSource = join(env.HOME!, 'old-package', 'assets', 'skill-commands', 'repo-harness-handoff');
     writePath(join(oldSource, 'SKILL.md'), '# old\n');
     mkdirSync(join(retired, '..'), { recursive: true });
     symlinkSync(oldSource, retired);
-    const receipt = {
-      owner: 'core',
-      authority: 'repo-harness-install-transaction',
-      removal: 'managed-surfaces-only',
-      path: retired,
-      type: 'symlink',
-      content_hash: null,
-      managed_marker: null,
-      symlink_target: oldSource,
-    } as const;
-    const statePath = installStateFixturePath(env);
-    const state = seededState([], [], [receipt]);
-    writePath(statePath, `${JSON.stringify(state)}\n`);
-    expect(readInstallState(env)?.ownership_manifest).toEqual([receipt]);
+    const receipt = { owner: 'core', host: 'claude', kind: 'created', baseline: { state: 'unknown' }, committed: { type: 'symlink', target: oldSource } } as const;
+    writePath(installStateFixturePath(env), `${JSON.stringify(seededState([], []))}\n`);
+    seedPathRecords(env, { [pathRecordKey(env, retired)]: receipt });
+    expect(ownedPath(env, retired)).toEqual(receipt);
 
-    const applied = applyInstallSelection([], [], env, new Date('2026-01-02T00:00:00Z'));
-    expect(applied.state.ownership_manifest).toContainEqual(receipt);
-    expect(readInstallState(env)?.ownership_manifest).toEqual(applied.state.ownership_manifest);
+    applyInstallSelection([], [], env, new Date('2026-01-02T00:00:00Z'));
+    expect(ownedPath(env, retired)).toEqual(receipt);
 
-    for (const path of [join(env.HOME!, 'elsewhere', 'repo-harness-handoff'), join(env.HOME!, '.claude', 'skills', 'foreign-skill')]) {
-      writePath(statePath, `${JSON.stringify({ ...state, ownership_manifest: [{ ...receipt, path }] })}\n`);
-      expect(() => readInstallState(env)).toThrow('invalid ownership surface');
-    }
+    // A record outside the root of its host, or on a path that no install surface names, is never read as owned; both are reported.
+    const elsewhere = join(env.HOME!, 'elsewhere', 'repo-harness-handoff');
+    const foreign = join(env.HOME!, '.claude', 'skills', 'foreign-skill');
+    seedPathRecords(env, { [pathRecordKey(env, elsewhere)]: receipt, [pathRecordKey(env, foreign)]: receipt });
+    expect(readPathRecordSet(env)).toEqual({ records: {}, outside: [pathRecordKey(env, elsewhere)], unsupported: [pathRecordKey(env, foreign)] });
   }));
 
   for (const plugins of ['platform', undefined] as const) {
@@ -612,13 +610,11 @@ describe('install selection', () => {
 
     const applied = applyInstallSelection(['strategy-memory'], ['strategy-memory'], env, new Date('2026-01-01T00:00:00Z'));
     for (const copy of copies) {
-      expect(applied.state.ownership_manifest.find(({ path }) => path === copy)).toMatchObject({
-        owner: 'strategy-memory',
-        type: 'directory-copy',
-        managed_marker: '.repo-harness-owner.json:owner=repo-harness;surface=command-facade',
-      });
+      // The record's proof is the marker's content hash: the tree hash without the marker.
+      const marker = JSON.parse(readFileSync(join(copy, '.repo-harness-owner.json'), 'utf-8'));
+      expect(ownedPath(env, copy)).toMatchObject({ owner: 'strategy-memory', kind: 'created', committed: { type: 'directory', sha256: marker.content_hash } });
     }
-    expect(readInstallState(env)?.ownership_manifest).toEqual(applied.state.ownership_manifest);
+    expect(readInstallState(env)).toEqual(applied.state);
 
     const [unchanged, edited] = copies;
     writeFileSync(join(edited!, 'SKILL.md'), '# user edit\n');
@@ -626,7 +622,7 @@ describe('install selection', () => {
     expect(uninstall.status).toBe('partial');
     expect(existsSync(unchanged!)).toBe(false);
     expect(readFileSync(join(edited!, 'SKILL.md'), 'utf-8')).toBe('# user edit\n');
-    expect(readInstallState(env)?.ownership_manifest.some(({ path }) => path === edited)).toBe(true);
+    expect(ownedPath(env, edited!)).not.toBeNull();
   }));
 
   for (const linkedRoot of [false, true]) {
@@ -770,7 +766,7 @@ describe('install selection', () => {
     const { state } = applyInstallSelection(['mcp'], ['mcp'], env);
     const status = installStateStatus(state, env);
     expect(enabledPlugins(state)).toEqual(['mcp']);
-    expect(state.ownership_manifest.every(({ owner }) => owner === 'core')).toBe(true);
+    expect(records(env).every(({ owner }) => owner === 'core')).toBe(true);
     expect(status.probes.mcp).toBeUndefined();
     expect(status.drift.status).toBe('consistent');
   }));
@@ -861,23 +857,19 @@ describe('install selection', () => {
       new Date('2026-08-21T00:00:00.000Z'),
       transaction,
     ).state;
-    for (const path of receiptPaths) {
-      expect(installed.ownership_manifest.some((surface) => (
-        surface.path === path && surface.owner === 'strategy-memory'
-      ))).toBe(true);
-    }
+    for (const path of receiptPaths) expect(ownedPath(env, path)?.owner).toBe('strategy-memory');
     expect(installStateStatus(installed, env).drift.status).toBe('consistent');
 
     writeFileSync(join(env.HOME!, '.agents', 'skills', 'obsidian-cli', 'SKILL.md'), '# drift\n');
     expect(installStateStatus(installed, env).drift.surface_drift)
-      .toContain(join(env.HOME!, '.agents', 'skills', 'obsidian-cli'));
+      .toContain(pathRecordKey(env, join(env.HOME!, '.agents', 'skills', 'obsidian-cli')));
 
     rollbackInstallHostTransaction(transaction);
     for (const path of receiptPaths) expect(existsSync(path)).toBe(false);
     expect(readInstallState(env)).toBeNull();
   }));
 
-  test('managed Obsidian refresh recaptures the changed tree hash in the existing install-state receipt', () => withHome((env) => {
+  test('managed Obsidian refresh recaptures the changed tree hash in the existing path record', () => withHome((env) => {
     writeManagedHostSurfaces(env, ['strategy-memory']);
     const staging = join(env.HOME!, '.agents', 'skills', 'obsidian-cli');
     const projected = join(env.HOME!, '.codex', 'skills', 'obsidian-cli');
@@ -886,18 +878,18 @@ describe('install selection', () => {
     writePath(join(staging, 'SKILL.md'), '# old\n');
     mkdirSync(join(projected, '..'), { recursive: true });
     symlinkSync(staging, projected, 'dir');
-    const initial = applyInstallSelection(['strategy-memory'], ['strategy-memory'], env, new Date('2026-08-21T00:00:00.000Z'), first).state;
+    applyInstallSelection(['strategy-memory'], ['strategy-memory'], env, new Date('2026-08-21T00:00:00.000Z'), first);
     commitInstallHostTransaction(first);
-    const before = initial.ownership_manifest.find((surface) => surface.path === staging)?.content_hash;
+    const before = ownedPath(env, staging)?.committed;
     expect(before).toBeDefined();
 
     const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
     writeFileSync(join(staging, 'SKILL.md'), '# refreshed\n');
     const refreshed = applyInstallSelection(['strategy-memory'], ['strategy-memory'], env, new Date('2026-08-21T00:01:00.000Z'), second).state;
     commitInstallHostTransaction(second);
-    const after = refreshed.ownership_manifest.find((surface) => surface.path === staging)?.content_hash;
-    expect(after).toBeDefined();
-    expect(after).not.toBe(before);
+    const after = ownedPath(env, staging)?.committed;
+    expect(after).toEqual({ type: 'directory', sha256: hashManagedTree(staging) });
+    expect(after).not.toEqual(before);
     expect(installStateStatus(refreshed, env).drift.status).toBe('consistent');
   }));
 
@@ -1126,7 +1118,7 @@ describe('install selection', () => {
       expect(readdirSync(piRoot).sort(), row.name).toEqual(row.entries);
       expect(readFileSync(join(piRoot, 'herdr', 'SKILL.md'), 'utf-8'), row.name).toContain(row.pi ? 'new manual' : 'old manual');
       // The strict reader accepts the state. The earlier Herdr copy keeps rh's marker, so a pi selection records it too.
-      const recorded = readInstallState(env)!.ownership_manifest.filter(surface => surface.path.startsWith(`${piRoot}/`));
+      const recorded = records(env).filter(surface => surface.path.startsWith(`${pathRecordKey(env, piRoot)}/`));
       expect(recorded.map(surface => `${surface.owner}:${basename(surface.path)}`), row.name)
         .toEqual(row.pi ? row.entries.map(name => `pi:${name}`) : []);
     });
@@ -1156,8 +1148,8 @@ describe('install selection', () => {
       const install = rh(...CORE_INSTALL);
       expect(install.status, `${install.stdout}\n${install.stderr}`).toBe(0);
       const herdr = ['.agents', '.claude', '.codex'].filter(root => earlierCopy || root !== '.agents').map(root => join(home, root, 'skills', 'herdr'));
-      expect(readInstallState(env)!.ownership_manifest.filter(surface => surface.path.endsWith('/herdr')).map(({ owner, path, type }) => ({ owner, path, type })), `earlier copy: ${earlierCopy}`)
-        .toEqual(herdr.map(path => ({ owner: 'core', path, type: 'directory-copy' })));
+      expect(records(env).filter(surface => surface.path.endsWith('/herdr')).map(({ owner, path, committed }) => ({ owner, path, committed })), `earlier copy: ${earlierCopy}`)
+        .toEqual(herdr.map(path => ({ owner: 'core', path: pathRecordKey(env, path), committed: { type: 'directory', proof: 'herdr-skill-marker' } })));
       const uninstall = rh('uninstall');
       expect(uninstall.status, `${uninstall.stdout}\n${uninstall.stderr}`).toBe(0);
       expect(JSON.parse(uninstall.stdout).lines.at(-1)).toBe('[uninstall] complete');
@@ -1181,7 +1173,7 @@ describe('install selection', () => {
       const before = readdirSync(user, { recursive: true }).map(String).sort();
       const install = rh(...CORE_INSTALL);
       expect(install.status, `${row.name}\n${install.stdout}\n${install.stderr}`).toBe(0);
-      expect(readInstallState(env)!.ownership_manifest.map(surface => surface.path), row.name).not.toContain(user);
+      expect(ownedPath(env, user), row.name).toBeNull();
       rh('uninstall');
       expect(readdirSync(user, { recursive: true }).map(String).sort(), row.name).toEqual(before);
     });
@@ -1276,24 +1268,24 @@ describe('install selection', () => {
         'repo-harness-cross-review': { source: 'repo-harness' },
         'user-skill': { source: 'user/repo' },
       } }, null, 2)}\n`);
-      const all = applyInstallSelection('all', ALL_PLUGINS, env, new Date('2026-01-01T00:00:00Z'), first);
-      commitInstallHostTransaction(first);
-      const archctx = join(env.HOME!, '.bun', 'bin', 'archctx');
-      expect(all.state.ownership_manifest.find(surface => surface.path === archctx), name).toMatchObject({ owner: 'architecture', type: 'symlink' });
-      const owners = new Set(all.state.ownership_manifest.map(({ owner }) => owner));
-      for (const owner of ['core', ...HOST_FILE_PLUGINS]) expect(owners.has(owner as PluginId), owner).toBe(true);
-      const sections = all.state.ownership_manifest.filter(({ managed_marker }) => managed_marker === 'codegraph-config-projection').map(({ path }) => path);
-      // The host configuration files are in the host-config ledger, not in the manifest.
-      expect(sections, name).toEqual([]);
       if (legacyManifest) {
-        const statePath = installStateFixturePath(env);
-        const recorded = JSON.parse(readFileSync(statePath, 'utf-8'));
-        recorded.ownership_manifest.push({
+        // An earlier version recorded its Codex table as a section record of a protocol 3 manifest; the entry migration moves it to the gate.
+        writePath(installStateFixturePath(env), JSON.stringify({ protocol: 3, ...versions(ALL_PLUGINS), selection: 'all', transaction_id: 'legacy', applied_at: '2026-01-01T00:00:00Z', previous: null, ownership_manifest: [{
           owner: 'architecture', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only', path: codexConfig, type: 'managed-file',
           content_hash: `sha256:${createHash('sha256').update(codexTable.trim()).digest('hex')}`, managed_marker: 'codegraph-config-projection', symlink_target: null,
-        });
-        writeFileSync(statePath, `${JSON.stringify(recorded, null, 2)}\n`);
+        }] }));
+        migrateInstallState(env);
       }
+      applyInstallSelection('all', ALL_PLUGINS, env, new Date('2026-01-01T00:00:00Z'), first);
+      commitInstallHostTransaction(first);
+      const archctx = join(env.HOME!, '.bun', 'bin', 'archctx');
+      expect(ownedPath(env, archctx), name).toMatchObject({ owner: 'architecture', committed: { type: 'symlink' } });
+      const allRecords = records(env);
+      const owners = new Set(allRecords.map(({ owner }) => owner));
+      for (const owner of ['core', ...HOST_FILE_PLUGINS]) expect(owners.has(owner as PluginId), owner).toBe(true);
+      // The host configuration files are in the gate's file records, never whole-path records.
+      const configFiles = [codexConfig, claudeJson, claudeSettings, join(env.HOME!, '.codex', 'hooks.json')];
+      expect(configFiles.filter(path => ownedPath(env, path) !== null), name).toEqual([]);
 
       const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
       const removed = prepareInstallSelectionSwitch(keep, env);
@@ -1303,15 +1295,13 @@ describe('install selection', () => {
 
       const state = readInstallState(env)!;
       expect(state.selection, name).toEqual(keep);
-      expect(state.ownership_manifest.filter(({ owner }) => !ownerEnabled(owner, keep)), name).toEqual([]);
+      expect(records(env).filter(({ owner }) => !ownerEnabled(owner as SurfaceOwner, keep)), name).toEqual([]);
       // A shared configuration file is never owned as a whole file.
-      expect(state.ownership_manifest.filter(({ path, managed_marker }) => (
-        [codexConfig, claudeJson, claudeSettings, join(env.HOME!, '.codex', 'hooks.json')].includes(path) && managed_marker === 'transaction-created-file'
-      )), name).toEqual([]);
-      const droppedSurfaces = all.state.ownership_manifest.filter(({ owner }) => !ownerEnabled(owner, keep));
+      expect(configFiles.filter(path => ownedPath(env, path) !== null), name).toEqual([]);
+      const droppedSurfaces = allRecords.filter(({ owner }) => !ownerEnabled(owner as SurfaceOwner, keep));
       expect([...new Set(removed)].sort(), name).toEqual([...new Set(droppedSurfaces.map(({ path }) => path))].sort());
       for (const surface of droppedSurfaces) expect(existsSync(surface.path), `${name}: ${surface.path}`).toBe(false);
-      for (const { path } of all.state.ownership_manifest.filter(({ owner }) => ownerEnabled(owner, keep))) expect(existsSync(path), `${name}: ${path}`).toBe(true);
+      for (const { path } of allRecords.filter(({ owner }) => ownerEnabled(owner as SurfaceOwner, keep))) expect(existsSync(path), `${name}: ${path}`).toBe(true);
       // An owned section goes with architecture; a user's section stays.
       for (const path of [claudeJson, claudeSettings]) expect(hasCodegraph(path), `${name}: ${path}`).toBe(keep.includes('architecture') || userSections === true);
       // The Codex table follows the same rule, through the host-config gate; its removal gives back the user's bytes.
@@ -1326,23 +1316,29 @@ describe('install selection', () => {
     });
   }, 60_000);
 
-  test('a selection switch rejects ownership paths outside canonical managed surfaces', () => withHome((env) => {
-    const external = join(env.HOME!, 'user-owned.txt');
+  test('a selection switch skips and reports a path record outside its host root or on no install surface, and keeps the user files', () => withHome((env) => {
     const content = 'must survive';
-    writeFileSync(external, content);
-    writePath(installStateFixturePath(env), `${JSON.stringify(seededState(ALL_PLUGINS, 'all', [{
-      owner: 'core',
-      authority: 'repo-harness-install-transaction',
-      removal: 'managed-surfaces-only',
-      path: external,
-      type: 'managed-file',
-      content_hash: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-      managed_marker: 'transaction-created-file',
-      symlink_target: null,
-    }]), null, 2)}\n`);
+    const external = join(env.HOME!, 'user-owned.txt');
+    const personal = join(env.HOME!, '.codex', 'rules', 'personal.md');
+    const foreign = join(env.HOME!, '.claude', 'skills', 'foreign-skill');
+    for (const path of [external, personal, join(foreign, 'SKILL.md')]) writePath(path, content);
+    writePath(installStateFixturePath(env), `${JSON.stringify(seededState(ALL_PLUGINS, 'all'), null, 2)}\n`);
+    const record = (host: 'claude' | 'codex', committed: PathRecord['committed']): PathRecord => ({ owner: 'product', host, kind: 'created', baseline: { state: 'unknown' }, committed });
+    const file = { type: 'file', sha256: `sha256:${createHash('sha256').update(content).digest('hex')}` } as const;
+    seedPathRecords(env, {
+      [pathRecordKey(env, external)]: record('claude', file),
+      [pathRecordKey(env, personal)]: record('codex', file),
+      [pathRecordKey(env, foreign)]: record('claude', { type: 'directory', sha256: hashManagedTree(foreign) }),
+    });
 
-    expect(() => prepareInstallSelectionSwitch([], env)).toThrow('invalid ownership surface');
-    expect(readFileSync(external, 'utf-8')).toBe(content);
+    const status = installStateStatus(readInstallState(env)!, env);
+    expect({ outside: status.ownership_outside_root, unsupported: [...status.ownership_unsupported].sort() })
+      .toEqual({ outside: [pathRecordKey(env, external)], unsupported: [pathRecordKey(env, foreign), pathRecordKey(env, personal)].sort() });
+    expect(prepareInstallSelectionSwitch([], env)).toEqual([]);
+    // The next record write drops the records and keeps the files.
+    recordVerifiedAgentFleetOwnership(env);
+    expect(readPathRecordSet(env)).toEqual({ records: {}, outside: [], unsupported: [] });
+    expect([external, personal, join(foreign, 'SKILL.md')].map((path) => readFileSync(path, 'utf-8'))).toEqual([content, content, content]);
     // The hook selection read uses the read model only; the installer commands own the surface check (#1680).
     expect(readRecordedSelection(env)).toEqual({ status: 'recorded', selection: 'all', plugins: ALL_PLUGINS });
   }));
@@ -1404,14 +1400,14 @@ describe('install selection', () => {
       const seededPi = row.recorded.includes('pi') ? [installPiPackage(source, true, seedEnv)] : [];
       expect(seededPi.every(step => step.created), row.name).toBe(true);
       applyInstallSelection(row.selection, row.recorded, seedEnv, new Date('2026-11-01T00:00:00Z'), undefined,
-        { additionalSurfaces: seededPi.map(step => piPackageSurface(step.source)) });
+        { additionalPiPackages: seededPi.map(step => step.source) });
       const statePath = installProfileStatePath(env);
       const before = readFileSync(statePath);
       const ran: PluginId[][] = [];
       const result = runTransactionalRuntimeRefresh({ env, cwd: env.HOME, target: 'both', ...row.options }, (options): GlobalRuntimeResult => {
         ran.push([...options.plugins!]);
         const pi = installPiPackage(source, options.plugins!.includes('pi'), options.env!);
-        return { exitCode: 0, steps: [{ ...pi, ...(pi.created ? { owned_surface: piPackageSurface(pi.source) } : {}) }], lines: [], stdout: '', stderr: '' };
+        return { exitCode: 0, steps: [{ ...pi, ...(pi.created ? { owned_pi_package: pi.source } : {}) }], lines: [], stdout: '', stderr: '' };
       });
       expect({ name: row.name, exitCode: result.exitCode, ran }).toEqual({ name: row.name, exitCode: 0, ran: [[...row.ran]] });
       for (const line of row.lines ?? []) expect(result.lines.some(entry => entry.startsWith(line)), `${row.name}: ${line}`).toBe(true);
@@ -1424,9 +1420,78 @@ describe('install selection', () => {
       const state = readInstallState(env)!;
       expect([state.selection, enabledPlugins(state), enabledPlugins(state.previous!)], row.name)
         .toEqual([row.selection, [...row.committed], [...row.recorded]]);
-      expect(state.ownership_manifest.filter(({ type }) => type === 'pi-package'), row.name).toEqual([piPackageSurface(source)]);
+      expect(state.pi_packages, row.name).toEqual([source]);
     });
   }, 60_000);
+
+  /**
+   * A release before #2896 on disk: a protocol 3 state whose manifest owns a skill copy, a fleet file and the Pi
+   * package, a fleet receipt for a file that the user keeps, and a protocol 1 ledger with a file, a fragment and
+   * a directory record. The update parent migrates it; the stub hands off to a candidate, so nothing else writes.
+   */
+  function withProtocol3Release(run: (fixture: { env: NodeJS.ProcessEnv; skill: string; fleet: string; kept: string; manifest: (paths: readonly string[]) => object[]; update: () => void }) => void): void {
+    withHome((base) => {
+      const env = withPi(base);
+      const home = env.HOME!;
+      const skill = join(home, '.codex', 'skills', 'repo-harness-cross-review');
+      const fleet = join(home, '.codex', 'agents', 'explorer.toml');
+      const kept = join(home, '.claude', 'agents', 'explorer.md');
+      writePath(join(skill, 'SKILL.md'), '# skill\n');
+      writePath(fleet, '# fleet\n');
+      writePath(kept, '# kept by the user\n');
+      const surface = (path: string) => ({ owner: path === skill ? 'cross-review' : 'core', path, authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
+        type: path === skill ? 'directory-copy' : 'managed-file', managed_marker: path === skill ? 'transaction-created-directory' : 'transaction-created-file',
+        content_hash: path === skill ? hashManagedTree(path) : `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`, symlink_target: null });
+      const piPackage = { owner: 'pi', path: bunGlobalPackageRoot(env)!, authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only',
+        type: 'pi-package', managed_marker: 'pi-package-source', content_hash: null, symlink_target: null };
+      const manifest = (paths: readonly string[]) => [...paths.map(surface), piPackage];
+      writePath(installStateFixturePath(env), JSON.stringify({ protocol: 3, ...versions(ALL_WITH_PI), selection: 'all', transaction_id: 'released', applied_at: '2026-11-01T00:00:00.000Z',
+        previous: null, ownership_manifest: manifest([skill, fleet]) }));
+      writePath(join(home, '.repo-harness', 'agent-fleet-user-managed.json'), JSON.stringify({ protocol: 1, authority: 'user-managed-agent-fleet', accepted_at: '2026-11-01T00:00:00.000Z',
+        files: [{ path: kept, sha256: `sha256:${createHash('sha256').update(readFileSync(kept)).digest('hex')}` }] }));
+      const tool = join(home, '.tool', 'tool.toml');
+      openHostConfigGate({ env }).apply([{ path: tool, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'add', strategy: tomlFragment, value: '[mcp_servers.codegraph]\ncommand = "cg"\n' }] }]);
+      const { paths: _paths, ...textRecords } = JSON.parse(readFileSync(hostConfigPaths(env).ledger, 'utf-8'));
+      writePath(hostConfigPaths(env).ledger, JSON.stringify({ ...textRecords, protocol: 1 }));
+      const update = () => expect(runTransactionalRuntimeRefresh({ env, cwd: home, target: 'both' },
+        (): GlobalRuntimeResult => ({ exitCode: 0, steps: [{ step: CANDIDATE_RECONCILE_STEP, status: 'ok' }], lines: [], stdout: '', stderr: '' })).exitCode).toBe(0);
+      run({ env, skill, fleet, kept, manifest, update });
+    });
+  }
+
+  test('the update entry moves a protocol 3 manifest, a fleet receipt and a protocol 1 ledger into path records once', () => withProtocol3Release(({ env, skill, fleet, kept, update }) => {
+    const ledgerPath = hostConfigPaths(env).ledger;
+    const textRecords = JSON.parse(readFileSync(ledgerPath, 'utf-8'));
+    expect(() => readPathRecords(env)).toThrow('run: rh update');
+    update();
+    const created = (path: string, owner: string, committed: object) => ({ owner, host: path === kept ? 'claude' : 'codex', kind: 'created', baseline: { state: 'unknown' }, committed });
+    const sha = (path: string) => `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
+    expect(readPathRecords(env) as object).toEqual({
+      [pathRecordKey(env, fleet)]: created(fleet, 'core', { type: 'file', sha256: sha(fleet) }),
+      [pathRecordKey(env, kept)]: { ...created(kept, 'core', { type: 'file', sha256: sha(kept) }), kind: 'user_managed' },
+      [pathRecordKey(env, skill)]: created(skill, 'cross-review', { type: 'directory', sha256: hashManagedTree(skill) }),
+    });
+    const { paths: _paths, ...migrated } = JSON.parse(readFileSync(ledgerPath, 'utf-8'));
+    expect(migrated).toEqual({ ...textRecords, protocol: 2 });
+    const state = JSON.parse(readFileSync(installStateFixturePath(env), 'utf-8'));
+    expect([state.protocol, state.pi_packages, 'ownership_manifest' in state]).toEqual([4, [bunGlobalPackageRoot(env)], false]);
+    expect(existsSync(join(env.HOME!, '.repo-harness', 'agent-fleet-user-managed.json'))).toBe(false);
+
+    const bytes = [ledgerPath, installStateFixturePath(env)].map(path => readFileSync(path));
+    update();
+    expect([ledgerPath, installStateFixturePath(env)].map(path => readFileSync(path))).toEqual(bytes);
+  }), 60_000);
+
+  test('a protocol 3 state restored over the ledger migrates again: its manifest replaces the created records, and user-managed records stay', () => withProtocol3Release(({ env, skill, fleet, kept, manifest, update }) => {
+    update();
+    const migrated = readPathRecords(env);
+    // A released parent's rollback restores its protocol 3 state, whose manifest no longer holds the fleet file, and not the ledger.
+    writePath(installStateFixturePath(env), JSON.stringify({ protocol: 3, ...versions(ALL_WITH_PI), selection: 'all', transaction_id: 'restored', applied_at: '2026-11-02T00:00:00.000Z',
+      previous: null, ownership_manifest: manifest([skill]) }));
+    update();
+    expect(readPathRecords(env)).toEqual({ [pathRecordKey(env, kept)]: migrated[pathRecordKey(env, kept)], [pathRecordKey(env, skill)]: migrated[pathRecordKey(env, skill)] });
+    expect(ownedPath(env, fleet)).toBeNull();
+  }), 60_000);
 
   test('after a candidate handoff the parent leaves the install state to the candidate', () => withHome((env) => {
     writeManagedHostSurfaces(env, ALL_PLUGINS);
@@ -1471,22 +1536,27 @@ describe('install selection', () => {
     expect(runFleet('--accept-user-managed').status).toBe(0);
 
     const pristine = join(home, '.codex', 'agents', 'deep-worker.toml');
-    const unverified = applyInstallSelection('all', ALL_PLUGINS, env).state;
-    expect(unverified.ownership_manifest.some(({ path }) => path === pristine)).toBe(false);
+    applyInstallSelection('all', ALL_PLUGINS, env);
+    expect(ownedPath(env, pristine)).toBeNull();
+    expect(ownedPath(env, custom)?.kind).toBe('user_managed');
 
-    // Update paths record into the existing manifest without re-applying the selection.
+    // Update paths record into the existing records without re-applying the selection.
     recordVerifiedAgentFleetOwnership(env);
     const recorded = readInstallState(env)!;
-    const recordedPaths = recorded.ownership_manifest.map(({ path }) => path);
-    expect(recordedPaths).toContain(pristine);
-    expect(recordedPaths).toContain(join(home, '.claude', 'agents', 'explorer.md'));
-    expect(recordedPaths).not.toContain(custom);
+    const created = () => records(env).filter(({ kind }) => kind === 'created').map(({ path }) => path).sort();
+    const recordedPaths = created();
+    expect(recordedPaths).toContain(pathRecordKey(env, pristine));
+    expect(recordedPaths).toContain(pathRecordKey(env, join(home, '.claude', 'agents', 'explorer.md')));
+    expect(recordedPaths).not.toContain(pathRecordKey(env, custom));
+    expect(ownedPath(env, custom)?.kind).toBe('user_managed');
     expect(installStateStatus(recorded, env).drift.status).toBe('consistent');
 
-    // Bootstrap has no prior manifest, so applyInstallSelection adopts directly.
+    // Bootstrap has no state and no created record, so applyInstallSelection adopts directly.
     rmSync(installStateFixturePath(env));
-    const adopted = applyInstallSelection('all', ALL_PLUGINS, env, new Date(), undefined, { agentFleetVerified: true }).state;
-    expect(adopted.ownership_manifest.map(({ path }) => path).sort()).toEqual(recordedPaths.sort());
+    seedPathRecords(env, Object.fromEntries(Object.entries(readPathRecords(env)).filter(([, record]) => record.kind === 'user_managed')));
+    applyInstallSelection('all', ALL_PLUGINS, env, new Date(), undefined, { agentFleetVerified: true });
+    expect(created()).toEqual(recordedPaths);
+    expect(ownedPath(env, custom)?.kind).toBe('user_managed');
 
     for (const agent of MANAGED_AGENTS) {
       const source = join(packageRoot, 'agents', 'fleet', `${agent}.md`);
@@ -1517,8 +1587,8 @@ describe('install selection', () => {
     }
     const all = applyInstallSelection('all', ALL_PLUGINS, env, new Date('2026-01-01T00:00:00Z'), first);
     commitInstallHostTransaction(first);
-    expect(all.state.ownership_manifest.find(({ path }) => path.endsWith('/.codex/skills/obsidian-markdown'))?.owner).toBe('strategy-memory');
-    expect(all.state.ownership_manifest.some(({ path }) => path.includes('/reverse-skill-router'))).toBe(false);
+    expect(ownedPath(env, join(env.HOME!, '.codex', 'skills', 'obsidian-markdown'))?.owner).toBe('strategy-memory');
+    expect(records(env).some(({ path }) => path.includes('/reverse-skill-router'))).toBe(false);
 
     const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
     prepareInstallSelectionSwitch([], env);
@@ -1658,14 +1728,14 @@ describe('skill projection ownership', () => {
         expect(syncCrossReviewSkills(selectedSource, 'both', activeEnv).every(step => step.status === 'ok')).toBe(true);
         const state = applyInstallSelection('all', ALL_PLUGINS, activeEnv, new Date(), transaction).state;
         for (const dest of paths) {
-          const record = state.ownership_manifest.find(surface => surface.path === dest);
-          expect(record?.type).toBe(linked ? 'symlink' : 'directory-copy');
+          const record = ownedPath(activeEnv, dest);
+          expect(record?.committed.type).toBe(linked ? 'symlink' : 'directory');
           expect(lstatSync(dest).isSymbolicLink()).toBe(linked);
           if (linked) expect(readlinkSync(dest)).toBe(join(packageRoot, 'assets/skills/repo-harness-cross-review'));
           expect(readFileSync(join(dest, 'SKILL.md'), 'utf8')).toBe(readFileSync(join(packageRoot, 'assets/skills/repo-harness-cross-review/SKILL.md'), 'utf8'));
         }
         expect(installStateStatus(state, activeEnv).drift.surface_drift).toEqual([]);
-        expect(readInstallState(activeEnv)?.ownership_manifest).toEqual(state.ownership_manifest);
+        expect(readInstallState(activeEnv)).toEqual(state);
       } finally { commitInstallHostTransaction(transaction); }
     }));
   }
@@ -1687,7 +1757,7 @@ describe('skill projection ownership', () => {
     for (const dest of paths) rmSync(dest, { recursive: true, force: true });
     mkdirSync(join(env.HOME!, '.pi/agent/skills'), { recursive: true });
     expect(syncCrossReviewSkills(packageRoot, 'both', env).every(step => step.status === 'ok')).toBe(true);
-    const first = applyInstallSelection('all', ALL_WITH_PI, env, new Date(), undefined, { additionalSurfaces: [piPackageSurface(pi.source)] }).state;
+    const first = applyInstallSelection('all', ALL_WITH_PI, env, new Date(), undefined, { additionalPiPackages: [pi.source] }).state;
     const links = paths.map(dest => ({ inode: lstatSync(dest).ino, target: readlinkSync(dest) }));
     const steps = syncCrossReviewSkills(packageRoot, 'both', env);
     expect(steps).toHaveLength(paths.length);
@@ -1696,7 +1766,7 @@ describe('skill projection ownership', () => {
     for (const [index, dest] of paths.entries()) {
       expect(lstatSync(dest).ino).toBe(links[index]!.inode);
       expect(readlinkSync(dest)).toBe(links[index]!.target);
-      expect(second.ownership_manifest.find(surface => surface.path === dest)?.type).toBe('symlink');
+      expect(ownedPath(env, dest)?.committed.type).toBe('symlink');
     }
     expect(second.transaction_id).toBe(first.transaction_id);
     expect(installStateStatus(second, env).drift.surface_drift).toEqual([]);
@@ -1726,7 +1796,7 @@ describe('skill projection ownership', () => {
       expect(steps).toHaveLength(paths.length);
       expect(steps.every(step => step.status === 'ok' && step.detail === 'already present')).toBe(true);
       const state = applyInstallSelection('all', ALL_PLUGINS, env, new Date(), transaction).state;
-      expect(state.ownership_manifest.filter(surface => paths.includes(surface.path))).toEqual([]);
+      expect(paths.filter(path => ownedPath(env, path) !== null)).toEqual([]);
       for (const { dest, bundled } of links) expect(readlinkSync(dest)).toBe(bundled);
     } finally { commitInstallHostTransaction(transaction); }
   }));
@@ -1748,28 +1818,21 @@ describe('skill projection ownership', () => {
             symlinkSync(source, dest);
           }
         }
-        const state = applyInstallSelection('all', ALL_PLUGINS, env, new Date(), transaction).state;
-        for (const dest of paths) {
-          expect(state.ownership_manifest.find(surface => surface.path === dest)?.owner).toBe('core');
-        }
+        applyInstallSelection('all', ALL_PLUGINS, env, new Date(), transaction);
+        for (const dest of paths) expect(ownedPath(env, dest)?.owner).toBe('core');
         if (acquisition === 'recorded-under-another-owner') {
-          const ledgerPath = installStateFixturePath(env);
-          const recorded = JSON.parse(readFileSync(ledgerPath, 'utf8'));
-          for (const surface of recorded.ownership_manifest) {
-            if (paths.includes(surface.path)) surface.owner = 'product';
-          }
-          writeFileSync(ledgerPath, JSON.stringify(recorded));
-          const refreshed = applyInstallSelection('all', ALL_PLUGINS, env).state;
-          for (const dest of paths) {
-            expect(refreshed.ownership_manifest.find(surface => surface.path === dest)?.owner).toBe('core');
-          }
+          const keys = new Set(paths.map(path => pathRecordKey(env, path)));
+          seedPathRecords(env, Object.fromEntries(Object.entries(readPathRecords(env))
+            .map(([key, record]) => [key, keys.has(key) ? { ...record, owner: 'product' } : record])));
+          applyInstallSelection('all', ALL_PLUGINS, env);
+          for (const dest of paths) expect(ownedPath(env, dest)?.owner).toBe('core');
         }
         const removed = prepareInstallSelectionSwitch([], env);
-        const core = applyInstallSelection([], [], env).state;
+        applyInstallSelection([], [], env);
         for (const dest of paths) {
-          expect(removed).not.toContain(dest);
+          expect(removed).not.toContain(pathRecordKey(env, dest));
           expect(existsSync(dest)).toBe(true);
-          expect(core.ownership_manifest.find(surface => surface.path === dest)?.owner).toBe('core');
+          expect(ownedPath(env, dest)?.owner).toBe('core');
         }
         for (const name of names) {
           expect(readFileSync(join(env.HOME!, '.agents/skills', name, 'SKILL.md'), 'utf8')).toBe(`# user-staged ${name}\n`);
@@ -1790,13 +1853,13 @@ describe('skill projection ownership', () => {
     const previous = applyInstallSelection('all', ALL_PLUGINS, env, new Date(), transaction).state;
     commitInstallHostTransaction(transaction);
     for (const dest of paths) { rmSync(dest, { recursive: true }); symlinkSync(join(packageRoot, 'assets/skills/repo-harness-cross-review'), dest); }
-    expect(installStateStatus(previous, env).drift.surface_drift).toEqual(expect.arrayContaining(paths));
+    expect(installStateStatus(previous, env).drift.surface_drift).toEqual(expect.arrayContaining(paths.map(path => pathRecordKey(env, path))));
     // The unowned fixture portal would block the checkout sync, which projects its own.
     rmSync(join(env.HOME!, '.claude/skills/repo-harness-herdr-portal'), { recursive: true });
     expect(syncCrossReviewSkills(ROOT, 'both', env).every(step => step.status === 'ok')).toBe(true);
     const state = applyInstallSelection('all', ALL_PLUGINS, env).state;
-    for (const dest of paths) expect(state.ownership_manifest.find(surface => surface.path === dest)?.type).toBe('symlink');
-    expect(state.ownership_manifest.find(surface => surface.path === canonical)?.type).toBe('symlink');
+    for (const dest of paths) expect(ownedPath(env, dest)?.committed.type).toBe('symlink');
+    expect(ownedPath(env, canonical)?.committed.type).toBe('symlink');
     expect(installStateStatus(state, env).drift.surface_drift).toEqual([]);
   }));
 
@@ -1811,16 +1874,14 @@ describe('skill projection ownership', () => {
     }
     const state = applyInstallSelection('all', ALL_PLUGINS, env).state;
     for (const name of ['think', 'hunt', 'check', 'health']) {
-      const record = state.ownership_manifest.find(surface => surface.path === join(env.HOME!, '.codex/skills', name));
-      expect(record?.type).toBe('symlink');
-      expect(record?.symlink_target).toBe(`../../.agents/skills/${name}`);
+      expect(ownedPath(env, join(env.HOME!, '.codex/skills', name))?.committed).toEqual({ type: 'symlink', target: `../../.agents/skills/${name}` });
     }
     expect(installStateStatus(state, env).drift.surface_drift).toEqual([]);
     const dest = join(env.HOME!, '.codex/skills/think');
     rmSync(dest); symlinkSync(join(env.HOME!, '.codex/skills/mermaid'), dest);
-    expect(installStateStatus(state, env).drift.surface_drift).toContain(dest);
-    const refreshed = applyInstallSelection('all', ALL_PLUGINS, env).state;
-    expect(refreshed.ownership_manifest.some(surface => surface.path === dest)).toBe(false);
+    expect(installStateStatus(state, env).drift.surface_drift).toContain(pathRecordKey(env, dest));
+    applyInstallSelection('all', ALL_PLUGINS, env);
+    expect(ownedPath(env, dest)).toBeNull();
     expect(readlinkSync(dest)).toBe(join(env.HOME!, '.codex/skills/mermaid'));
   }));
 });
