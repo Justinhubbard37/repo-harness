@@ -97,7 +97,8 @@
     "v0.31.0",
     "v0.32.0",
     "v0.33.0",
-    "v0.33.1"
+    "v0.33.1",
+    "v0.33.2"
   ],
   "packageScripts": {
     "check:architecture-sync": [
@@ -337,6 +338,9 @@
       "sha256:fb3d8778cfe03aa95a8aafb5295cc3441ec42a8acc16ba943be4095224b798c4",
       "sha256:fd30d8e8c95f5d49710080b4e10b949c2fe5dbbccc6aa489f76fdbc6a60cda81",
       "sha256:fe457138234cbaece11699df62e7df032466f48e18ca6a00ccc530ed7c4e7e12"
+    ],
+    "change-assessment": [
+      "sha256:24140a32ae76ee7ca5b8719dfac4e308e401922ce006c529aecab7e4041af9f3"
     ],
     "changelog-versioning": [
       "sha256:00120466c9e9851e613b7d1511cb95fae0222e5ac3abe6fb456a6c2df48027e1",
