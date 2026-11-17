@@ -748,6 +748,8 @@ darwinTest('generic orchestration collects domain Results, keeps one reviewer fo
   expect(f.calls).toContain('close');
 }, 180_000);
 
+// Intel took 29.4 s on a fast run and reached the final rejection check at
+// the 60 s deadline on a slow run. Budget the three review fixtures (#2983).
 darwinTest('generic review allows explicit same-harness and only preflight-missing fallback; pending launch never replays', async () => {
   const f = reviewFixture(); f.verdict('PASS');
   const result = await runReviewRound({ ...f.options, harness: 'codex' }, f.effects);
@@ -767,7 +769,7 @@ darwinTest('generic review allows explicit same-harness and only preflight-missi
   expect(starts).toBe(2); expect(failed.sent()).toBe(0);
   expect(failed.calls).not.toContain('start:codex:deep-reasoner');
   expect((await closeReview(failed.root, failed.options.authority, true, failed.home, effects)).status).toBe('closed');
-});
+}, 120_000);
 
 darwinTest('generic review unknown owner, explicit missing provider and timeout fail closed without history acceptance', async () => {
   const f = reviewFixture();

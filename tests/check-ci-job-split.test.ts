@@ -787,7 +787,7 @@ describe('single affected verification and daily fallback', () => {
     expect(job['runs-on']).toBe('macos-15-intel');
     expect(job['timeout-minutes']).toBe(10);
     expect(job.strategy).toEqual({ 'fail-fast': false, matrix: { test: [
-      'tests/generic-review.test.ts', 'tests/acceptance-receipt.test.ts tests/herdr-task-lifecycle.test.ts',
+      'tests/generic-review.test.ts', 'tests/acceptance-receipt.test.ts', 'tests/herdr-task-lifecycle.test.ts',
     ] } });
     expect(job['continue-on-error']).toBeUndefined();
     expect(job.steps.every((step: any) => step['continue-on-error'] === undefined)).toBe(true);

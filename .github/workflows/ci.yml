@@ -157,17 +157,17 @@ jobs:
     needs: selection
     if: needs.selection.outputs.mode == 'daily' || (needs.selection.outputs.mode == 'affected' && needs.selection.outputs.native_oar != 'false')
     runs-on: macos-15-intel
-    # Two legs: the wait for a macOS runner, not the test time, set the wall
-    # time (#2242). generic-review alone is about as long as the other three
-    # files together. Each leg gets its own 10-minute budget, and one leg's
-    # failure does not cancel the other leg's evidence (#1296).
+    # Each file gets its own 10-minute budget. On Intel, acceptance-receipt
+    # took 471 s after 106 s of setup, leaving no room for lifecycle (#2983).
+    # A leg's failure must not cancel the other legs' evidence (#1296).
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         test:
           - tests/generic-review.test.ts
-          - tests/acceptance-receipt.test.ts tests/herdr-task-lifecycle.test.ts
+          - tests/acceptance-receipt.test.ts
+          - tests/herdr-task-lifecycle.test.ts
     steps:
       - uses: actions/checkout@v4
         with:
