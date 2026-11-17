@@ -131,6 +131,8 @@ test('update keeps one exact configuration backup for both migrations, skips unc
         if (kind === 'backup-failure') {
           expect(result.exitCode).toBe(1);
           expect(result.steps.at(-1)).toMatchObject({ step: 'migrate seats configuration', status: 'failed' });
+          expect(result.steps.at(-1)?.detail).toContain(backup);
+          expect(result.steps.at(-1)?.detail).toContain('retry');
           expect(readFileSync(path)).toEqual(original);
           expect(lstatSync(backup).isDirectory()).toBe(true);
           continue;
@@ -2263,7 +2265,10 @@ exit 0
         previous: null,
       })}\n`);
       const candidateVersion = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version;
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == "pm" && "\${2:-}" == "view" ]]; then printf '%s\\n' '${JSON.stringify(candidateVersion)}'; exit 0; fi\nif [[ "\${1:-}" == */src/cli/index.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
+      const migrationInput = join(tmp, 'candidate-config.json');
+      const originalConfig = JSON.stringify({ seats: DEFAULT_SEATS_CONFIG, brainRoot: '/retired' });
+      writeFileSync(migrationInput, originalConfig);
+      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == "pm" && "\${2:-}" == "view" ]]; then printf '%s\\n' '${JSON.stringify(candidateVersion)}'; exit 0; fi\nif [[ "\${1:-}" == "add" && "\${2:-}" == "-g" && "\${3:-}" == repo-harness@* ]]; then cp "${migrationInput}" "$HOME/.repo-harness/config.json"; fi\nif [[ "\${1:-}" == */src/cli/index.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
 
       const runUpdate = () => spawnSync(
         process.execPath,
@@ -2296,6 +2301,11 @@ exit 0
       const result = JSON.parse(res.stdout);
       expect(readFileSync(bunLog, 'utf-8')).toContain('pm view repo-harness@latest version --json --no-cache');
       expect(readFileSync(bunLog, 'utf-8')).toContain(`add -g repo-harness@${candidateVersion}`);
+      const backupName = readdirSync(join(home, '.repo-harness')).find(name => name.startsWith('config.json.bak-'));
+      expect(backupName).toBeDefined();
+      const backup = join(home, '.repo-harness', backupName!);
+      expect(readFileSync(backup, 'utf8')).toBe(originalConfig);
+      expect(result.steps.find((step: { step: string }) => step.step === 'reconcile installed candidate runtime').detail).toContain(backup);
       expect(result.steps.find((step: { step: string }) => step.step === 'reconcile installed candidate runtime')).toMatchObject({
         status: 'ok',
         detail: expect.stringContaining('scope=partial'),

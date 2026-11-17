@@ -447,7 +447,7 @@ export function runCandidateRuntimeReconciliation(
     const globalRules = runtime.steps.find(step => step.step === GLOBAL_RULES_REFRESH_STEP);
     if (globalRules) console.error(`[runtime] ${globalRules.status}: ${globalRules.step} - ${globalRules.detail}`);
     // The hc step result carries its PATH hint when the install dir is not on PATH; the retired-command steps carry their notices.
-    for (const name of [HERDR_CORE_STEP, RETIRED_CLI_LINK_STEP, RETIRED_CLI_REFERENCES_STEP]) {
+    for (const name of ['back up global configuration', HERDR_CORE_STEP, RETIRED_CLI_LINK_STEP, RETIRED_CLI_REFERENCES_STEP]) {
       const shown = runtime.steps.find(step => step.step === name);
       if (shown) console.error(`[runtime] ${shown.status}: ${shown.step} - ${shown.detail}`);
     }

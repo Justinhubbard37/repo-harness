@@ -9,8 +9,8 @@ import { architecturePort, isArchitectureUnavailable } from '../../core/architec
 import { globalConfigurationWriter, mutateGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { DEFAULT_SEATS_CONFIG, INTRODUCED_ROUTING_DEFAULTS, ROUTING_CLASSES, SeatsConfigMigrationRequiredError, decodeSeatsConfig } from '../../core/board/seats-settings';
 import { checkSeatRoutingModels, seatsRanges } from '../../effects/board/seats-configuration';
-import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
-import { createFileExclusiveDurably, syncDirectoryDurably } from '../../effects/atomic-append';
+import { chmodSync, closeSync, constants, cpSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { syncDirectoryDurably, writeAllSync } from '../../effects/atomic-append';
 import { renderJsonObjectUpdate } from "../../effects/adoption/standard-plan";
 import { retireUserExcludesBlock, writeRepositoryExcludes } from "../installer/repository-excludes";
 import { sha256Hex } from "../../core/evidence/sha256";
@@ -1916,7 +1916,28 @@ export function runGlobalRuntimeSetup(
     const beforeWrite = (path: string, text: string): void => {
       if (backupPath !== undefined) return;
       const backup = `${path}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}-update`;
-      createFileExclusiveDurably(backup, Buffer.from(text, 'utf8'));
+      let fd: number;
+      try {
+        fd = openSync(backup, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new Error(`Cannot create backup ${backup}: path already exists. Move or remove it and retry the update.`);
+        }
+        throw error;
+      }
+      try {
+        try {
+          writeAllSync(fd, Buffer.from(text, 'utf8'));
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+      } catch (error) {
+        try { unlinkSync(backup); } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], `Cannot remove incomplete backup ${backup}: ${String(cleanupError)}`);
+        }
+        throw error;
+      }
       syncDirectoryDurably(dirname(backup));
       backupPath = backup;
       steps.push({ step: 'back up global configuration', status: 'ok', detail: `Saved the configuration before update migrations to ${backup}.` });
