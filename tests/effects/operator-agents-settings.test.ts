@@ -527,10 +527,16 @@ describe('seat settings contract without transport', () => {
     mkdirSync(join(home, '.repo-harness'));
     writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS, seats: { ...DEFAULT_SEATS_CONFIG, worker } }));
     const env = { HOME: home }, before = readSeatsSettings(env), route = seatsSettingsWriteRoute(env);
-    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, 'zai/glm-5.3', ...['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'].map(m => `magpie/codex/${m}`)]);
+    const addedModels = ['magpie/opencode-go/deepseek-v4.1-flash', 'magpie/group/deepseek-v4.1-flash', 'magpie/zcode/GLM-5.3', 'magpie/zcode/GLM-5.3-Flash'];
+    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, ...addedModels.slice(0, 2), 'zai/glm-5.3', ...addedModels.slice(2), ...['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'].map(m => `magpie/codex/${m}`)]);
     const { revision, ...section } = before.config;
     const saved = await route.decode({ expected_revision: revision, seats: { ...section, advisor: { ...section.advisor, effort: 'medium' } } }, []).execute();
     expect(saved.status).toBe(200);
+    for (const addedModel of addedModels) {
+      const result = await route.decode({ expected_revision: readSeatsSettings(env).config.revision, seats: { ...section, worker: { ...worker, model: addedModel } } }, []).execute();
+      expect(result.status).toBe(200);
+      expect(readSeatsSettings(env).config.worker.model).toBe(addedModel);
+    }
     const gpt = { ...worker, model: 'magpie/codex/gpt-6.1-terra', effort: 'high' };
     expect(() => route.decode({ expected_revision: readSeatsSettings(env).config.revision, seats: { ...section, worker: { ...worker, fleet: ['explorer'] } } }, []))
       .toThrow('seats_settings_request_invalid');
