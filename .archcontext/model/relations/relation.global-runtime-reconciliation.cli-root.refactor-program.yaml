@@ -3,4 +3,4 @@ id: relation.global-runtime-reconciliation.cli-root.refactor-program
 kind: calls
 source: component.global-runtime-reconciliation.cli-root
 target: capability.runtime-harness.refactor-program
-intent: "Register the refactor command"
+intent: "Register the rh arch refactor command"

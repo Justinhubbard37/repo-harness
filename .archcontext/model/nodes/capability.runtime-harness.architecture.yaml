@@ -8,11 +8,11 @@ summary: "The Architecture plugin: the package-local archctx closure, the archit
 responsibilities:
   - "Run the pinned package-local archctx on a trusted Node runtime, and apply and check the architecture projection."
   - "Provide the ownership, display, notice, runtime, setup and CodeGraph doctor ports that core reads; the roots register them only when the install selection includes architecture."
-  - "Own the architecture-projection and architecture-debt commands, the archctx part of the managed runtime readback and the global architecture projection configuration."
+  - "Own the rh arch projection and rh arch debt commands, the archctx part of the managed runtime readback and the global architecture projection configuration."
   - Resolve path ownership under capability_source archcontext and keep the resolve answer cache of a worktree.
   - "Own the state-boundaries Check, the test capability projection Check and the standalone capability resolver projection."
   - Own the repo-harness-architecture and repo-harness-archimap skills.
-  - "Own the module command and the read contracts of the committed model: the module views, the module review prompt and the model reader."
+  - "Own the rh arch module command and the read contracts of the committed model: the module views, the module review prompt and the model reader."
 source:
   include:
     - src/effects/architecture/**

@@ -111,8 +111,8 @@ sequenceDiagram
 1. **只读检查不改任何东西。** `--check` 路径不运行 `bun install`、`codegraph init`、`codegraph sync` 或 `codegraph install`。`tests/cli/codegraph-resolver.test.ts:45` 用一个在 init、sync、install 上 exit 2 的假 codegraph 钉住这一点，并在 `:105-107` 断言日志里没有这些命令。
 2. **探测只有一个权威。** readiness 判定来自 `scripts/check-agent-tooling.sh` 的 `detectCodeGraph`（`:1689`）。`src/cli/tools/codegraph.ts` 是它的消费者和格式化层。在 TS 侧重新实现"找二进制、读配置"会形成第二个权威。
 3. **本地依赖优先于全局。** 解析顺序是 `REPO_HARNESS_CODEGRAPH_LOCAL_BIN`、平台包 `node_modules/@colbymchenry/codegraph-<platform>-<arch>/bin/codegraph`、`node_modules/.bin/codegraph`，最后是 PATH 上的 `codegraph`（`check-agent-tooling.sh:1605-1625`）。`REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL=0` 和 `REPO_HARNESS_CODEGRAPH_ALLOW_GLOBAL=0` 可以关掉其中一侧。
-4. **host 配置只在显式命令下写入。** 只有 `tools configure codegraph` 和 `init --configure-codegraph-mcp` 改写 host MCP 配置。`install` 和默认 ensure/check 路径不写。
-5. **全局配置写入受 host 锁和归属回执保护。** `--location global` 时，`tools configure` 在 runtime host 事务锁内运行（`src/cli/commands/tools.ts:155-158`）。`configureCodegraph` 再通过 `withConfigurationMutation` 记录配置归属（`src/cli/tools/codegraph.ts:716-721`）。卸载因此能精确还原（`46405ed9`，complete user configuration uninstall）。
+4. **host 配置只在显式命令下写入。** 只有 `rh arch codegraph configure` 和 `init --configure-codegraph-mcp` 改写 host MCP 配置。`install` 和默认 ensure/check 路径不写。
+5. **全局配置写入受 host 锁和归属回执保护。** `--location global` 时，`rh arch codegraph configure` 在 runtime host 事务锁内运行（`src/cli/commands/tools.ts#buildCodegraphCommand`）。`configureCodegraph` 再通过 `withConfigurationMutation` 记录配置归属（`src/cli/tools/codegraph.ts:716-721`）。卸载因此能精确还原（`46405ed9`，complete user configuration uninstall）。
 6. **仓库内可执行文件的拒绝只在调用方要求时生效。** 以 `allowRepoLocalBin: false` 构造的适配器剔除 PATH 中位于仓库内的目录，并拒绝仓库内的显式 bin 覆盖（`src/cli/tools/codegraph-reader.ts:94-109`）。唯一这样构造适配器的 MCP 路径是 coding runtime，#1354 删除了它。保留的 reader 工具用 `src/cli/mcp/general-repo-access.ts:196` 的默认适配器，`allowRepoLocalBin` 默认为 true（`src/cli/tools/codegraph-reader.ts:224`）。#1354 之前 planner 与 executor 也走这个默认值。
 7. **下游生成仓库默认使用全局 MCP。** 本仓库把 CodeGraph 作为 devDependency 是自托管特例。下游仓库只有在本地 policy 显式选择时才使用 vendored 依赖。
 
@@ -122,7 +122,7 @@ sequenceDiagram
 | --- | --- |
 | `scripts/ensure-codegraph.sh` 只是 16 行的 bun shim，逻辑在 TS 侧 | hooks、文档和 `check-agent-tooling.sh` 的 `ensure_command` 可以引用一个稳定路径，逻辑仍可测试。代价是多一层 `exec`，并且 bun 缺失时直接失败。 |
 | host 配置原地修改（TOML 正则、JSON 解析后序列化），保留其余内容和尾随换行（`codegraph.ts:310`、`:344`、`:435`） | 用户文件的其他部分不变。代价是 TOML section 正则对非常规排版脆弱。找不到 section 时结果是 `skipped`，不猜测。 |
-| `configureCodegraph` 把失败写进 `actions[]`，不抛异常 | 它同时处理 codex 和 claude 两个目标。一个 host 失败不吞掉另一个 host 的结果。代价是调用方必须检查每个 action 的 `status`（`tools.ts:160`）。 |
+| `configureCodegraph` 把失败写进 `actions[]`，不抛异常 | 它同时处理 codex 和 claude 两个目标。一个 host 失败不吞掉另一个 host 的结果。代价是调用方必须检查每个 action 的 `status`（`src/cli/commands/tools.ts#buildCodegraphCommand`）。 |
 | 状态探测用短超时（`codegraph status .` 1.5 秒，`check-agent-tooling.sh:1711`） | 只读检查快，并且有上限。代价是索引变大后状态可能退化为 `unavailable`，整体 status 变成 `partial`。 |
 
 ### 3.3 10x 规模下先垮的点
@@ -133,7 +133,7 @@ sequenceDiagram
 
 ### 3.4 归属与开放问题（2026-10-11）
 
-- `src/cli/commands/tools.ts` 原本没有归属，现在加入本 capability。它的子命令只有 `tools ensure codegraph` 和 `tools configure codegraph`（`tools.ts:108-165`）。
+- `src/cli/commands/tools.ts` 原本没有归属，现在加入本 capability。它的子命令只有 `rh arch codegraph ensure` 和 `rh arch codegraph configure`（`src/cli/commands/tools.ts#buildCodegraphCommand`）。
 - `src/cli/tools/codegraph-reader.ts` 只归本 capability。#1847 把它移出 `src/cli/mcp/`，重复归属随之结束。
 - 本 capability 的 include 包含它自己的投影文档 `docs/architecture/modules/verification/codegraph-readiness.md`。其他 capability 不拥有自己的投影页。归属提议 §1f 建议删除这一条。按用户决定，收窄推迟。
 - 开放问题：`src/cli/mcp/general-repo-access.ts:196` 用默认参数构造适配器，`allowRepoLocalBin` 默认为 true（`src/cli/tools/codegraph-reader.ts:224`）。planner 与 executor 的 reader 工具走这条路径，所以被索引的仓库可以提供 codegraph 可执行文件。

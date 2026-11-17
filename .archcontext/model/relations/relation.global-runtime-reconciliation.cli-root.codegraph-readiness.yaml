@@ -3,4 +3,4 @@ id: relation.global-runtime-reconciliation.cli-root.codegraph-readiness
 kind: calls
 source: component.global-runtime-reconciliation.cli-root
 target: capability.verification.codegraph-readiness
-intent: "Register the tools command and pass the CodeGraph doctor checks and setup steps to core commands"
+intent: "Register the rh arch codegraph command and pass the CodeGraph doctor checks and setup steps to core commands"

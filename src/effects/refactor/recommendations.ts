@@ -54,9 +54,9 @@ export interface RefactorDiscovery {
 }
 export interface RefactorRecommendationOptions {
   env?: NodeJS.ProcessEnv;
-  /** Raises the CodeGraph import read cap. `refactor decide` must pass the same value. */
+  /** Raises the CodeGraph import read cap. `rh arch refactor decide` must pass the same value. */
   importNodeLimit?: number;
-  /** Per archctx call limit in ms; the default is 120000. `refactor decide` takes the same option. */
+  /** Per archctx call limit in ms; the default is 120000. `rh arch refactor decide` takes the same option. */
   timeoutMs?: number;
   discover?: (repoRoot: string, provider: ArchctxProviderOptions, importNodeLimit?: number, timeoutMs?: number) => RefactorDiscovery;
 }
@@ -132,8 +132,8 @@ export function observeRefactorRecommendations(repoRoot: string, options: Refact
   }
 }
 
-/** A new CodeGraph index cannot fix this: only a larger read limit can. `refactor decide` needs the same limit as the scan. */
+/** A new CodeGraph index cannot fix this: only a larger read limit can. `rh arch refactor decide` needs the same limit as the scan. */
 function importLimitRemedy(facts: RefactorScanResultV1['snapshot']['codeFacts']): string {
   const counted = typeof facts.importNodeCount === 'number' ? `${facts.importNodeCount} import nodes` : 'more import nodes';
-  return `the index holds ${counted}, more than the scan import node limit of ${facts.edgeLimit ?? 'unknown'}; run \`refactor recommendations --import-node-limit <n>\` with a larger limit, and pass the same limit to \`refactor decide\``;
+  return `the index holds ${counted}, more than the scan import node limit of ${facts.edgeLimit ?? 'unknown'}; run \`rh arch refactor recommendations --import-node-limit <n>\` with a larger limit, and pass the same limit to \`rh arch refactor decide\``;
 }

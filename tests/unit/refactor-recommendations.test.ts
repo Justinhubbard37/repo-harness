@@ -150,7 +150,8 @@ test('the import node limit reaches the scan and its remedy is a larger limit, n
   expect(limited).toMatchObject({ status: 'proof_required', candidates: [] });
   expect(limited.message).toContain('6145 import nodes');
   expect(limited.message).toContain('limit of 100');
-  expect(limited.message).toContain('--import-node-limit');
+  expect(limited.message).toContain('`rh arch refactor recommendations --import-node-limit <n>`');
+  expect(limited.message).toContain('`rh arch refactor decide`');
   expect(limited.message).not.toContain('codegraph init');
   observeRefactorRecommendations(f.repo, { env: f.env, discover: (_root, _provider, limit) => { limits.push(limit); return discovery(); } });
   expect(limits).toEqual([100, undefined]);
