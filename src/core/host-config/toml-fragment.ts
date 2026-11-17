@@ -22,6 +22,12 @@ function parse(content: string): TomlTable {
   return Bun.TOML.parse(content) as TomlTable;
 }
 
+/** Bun's TOML parse error names no file, so the caller that read the file adds its path and the remedy. */
+export function namingTomlFile(path: string, error: unknown): unknown {
+  if (!(error instanceof SyntaxError)) return error;
+  return new HostConfigError('host_config_unparseable_target', `${path}: ${error.message}. Fix the TOML in that file, then run the command again`, { cause: error });
+}
+
 /** The parsed value at the selector, and the parsed file without it. */
 function split(content: string, selector: CodexConfigSelector): { value: unknown; rest: TomlTable } {
   const rest = parse(content);

@@ -11,6 +11,7 @@ import { join, relative } from 'path';
 import { spawnSync } from 'child_process';
 import { runUserUninstall } from '../../src/cli/installer/uninstall';
 import { configurationReceiptPath } from '../../src/cli/installer/configuration-ownership';
+import { migrateCodexConfigRecords } from '../../src/cli/installer/codex-config-migration';
 import { requestUserInputFragment } from '../../src/cli/installer/targets/codex';
 import { tomlFragment } from '../../src/core/host-config/toml-fragment';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
@@ -49,13 +50,36 @@ test('restores original config, preserves siblings and archives, dry run is byte
  expect(runUserUninstall({target:'both',env}).status).toBe('complete');
  expect({receipt:existsSync(configurationReceiptPath(home)),files:ledger(home).files}).toEqual({receipt:false,files:{}});
 }));
-test('an interrupted Codex change in the receipt fails closed with its recovery step', () => fixture((home,env)=>{
- const path=join(home,'.codex/config.toml');
- put(home,'.codex/config.toml','default_mode_request_user_input = true\n');
- put(home,'.repo-harness/configuration-restore.json',JSON.stringify({protocol:1,changes:[],pending:{id:'x',before:[{path,selector:'default_mode_request_user_input',value:null}]}}));
- const before=tree(home);const result=runUserUninstall({target:'both',env});
- expect(result.status).toBe('partial');expect(result.lines.join('\n')).toContain('from its value in the "pending" block');expect(tree(home)).toBe(before);
-}));
+test('a legacy receipt table at the end of a file with no final newline goes only with a whole-file revert, which gives back the bytes of the old uninstall', () => {
+ // The old receipt recorded the table without the line break before it, so that line break may be the user's.
+ const rows=[{before:null,lineBreak:'\n',edited:false},{before:'[mcp_servers.codegraph]\ncommand = "user"',lineBreak:'\n',edited:false},{before:null,lineBreak:'\r\n',edited:false},{before:null,lineBreak:'\n',edited:true}] as const;
+ for (const row of rows) fixture((home,env)=>{
+  const name=JSON.stringify(row);
+  const path=join(home,'.codex/config.toml');const installed='[mcp_servers.codegraph]\ncommand = "codegraph"';
+  put(home,'.codex/config.toml',`model = "user"${row.lineBreak}${installed}`);
+  put(home,'.repo-harness/configuration-restore.json',JSON.stringify({protocol:1,changes:[{path,selector:'mcp_servers.codegraph',before:row.before,installed,active:true}]}));
+  if(row.edited){migrateCodexConfigRecords(env);put(home,'.codex/config.toml',`model = "edited"${row.lineBreak}${installed}`);}
+  const result=runUserUninstall({target:'codex',env});
+  expect(result.status,`${name} ${result.lines.join('\n')}`).toBe(row.edited?'partial':'complete');
+  expect(readFileSync(path,'utf8'),name).toBe(row.edited?`model = "edited"${row.lineBreak}${installed}`:`model = "user"${row.lineBreak}${row.before??''}`);
+  if(!row.edited) expect(ledger(home).files,name).toEqual({});
+ });
+});
+test('an interrupted change in the receipt fails closed with its recovery step only for the target that owns its file', () => {
+ // A pending entry of the other host stays in the receipt, byte for byte, and does not block this target.
+ const rows=[{pending:['codex'],target:'both',status:'partial'},{pending:['codex'],target:'claude',status:'complete'},{pending:['claude'],target:'codex',status:'complete'},{pending:['codex','claude'],target:'claude',status:'partial'}] as const;
+ for(const row of rows) fixture((home,env)=>{
+  const name=JSON.stringify(row);
+  const paths={codex:join(home,'.codex/config.toml'),claude:join(home,'.claude/settings.json')};
+  const selectors={codex:'default_mode_request_user_input',claude:'allowedTools.codegraph'};
+  put(home,'.codex/config.toml','default_mode_request_user_input = true\n');
+  put(home,'.repo-harness/configuration-restore.json',JSON.stringify({protocol:1,changes:[],pending:{id:'x',before:row.pending.map((host)=>({path:paths[host],selector:selectors[host],value:null}))}}));
+  const before=tree(home);const receipt=readFileSync(configurationReceiptPath(home),'utf8');const result=runUserUninstall({target:row.target,env});
+  expect(result.status,name).toBe(row.status);
+  expect(result.lines.join('\n').includes('from its value in the "pending" block'),name).toBe(row.status==='partial');
+  if(row.status==='partial') expect(tree(home),name).toBe(before); else expect(readFileSync(configurationReceiptPath(home),'utf8'),name).toBe(receipt);
+ });
+});
 test('user edits are preserved and return partial, with the ledger record retained', () => fixture((home,env)=>{
  rhWritesInputMode(env,join(home,'.codex/config.toml'));
  put(home,'.codex/config.toml','default_mode_request_user_input = false\n');

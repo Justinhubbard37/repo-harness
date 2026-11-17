@@ -1316,6 +1316,17 @@ describe('install selection', () => {
     });
   }, 60_000);
 
+  test('a switch that drops architecture names config.toml and its remedy when the file is not valid TOML', () => withHome((env) => {
+    const config = join(env.HOME!, '.codex', 'config.toml');
+    writePath(installStateFixturePath(env), `${JSON.stringify(seededState(ALL_PLUGINS, 'all'), null, 2)}\n`);
+    writePath(config, 'model = "user"\n');
+    openHostConfigGate({ env }).apply([{ path: config, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'add', strategy: tomlFragment, value: '[mcp_servers.codegraph]\ncommand = "cg"\n' }] }]);
+    writePath(config, 'model = [\n');
+    expect(() => prepareInstallSelectionSwitch(ALL_PLUGINS.filter(id => id !== 'architecture'), env, join(env.HOME!, 'transaction')))
+      .toThrow(new RegExp(`^${config.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}: TOML Parse error: .+\\. Fix the TOML in that file, then run the command again$`));
+    expect(readFileSync(config, 'utf-8')).toBe('model = [\n');
+  }));
+
   test('a selection switch skips and reports a path record outside its host root or on no install surface, and keeps the user files', () => withHome((env) => {
     const content = 'must survive';
     const external = join(env.HOME!, 'user-owned.txt');

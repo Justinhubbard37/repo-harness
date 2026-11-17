@@ -145,26 +145,31 @@ test('the JSON migration adopts a tagged entry with the old writer shape, keeps 
   });
 });
 
-test('a migrated CodeGraph override keeps its kind and its backup across a refresh, so the profile switch restores the user table', () => {
-  for (const external of [false, true]) fixture((home, env) => {
+test('a migrated or directly selected CodeGraph override keeps its kind and its backup across a refresh, so the profile switch restores the user table', () => {
+  for (const [selected, external] of [[false, false], [false, true], [true, false]]) fixture((home, env) => {
     const path = join(home, '.codex/config.toml');
     const userTable = '[mcp_servers.codegraph]\ncommand = "user-codegraph"\n';
     const rhTable = '[mcp_servers.codegraph]\ncommand = "codegraph"\n';
-    mkdirSync(join(home, '.codex'));
-    writeFileSync(path, `model = "user"\n${rhTable}`);
-    mkdirSync(join(home, '.repo-harness'));
-    writeFileSync(configurationReceiptPath(home), JSON.stringify({ protocol: 1, changes: [{ path, selector: 'mcp_servers.codegraph', before: userTable, installed: rhTable, active: true }] }));
-    migrateCodexConfigRecords(env);
     const gate = openHostConfigGate({ env });
+    mkdirSync(join(home, '.codex'));
+    if (selected) {
+      writeFileSync(path, `model = "user"\n${userTable}`);
+      gate.apply([{ path, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'override', selected: true, strategy: tomlFragment, value: rhTable }] }]);
+    } else {
+      writeFileSync(path, `model = "user"\n${rhTable}`);
+      mkdirSync(join(home, '.repo-harness'));
+      writeFileSync(configurationReceiptPath(home), JSON.stringify({ protocol: 1, changes: [{ path, selector: 'mcp_servers.codegraph', before: userTable, installed: rhTable, active: true }] }));
+      migrateCodexConfigRecords(env);
+    }
     const adopted = JSON.parse(readFileSync(join(home, '.repo-harness/config/ledger.json'), 'utf8')).files[realpathSync(path)].backup;
     if (external) writeFileSync(path, readFileSync(path, 'utf8').replace('model = "user"', 'model = "edited"'));
     // A later CodeGraph configure refreshes rh's table with changed text.
     gate.apply([{ path, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'refresh', strategy: tomlFragment, value: '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve"]\n' }] }]);
     const ledger = JSON.parse(readFileSync(join(home, '.repo-harness/config/ledger.json'), 'utf8'));
-    expect([ledger.fragments[0].kind, ledger.files[realpathSync(path)].backup, ledger.files[realpathSync(path)].external_backup !== undefined], String(external)).toEqual(['override', adopted, external]);
+    expect([ledger.fragments[0].kind, ledger.files[realpathSync(path)].backup, ledger.files[realpathSync(path)].external_backup !== undefined], `selected ${selected}, external ${external}`).toEqual(['override', adopted, external]);
     // The profile switch that drops architecture reverts the architecture fragments.
     gate.revert([path], { owner: 'architecture' });
-    expect(readFileSync(path, 'utf8'), String(external)).toBe(`model = "${external ? 'edited' : 'user'}"\n${userTable}`);
+    expect(readFileSync(path, 'utf8'), `selected ${selected}, external ${external}`).toBe(`model = "${external ? 'edited' : 'user'}"\n${userTable}`);
   });
 });
 
@@ -212,13 +217,40 @@ test('the JSON migration fails closed on an interrupted receipt entry and on an 
   expect(readFileSync(settings, 'utf8')).toBe(original);
 }));
 
-test('refuses a configuration receipt with the retired Codex MCP selector', () => fixture((home, env) => {
+test('refuses a configuration receipt with the retired Codex MCP selector or a recorded text that is not valid TOML', () => {
+  for (const [selector, installed] of [['mcp_servers.repo_harness', null], ['mcp_servers.codegraph', 'x = [']]) fixture((home, env) => {
+    mkdirSync(join(home, '.repo-harness'));
+    writeFileSync(configurationReceiptPath(home), JSON.stringify({
+      protocol: 1,
+      changes: [{ path: join(home, '.codex/config.toml'), selector, before: null, installed, active: true }],
+    }));
+    expect(() => planCodexConfigMigration(env), String(selector)).toThrow(`invalid Codex configuration receipt entry: ${configurationReceiptPath(home)}`);
+  });
+});
+
+test('a legacy receipt table at the end of a file with no final newline keeps every byte under the architecture revert', () => {
+  // The old receipt does not prove that rh wrote the line break before the table.
+  for (const [lineBreak, before] of [['\n', null], ['\r\n', null], ['\n', '[mcp_servers.codegraph]\ncommand = "user"\n']]) fixture((home, env) => {
+    const path = join(home, '.codex/config.toml');
+    const installed = '[mcp_servers.codegraph]\ncommand = "codegraph"';
+    const content = `model = "user"${lineBreak}${installed}`;
+    mkdirSync(join(home, '.codex'));
+    writeFileSync(path, content);
+    mkdirSync(join(home, '.repo-harness'));
+    writeFileSync(configurationReceiptPath(home), JSON.stringify({ protocol: 1, changes: [{ path, selector: 'mcp_servers.codegraph', before, installed, active: true }] }));
+    migrateCodexConfigRecords(env);
+    openHostConfigGate({ env }).revert([path], { owner: 'architecture' });
+    expect(readFileSync(path, 'utf8'), JSON.stringify([lineBreak, before])).toBe(content);
+  });
+});
+
+test('the Codex migration names config.toml and its remedy when the file is not valid TOML', () => fixture((home, env) => {
+  const path = join(home, '.codex/config.toml');
+  mkdirSync(join(home, '.codex'));
+  writeFileSync(path, 'model = [\n');
   mkdirSync(join(home, '.repo-harness'));
-  writeFileSync(configurationReceiptPath(home), JSON.stringify({
-    protocol: 1,
-    changes: [{ path: join(home, '.codex/config.toml'), selector: 'mcp_servers.repo_harness', before: null, installed: null, active: true }],
-  }));
-  expect(() => planCodexConfigMigration(env)).toThrow(`invalid Codex configuration receipt entry: ${configurationReceiptPath(home)}`);
+  writeFileSync(configurationReceiptPath(home), JSON.stringify({ protocol: 1, changes: [{ path, selector: 'mcp_servers.codegraph', before: null, installed: '[mcp_servers.codegraph]\ncommand = "cg"\n', active: true }] }));
+  expect(() => planCodexConfigMigration(env)).toThrow(new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}: TOML Parse error: .+\\. Fix the TOML in that file, then run the command again$`));
 }));
 test('refuses a receipt path symlink before the migration writes anything', () => fixture((home, env) => {
   mkdirSync(join(home, '.repo-harness'));

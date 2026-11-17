@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { sha256Prefixed } from '../../core/evidence/sha256';
-import { CODEX_CONFIG_FRAGMENTS, codexConfigFragment, isCodexConfigSelector, tomlFragment, type CodexConfigSelector } from '../../core/host-config/toml-fragment';
+import { CODEX_CONFIG_FRAGMENTS, codexConfigFragment, isCodexConfigSelector, namingTomlFile, tomlFragment, type CodexConfigSelector } from '../../core/host-config/toml-fragment';
 import { HostConfigError } from '../../core/host-config/types';
 import { openHostConfigGate, type AdoptedFragment, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
 import { configurationReceiptPath, hostConfigurationRoot, readRawConfigurationReceipt, saveConfigurationReceipt, type ConfigurationReceipt } from './configuration-ownership';
@@ -34,7 +34,12 @@ function invalid(message: string): HostConfigError {
 }
 
 function isFragmentText(value: unknown, selector: CodexConfigSelector): value is string | null {
-  return value === null || (typeof value === 'string' && codexConfigFragment(value, selector) === value);
+  if (value === null) return true;
+  // Recorded text that does not parse is an invalid receipt entry, not an error of config.toml.
+  try { return typeof value === 'string' && codexConfigFragment(value, selector) === value; } catch (error) {
+    if (error instanceof SyntaxError || error instanceof HostConfigError) return false;
+    throw error;
+  }
 }
 
 /** The receipt's entries of the Codex file as written, and the receipt without them for the JSON reader to validate. */
@@ -102,9 +107,17 @@ function adoption(content: string, fragments: readonly OldFragment[], manifestCh
   let externalChange = manifestChanged;
   const adopted: AdoptedFragment[] = [];
   for (const fragment of fragments) {
-    if (codexConfigFragment(content, fragment.selector) === fragment.installed) backup = setFragment(backup, fragment.selector, fragment.before);
-    else externalChange = true;
-    adopted.push({ owner: CODEX_CONFIG_FRAGMENTS[fragment.selector], selector: fragment.selector, kind: fragment.before === null ? 'add' : 'override', inserted: fragment.installed ?? '' });
+    const current = codexConfigFragment(content, fragment.selector);
+    let inserted = fragment.installed ?? '';
+    if (current === fragment.installed) backup = setFragment(backup, fragment.selector, fragment.before);
+    else if (inserted !== '' && (current === `\n${inserted}` || current === `\r\n${inserted}`) && backup.endsWith(inserted)) {
+      // A table that ends the file with no final newline: the span holds the line break before its header,
+      // and the old receipt does not prove that rh wrote it. The record keeps no text, so no fragment edit
+      // takes the table out; only a whole-file revert of the unchanged file does, to the old uninstall's bytes.
+      backup = backup.slice(0, -inserted.length) + (fragment.before ?? '');
+      inserted = '';
+    } else externalChange = true;
+    adopted.push({ owner: CODEX_CONFIG_FRAGMENTS[fragment.selector], selector: fragment.selector, kind: fragment.before === null ? 'add' : 'override', inserted });
   }
   // The old uninstall removed a file that was blank after its restore: rh created it.
   return { backup: backup.trim() ? Buffer.from(backup, 'utf8') : null, fragments: adopted, externalChange };
@@ -124,7 +137,7 @@ export function planCodexConfigMigration(env: NodeJS.ProcessEnv): CodexConfigMig
     const fromManifest = manifest.fragments.filter((fragment) => !receipt.fragments.some((entry) => entry.selector === fragment.selector));
     return { path, adoption: adoption(content, [...receipt.fragments, ...fromManifest], manifest.changed), receipt: receipt.rest };
   } catch (error) {
-    if (!(error instanceof HostConfigError)) throw error;
+    if (!(error instanceof HostConfigError)) throw namingTomlFile(path, error);
     throw new HostConfigError(error.code, `${path}: ${error.message}`, { cause: error });
   }
 }

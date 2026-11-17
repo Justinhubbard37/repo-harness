@@ -5,6 +5,7 @@ import { bunGlobalPackageRoot, expectedSkillProjections, skillLinkMatches } from
 import { configurationReceiptPath } from './configuration-ownership';
 import { ensurePrivateDirectory, hostConfigPaths, putVault, resolveHostPath } from '../../effects/host-config/store';
 import { openHostConfigGate, planPathRevert, rollbackHostConfigTransaction } from '../../effects/host-config/gate';
+import { namingTomlFile } from '../../core/host-config/toml-fragment';
 import { migrateCodexConfigRecords } from './codex-config-migration';
 import { migrateJsonConfigRecords } from './json-config-migration';
 import { pathRecordHost, pathRecordIsCurrent, pathRecordKey, pathRecordsDigest, readPathRecords, readPathRecordSet, registerSupportedPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
@@ -1021,8 +1022,10 @@ function removeRetiredOwnedSurfaces(
  */
 function removeArchitectureHostFragments(env: NodeJS.ProcessEnv): void {
   const home = env.HOME ?? homedir();
-  const files = [join(home, '.codex', 'config.toml'), join(home, '.claude.json'), join(home, '.claude', 'settings.json')];
-  openHostConfigGate({ env }).revert(files, { owner: 'architecture' });
+  const codexConfig = join(home, '.codex', 'config.toml');
+  const files = [codexConfig, join(home, '.claude.json'), join(home, '.claude', 'settings.json')];
+  // Of these files only config.toml goes through Bun's TOML parser.
+  try { openHostConfigGate({ env }).revert(files, { owner: 'architecture' }); } catch (error) { throw namingTomlFile(codexConfig, error); }
 }
 
 export function prepareInstallSelectionSwitch(
