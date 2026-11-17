@@ -1165,8 +1165,11 @@ writer-owned worktree. Do not replace a shared daemon or index other workspaces.
 Inspect facts again if archctx reports a stale index after the base moves; the
 command does not invent a repair.
 
-Run `follow` under the operator's process supervisor after setup. The
-supervisor must restart the process after a non-zero exit (launchd: `KeepAlive`
+Run `rh arch projection publish follow` under the operator's process supervisor
+after setup. From the source checkout, use
+`bun <checkout>/src/cli/index.ts arch projection publish follow` as the supervisor
+argv. A fatal setup error, such as an incompatible Node runtime, exits non-zero.
+The supervisor must restart the process after a non-zero exit (launchd: `KeepAlive`
 with `SuccessfulExit` false). Inspect each JSON run result and `status`: `busy` means another writer holds the lock;
 `human-action-required` needs the reported model, proof or ownership decision;
 `failed` carries the upstream error. Do not interpret a live process as
