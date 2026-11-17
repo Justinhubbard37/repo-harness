@@ -119,6 +119,8 @@ export const en = {
   'rules.reconcile.step.linked': 'linked',
   'rules.reconcile.step.present': 'present',
   'rules.reconcile.notFiled': 'No issue exists for this candidate. You can submit again.',
+  'rules.reconcile.failed.title': 'Reconcile did not finish',
+  'rules.reconcile.failed.uncertain': 'The console got no confirmed answer. Reconcile again.',
   'rules.refused.unknown': '{code}: {message}',
 } as const;
 
@@ -242,5 +244,7 @@ export const zh: Readonly<Record<keyof typeof en, string>> = {
   'rules.reconcile.step.linked': '已关联',
   'rules.reconcile.step.present': '已存在',
   'rules.reconcile.notFiled': '这个候选没有 issue，可以重新提交。',
+  'rules.reconcile.failed.title': '核对没有完成',
+  'rules.reconcile.failed.uncertain': '控制台没有收到确认。再核对一次。',
   'rules.refused.unknown': '{code}：{message}',
 };

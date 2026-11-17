@@ -135,10 +135,17 @@ const KNOWN_CODES: readonly string[] = ['candidate_open', 'ledger_changed', 'led
 const uncertain = (failure: OperatorWriteFailure) => failure.state === 'unreachable' || failure.state === 'unreadable'
   || (failure.state === 'refused' && failure.error.code === 'reconcile_required');
 
+type Refused = Extract<OperatorWriteFailure, { readonly state: 'refused' }>;
+
+/**
+ * `failed` keeps the Submit answer that left the attempt unresolved. A failed
+ * Reconcile adds its answer beside it; only a filed issue or
+ * `candidate_not_filed` resolves the attempt.
+ */
 type Outcome =
   | { readonly kind: 'none' }
   | { readonly kind: 'filed'; readonly promotion: RulesPromotionV1; readonly via: 'submit' | 'reconcile' }
-  | { readonly kind: 'failed'; readonly failure: OperatorWriteFailure }
+  | { readonly kind: 'failed'; readonly failure: OperatorWriteFailure; readonly reconcile?: OperatorWriteFailure }
   | { readonly kind: 'not_filed' };
 
 function canSubmitAfter(outcome: Outcome): boolean {
@@ -146,33 +153,52 @@ function canSubmitAfter(outcome: Outcome): boolean {
   return outcome.kind === 'failed' && outcome.failure.state === 'refused' && RESUBMIT_CODES.includes(outcome.failure.error.code);
 }
 
-function canReconcileAfter(outcome: Outcome): boolean {
-  if (outcome.kind !== 'failed' || outcome.failure.state === 'reload_required') return false;
-  if (outcome.failure.state !== 'refused' || uncertain(outcome.failure)) return true;
-  const { code } = outcome.failure.error;
+/** Reconcile stays while the Submit attempt it recovers is unresolved. */
+function canReconcileAfter(attempt: OperatorWriteFailure): boolean {
+  if (attempt.state === 'reload_required') return false;
+  if (attempt.state !== 'refused' || uncertain(attempt)) return true;
+  const { code } = attempt.error;
   return !RESUBMIT_CODES.includes(code) && !REFRESH_CODES.includes(code);
+}
+
+/** The typed code of a refusal, its guidance and the issue when the answer names one. */
+function RefusalDetail({ refused, guidance, noIssue, repository, t }: {
+  readonly refused: Refused; readonly guidance?: string; readonly noIssue: boolean; readonly repository: string | null; readonly t: OperatorTranslate;
+}) {
+  const { error, issue } = refused;
+  const known = KNOWN_CODES.includes(error.code);
+  return (
+    <span className="flex flex-col gap-1">
+      <span className="font-mono text-xs">{error.code}</span>
+      {guidance !== undefined ? <span>{guidance}</span> : <>
+        <span>{known ? t(`rules.submit.refused.code.${error.code}` as OperatorMessageKey) : t('rules.refused.unknown', { code: error.code, message: error.message })}</span>
+        {!known && <span>{error.next_action}</span>}
+      </>}
+      {issue !== undefined && <span data-rules-refusal-issue={issue}>{repository === null ? t('rules.submit.refused.issueExists', { issue })
+        : <ExternalLink href={`https://github.com/${repository}/issues/${issue}`}>{t('rules.submit.refused.issueExists', { issue })}</ExternalLink>}</span>}
+      {issue === undefined && noIssue && <span>{t('rules.submit.refused.noIssue')}</span>}
+    </span>
+  );
 }
 
 function FailureBanner({ failure, repository, t }: { readonly failure: OperatorWriteFailure; readonly repository: string | null; readonly t: OperatorTranslate }) {
   if (failure.state === 'reload_required') return <WriteReloadBanner t={t} />;
   if (uncertain(failure)) {
-    return <Banner variant="alert" icon={<WarningIcon />} data-rules-submit="uncertain" title={t('rules.submit.uncertain.title')} description={t('rules.submit.uncertain.body')} />;
+    const body = t('rules.submit.uncertain.body');
+    return <Banner variant="alert" icon={<WarningIcon />} data-rules-submit="uncertain" data-rules-refusal={failure.state === 'refused' ? failure.error.code : undefined} title={t('rules.submit.uncertain.title')}
+      description={failure.state === 'refused' ? <RefusalDetail refused={failure} guidance={body} noIssue={false} repository={repository} t={t} /> : body} />;
   }
-  const { error, issue } = failure as Extract<OperatorWriteFailure, { readonly state: 'refused' }>;
-  const known = KNOWN_CODES.includes(error.code);
-  const proved = RESUBMIT_CODES.includes(error.code) || REFRESH_CODES.includes(error.code);
-  return (
-    <Banner variant="error" data-rules-submit="refused" data-rules-refusal={error.code} title={t('rules.submit.refused.title')} description={
-      <span className="flex flex-col gap-1">
-        <span className="font-mono text-xs">{error.code}</span>
-        <span>{known ? t(`rules.submit.refused.code.${error.code}` as OperatorMessageKey) : t('rules.refused.unknown', { code: error.code, message: error.message })}</span>
-        {!known && <span>{error.next_action}</span>}
-        {issue !== undefined && <span data-rules-refusal-issue={issue}>{repository === null ? t('rules.submit.refused.issueExists', { issue })
-          : <ExternalLink href={`https://github.com/${repository}/issues/${issue}`}>{t('rules.submit.refused.issueExists', { issue })}</ExternalLink>}</span>}
-        {issue === undefined && proved && <span>{t('rules.submit.refused.noIssue')}</span>}
-      </span>
-    } />
-  );
+  const refused = failure as Refused;
+  const proved = RESUBMIT_CODES.includes(refused.error.code) || REFRESH_CODES.includes(refused.error.code);
+  return <Banner variant="error" data-rules-submit="refused" data-rules-refusal={refused.error.code} title={t('rules.submit.refused.title')}
+    description={<RefusalDetail refused={refused} noIssue={proved} repository={repository} t={t} />} />;
+}
+
+/** A failed Reconcile proves nothing about the Submit attempt, so it never says that no issue exists. */
+function ReconcileFailureBanner({ failure, repository, t }: { readonly failure: OperatorWriteFailure; readonly repository: string | null; readonly t: OperatorTranslate }) {
+  if (failure.state === 'reload_required') return <WriteReloadBanner t={t} />;
+  return <Banner variant="error" data-rules-reconcile-failed={failure.state === 'refused' ? failure.error.code : failure.state} title={t('rules.reconcile.failed.title')}
+    description={failure.state === 'refused' ? <RefusalDetail refused={failure} noIssue={false} repository={repository} t={t} /> : t('rules.reconcile.failed.uncertain')} />;
 }
 
 function OrchestrationMissing({ snapshot, t }: { readonly snapshot: RulesSnapshotV1; readonly t: OperatorTranslate }) {
@@ -311,7 +337,7 @@ function ActionPanel({ snapshot, action, theme, githubRepositoryId, ports, advis
   const submitShown = writable && !open && canSubmitAfter(outcome) && prompts.length > 0;
   const submitReady = busy === null && prompt !== null && isRulesPromptText(prompt);
 
-  const run = (kind: 'submit' | 'reconcile', send: () => Promise<RulesPromotionWrite>) => {
+  const run = (kind: 'submit' | 'reconcile', send: () => Promise<RulesPromotionWrite>, failed: (failure: OperatorWriteFailure) => Outcome) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(kind);
@@ -320,18 +346,17 @@ function ActionPanel({ snapshot, action, theme, githubRepositoryId, ports, advis
       inFlight.current = false;
       setBusy(null);
       onBusy(false);
-      if (answer.state === 'ok') setOutcome({ kind: 'filed', promotion: answer.value, via: kind });
-      else if (kind === 'reconcile' && answer.state === 'refused' && answer.error.code === 'candidate_not_filed') setOutcome({ kind: 'not_filed' });
-      else setOutcome({ kind: 'failed', failure: answer });
+      setOutcome(answer.state === 'ok' ? { kind: 'filed', promotion: answer.value, via: kind } : failed(answer));
     });
   };
   const submit = () => {
     if (!submitShown || !submitReady || route === null || prompt === null) return;
     run('submit', () => ports.writePromote(snapshot.repository_id, {
       request_id: crypto.randomUUID(), candidate_id: action.candidate_id, route, ledger_blob: ledger.blob, prompt,
-    }));
+    }), failure => ({ kind: 'failed', failure }));
   };
-  const reconcile = () => run('reconcile', () => ports.writeReconcile(snapshot.repository_id, { request_id: crypto.randomUUID(), candidate_id: action.candidate_id }));
+  const reconcile = (attempt: OperatorWriteFailure) => run('reconcile', () => ports.writeReconcile(snapshot.repository_id, { request_id: crypto.randomUUID(), candidate_id: action.candidate_id }),
+    failure => (failure.state === 'refused' && failure.error.code === 'candidate_not_filed' ? { kind: 'not_filed' } : { kind: 'failed', failure: attempt, reconcile: failure }));
 
   const filed = outcome.kind === 'filed' ? outcome.promotion : null;
   return (
@@ -360,12 +385,13 @@ function ActionPanel({ snapshot, action, theme, githubRepositoryId, ports, advis
       </>}
       {snapshot.herdr === 'unavailable' && !open && <p className="text-sm text-kumo-default" data-rules-herdr-unavailable>{t('rules.herdr.unavailable.body')}</p>}
       {outcome.kind === 'failed' && <FailureBanner failure={outcome.failure} repository={githubRepository(snapshot)} t={t} />}
+      {outcome.kind === 'failed' && outcome.reconcile !== undefined && <ReconcileFailureBanner failure={outcome.reconcile} repository={githubRepository(snapshot)} t={t} />}
       {outcome.kind === 'not_filed' && <p className="text-sm text-kumo-default" data-rules-not-filed>{t('rules.reconcile.notFiled')}</p>}
       <footer className="flex flex-wrap items-center gap-2 border-t border-kumo-hairline pt-4">
         {submitShown && <Button variant="primary" onClick={submit} disabled={!submitReady} data-rules-submit-button>
           {busy === 'submit' ? <><Loader size={12} />{t('rules.drawer.submitting')}</> : t('rules.drawer.submit')}
         </Button>}
-        {canReconcileAfter(outcome) && <Button variant="secondary" onClick={reconcile} disabled={busy !== null} data-rules-reconcile>
+        {outcome.kind === 'failed' && canReconcileAfter(outcome.failure) && <Button variant="secondary" onClick={() => reconcile(outcome.failure)} disabled={busy !== null} data-rules-reconcile>
           {busy === 'reconcile' ? <><Loader size={12} />{t('rules.reconcile.running')}</> : t('rules.reconcile')}
         </Button>}
         {!open && filed === null && <CopyPrompt prompt={prompt} t={t} />}

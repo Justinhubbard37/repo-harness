@@ -1,6 +1,6 @@
 import { Banner, Loader, cn } from '@cloudflare/kumo';
 import { WarningIcon } from '@phosphor-icons/react';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { RuleStatusV1, RuleThemeV1, TriageEvidenceErrorV1, TriageFieldErrorV1 } from '../core/ci/rule-candidates';
 import type { RulesSnapshotV1 } from '../core/operator/rules';
 import type { OperatorTranslate } from './i18n';
@@ -177,8 +177,11 @@ function SegmentTabs({ segment, counts, onOpen, t }: {
   );
 }
 
-function RulesBody({ snapshot, segment, candidateId, ports, generation, now, onOpen, t }: {
-  readonly snapshot: RulesSnapshotV1; readonly segment: RulesSegment; readonly candidateId: string | null; readonly ports: RulesDrawerPorts;
+function RulesBody({ snapshot, failure, segment, candidateId, ports, generation, now, onOpen, t }: {
+  readonly snapshot: RulesSnapshotV1;
+  /** A background read that failed after `snapshot` was read; the page keeps the last snapshot and its drawer. */
+  readonly failure: RulesFailure | null;
+  readonly segment: RulesSegment; readonly candidateId: string | null; readonly ports: RulesDrawerPorts;
   readonly generation: number; readonly now: number; readonly onOpen: (next: WorkspaceLocation) => void; readonly t: OperatorTranslate;
 }) {
   const { ledger, themes } = snapshot.status;
@@ -201,6 +204,7 @@ function RulesBody({ snapshot, segment, candidateId, ports, generation, now, onO
       <p className="font-mono text-xs text-kumo-subtle" data-rules-source>
         {t('rules.source', { path: ledger.path, head: ledger.head.slice(0, 7), age: ageWords(snapshot.collected_at, now, t) })}
       </p>
+      {failure !== null && <RulesRefusal read={failure} t={t} />}
       <SegmentTabs segment={segment} counts={invalid ? null : { candidates: candidates.length, ledger: themes.length }} onOpen={onOpen} t={t} />
       <LedgerBanner ledger={ledger} t={t} />
       {content}
@@ -210,10 +214,12 @@ function RulesBody({ snapshot, segment, candidateId, ports, generation, now, onO
   );
 }
 
+type RulesFailure = Exclude<RulesRead, { readonly state: 'ok' }>;
+
 /** A waiting reason warns; a broken one fails. */
 const WAITING_REASONS: readonly string[] = ['rules_pending', 'registry_unavailable', 'repository_not_found'];
 
-function RulesRefusal({ read, t }: { readonly read: Exclude<RulesRead, { readonly state: 'ok' }>; readonly t: OperatorTranslate }) {
+function RulesRefusal({ read, t }: { readonly read: RulesFailure; readonly t: OperatorTranslate }) {
   const known = read.state === 'unavailable';
   return (
     <section className="flex min-w-0 flex-col gap-2 rounded-xl border border-kumo-line bg-kumo-base p-4 sm:p-5" data-rules-unavailable={known ? read.reason : read.code}>
@@ -233,6 +239,12 @@ function RulesRefusal({ read, t }: { readonly read: Exclude<RulesRead, { readonl
  */
 export function RulesPage({ repositoryId, readRules, generation, now, segment, candidateId, ports, onOpen, t }: RulesPageProps) {
   const read = useRulesSnapshot(readRules, repositoryId, generation);
+  const [kept, setKept] = useState<{ readonly id: string; readonly snapshot: RulesSnapshotV1 } | null>(null);
+  if (repositoryId !== null && read?.state === 'ok' && kept?.snapshot !== read.snapshot) setKept({ id: repositoryId, snapshot: read.snapshot });
+  // A failed read after a good one keeps that repository's last snapshot: RulesBody stays in the same slot, so the drawer's draft and pending write stay mounted.
+  const last = read !== null && read.state !== 'ok' && kept?.id === repositoryId ? kept.snapshot : null;
+  const body = (snapshot: RulesSnapshotV1, failure: RulesFailure | null) =>
+    <RulesBody snapshot={snapshot} failure={failure} segment={segment} candidateId={candidateId} ports={ports} generation={generation} now={now} onOpen={onOpen} t={t} />;
   return (
     <div className="flex min-w-0 flex-col gap-4" data-rules-page>
       <header className="flex flex-col gap-1 border-b border-kumo-hairline pb-4">
@@ -241,8 +253,9 @@ export function RulesPage({ repositoryId, readRules, generation, now, segment, c
       </header>
       {repositoryId === null ? <p role="status" className="text-sm text-kumo-subtle">{t('repository.select')}</p>
         : read === null ? <p role="status" className="flex items-center gap-1.5 text-sm text-kumo-subtle" data-rules-loading><Loader size={12} />{t('rules.loading')}</p>
-        : read.state !== 'ok' ? <RulesRefusal read={read} t={t} />
-        : <RulesBody snapshot={read.snapshot} segment={segment} candidateId={candidateId} ports={ports} generation={generation} now={now} onOpen={onOpen} t={t} />}
+        : read.state === 'ok' ? body(read.snapshot, null)
+        : last !== null ? body(last, read)
+        : <RulesRefusal read={read} t={t} />}
     </div>
   );
 }

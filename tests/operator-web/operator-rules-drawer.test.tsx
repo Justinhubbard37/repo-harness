@@ -87,6 +87,15 @@ async function mount(hash: string, rules: ReturnType<typeof snapshot>, extra: Pa
 const one = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector);
 const click = (selector: string) => act(async () => one(selector)!.click());
 const ISSUE_URL = 'https://github.com/owner/repo/issues/2950';
+const edit = (text: string) => act(async () => {
+  // react-dom watches a text field through focus and keyup under happy-dom.
+  const field = one<HTMLTextAreaElement>('[data-rules-prompt]')!;
+  field.focus();
+  Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(field, text);
+  field.dispatchEvent(new window.KeyboardEvent('keyup', { key: 'a', bubbles: true }) as unknown as Event);
+});
+const refused = (code: string, issue?: number): RulesPromotionWrite =>
+  ({ state: 'refused', status: 409, error: { code, message: `${code} refusal`, next_action: 'Try again later.' }, ...(issue === undefined ? {} : { issue }) });
 type Steps = Extract<RulesPromotionWrite, { readonly state: 'ok' }>['value']['steps'];
 const filed = (issue: number, steps: Steps = { issue: 'created', label: 'added', sub_issue: 'linked' }): RulesPromotionWrite =>
   ({ state: 'ok', value: { candidate_id: ENFORCE, issue, url: `https://github.com/owner/repo/issues/${issue}`, steps } });
@@ -106,14 +115,8 @@ describe('rules candidate drawer', () => {
     const prefilled = renderPromotionPrompt(promotionCandidate(BASE, ENFORCE), 'frontend');
     const marker = `<!-- repo-harness.rules.candidate:${ENFORCE} route:frontend -->`;
     expect(one('[data-rules-marker]')!.textContent).toBe(marker);
-    const field = one<HTMLTextAreaElement>('[data-rules-prompt]')!;
-    expect(field.value).toBe(prefilled.slice(0, prefilled.indexOf(marker)));
-    await act(async () => {
-      // react-dom watches a text field through focus and keyup under happy-dom.
-      field.focus();
-      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(field, '## Goal\nEdited text');
-      field.dispatchEvent(new window.KeyboardEvent('keyup', { key: 'a', bubbles: true }) as unknown as Event);
-    });
+    expect(one<HTMLTextAreaElement>('[data-rules-prompt]')!.value).toBe(prefilled.slice(0, prefilled.indexOf(marker)));
+    await edit('## Goal\nEdited text');
     await click('[data-rules-submit-button]');
     await click('[data-rules-submit-button]');
     expect(bodies).toHaveLength(1);
@@ -202,6 +205,62 @@ describe('rules candidate drawer', () => {
     expect(merged.textContent).toBe('Merged · PR #2960');
     expect(merged.querySelector('a')!.getAttribute('href')).toBe(pr.url);
     expect(row.querySelector('[data-rules-action="promote_root"] [data-rules-progress="none"]')!.textContent).toBe('Not filed');
+  });
+
+  test('#2988 F1: a retryable or refresh-required Reconcile refusal keeps the unresolved Submit and its Reconcile', async () => {
+    const reconciles = [refused('rules_busy'), refused('ledger_changed'), refused('candidate_not_filed')];
+    await mount(`#rules/candidate/${ENFORCE}`, snapshot(), {
+      writeRulesPromote: async () => ({ state: 'unreachable' }),
+      writeRulesReconcile: async () => reconciles.shift()!,
+    });
+    await click('[data-rules-route="simple_fast"]');
+    await click('[data-rules-submit-button]');
+    for (const code of ['rules_busy', 'ledger_changed']) {
+      await click('[data-rules-reconcile]');
+      expect(one('[data-rules-submit="uncertain"]')).not.toBeNull();
+      expect(one(`[data-rules-reconcile-failed="${code}"]`)!.textContent).toContain(code);
+      expect(one('[data-rules-reconcile]')).not.toBeNull();
+      expect(one('[data-rules-submit-button]')).toBeNull();
+      expect(document.body.textContent).not.toContain('No issue was created.');
+    }
+    await click('[data-rules-reconcile]');
+    expect(one('[data-rules-not-filed]')).not.toBeNull();
+    expect(one('[data-rules-submit="uncertain"]')).toBeNull();
+    expect(one('[data-rules-submit-button]')).not.toBeNull();
+  });
+
+  test('#2988 F2: a reconcile_required refusal keeps the uncertainty guidance and Reconcile and shows its code and issue', async () => {
+    await mount(`#rules/candidate/${ENFORCE}`, snapshot(), { writeRulesPromote: async () => refused('reconcile_required', 2950) });
+    await click('[data-rules-route="simple_fast"]');
+    await click('[data-rules-submit-button]');
+    const banner = one('[data-rules-submit="uncertain"]')!;
+    expect(banner.getAttribute('data-rules-refusal')).toBe('reconcile_required');
+    expect(banner.textContent).toContain('reconcile_required');
+    expect(banner.textContent).toContain('Reconcile checks GitHub');
+    expect(banner.querySelector('[data-rules-refusal-issue] a')!.getAttribute('href')).toBe(ISSUE_URL);
+    expect(banner.textContent).not.toContain('No issue was created.');
+    expect(one('[data-rules-reconcile]')).not.toBeNull();
+    expect(one('[data-rules-submit-button]')).toBeNull();
+  });
+
+  test('#2988 F3: a failed background read keeps the drawer, the edited draft and the pending write', async () => {
+    let failing = false;
+    let answer!: (value: RulesPromotionWrite) => void;
+    const rules = snapshot();
+    await mount(`#rules/candidate/${ENFORCE}`, rules, {
+      readRules: async () => (failing ? { state: 'unavailable', reason: 'unreachable' } : { state: 'ok', snapshot: rules }),
+      writeRulesPromote: () => new Promise(resolve => { answer = resolve; }),
+    });
+    await click('[data-rules-route="frontend"]');
+    await edit('## Goal\nKept text');
+    await click('[data-rules-submit-button]');
+    failing = true;
+    await act(async () => document.dispatchEvent(new window.Event('visibilitychange') as unknown as Event));
+    expect(one('[data-rules-unavailable="unreachable"]')).not.toBeNull();
+    expect(one<HTMLTextAreaElement>('[data-rules-prompt]')!.value).toBe('## Goal\nKept text');
+    expect(one('[data-rules-submit-button]')!.textContent).toBe('Submitting');
+    await act(async () => answer(filed(2950)));
+    expect(one('[data-rules-filed="2950"]')).not.toBeNull();
   });
 
   test('UX-rules-review-P3: ready_for_go shows two labels and the GO command as copyable text; no request is sent', async () => {
