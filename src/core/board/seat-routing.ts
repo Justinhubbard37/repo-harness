@@ -1,14 +1,13 @@
 import { weeklyRemainingPercent, type QuotaAccount, type QuotaAccountReport, type QuotaState } from './quota';
 import { PI_CODEX_MODEL_PREFIX, ROUTING_CLASSES, isPiCodexSeat, isReviewSeat, unavailablePiSeat, type CodexCreditMode, type RoutingClass, type SeatConfigV1, type SeatId, type SeatRoutingV1, type SeatsConfigV1 } from './seats-settings';
 
-export const CODEX_HYPER_MODEL = Object.freeze({ model: 'gpt-6-astra', effort: 'high' });
 /** The Claude control-seat model outside its config entry: the orchestrator while Claude is reserved, the advisor outside Claude hyper. */
 export const CLAUDE_CONTROL_MODEL = Object.freeze({ model: 'opus', effort: 'high' });
 interface AccountQuota { readonly state: QuotaState; readonly remaining: number | null }
 export interface SeatAccountQuotas {
   readonly claude: AccountQuota & { readonly mode: 'hyper' | 'normal' | 'saving' | 'unknown' };
   /** `credits`: the owner's credit mode where it acts now (#2630); `off` unless the account is exhausted and has credits at or above the floor. */
-  readonly chatgpt: AccountQuota & { readonly mode: 'normal' | 'hyper' | 'unknown'; readonly credits: CodexCreditMode };
+  readonly chatgpt: AccountQuota & { readonly mode: 'normal' | 'unknown'; readonly credits: CodexCreditMode };
 }
 
 /**
@@ -36,7 +35,7 @@ export function seatAccountQuotas(accounts: readonly QuotaAccountReport[], routi
     claude: { ...claude, mode: claude.remaining === null ? 'unknown' : claude.remaining < routing.claude_saving_below_remaining ? 'saving'
       : claude.remaining >= routing.claude_hyper_at_or_above_remaining ? 'hyper' : 'normal' },
     chatgpt: { ...chatgpt, credits: codexCreditMode(accounts.find(account => account.account === 'chatgpt'), routing),
-      mode: chatgpt.remaining === null ? 'unknown' : chatgpt.remaining >= routing.codex_hyper_at_or_above_remaining ? 'hyper' : 'normal' },
+      mode: chatgpt.remaining === null ? 'unknown' : 'normal' },
   };
 }
 
@@ -65,10 +64,7 @@ export function seatState(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuot
 export function effectiveSeatConfig<Id extends SeatId>(id: Id, seats: SeatsConfigV1, quota: SeatAccountQuotas): SeatsConfigV1[Id];
 export function effectiveSeatConfig(id: SeatId, seats: SeatsConfigV1, quota: SeatAccountQuotas): SeatConfigV1 | null {
   const seat = seats[id];
-  // gatekeeper-deep is the second review row on a fixed other model, so ChatGPT hyper does not remap it.
-  if (seat === null || id === 'gatekeeper-deep') return seat;
-  if (seat.runtime === 'codex' && quota.chatgpt.mode === 'hyper') return { ...seat, ...CODEX_HYPER_MODEL };
-  if (isPiCodexSeat(seat) && quota.chatgpt.mode === 'hyper') return { ...seat, model: `${PI_CODEX_MODEL_PREFIX}${CODEX_HYPER_MODEL.model}`, effort: CODEX_HYPER_MODEL.effort };
+  if (seat === null) return seat;
   const control = id === 'orchestrator' ? claudeReserved(quota) : id === 'advisor' && (claudeReserved(quota) || quota.claude.mode !== 'hyper');
   if (seat.runtime === 'claude' && control) return { ...seat, ...CLAUDE_CONTROL_MODEL };
   return seat;
@@ -90,14 +86,13 @@ function blockText(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuotas, rou
 }
 
 export function formatSeatModes(seats: SeatsConfigV1, quota: SeatAccountQuotas): string {
-  const { claude_saving_below_remaining: saving, claude_hyper_at_or_above_remaining: hyper, codex_hyper_at_or_above_remaining: codexHyper } = seats.routing;
-  const line = (id: QuotaAccount, label: string, bounds: string): string => {
+  const { claude_saving_below_remaining: saving, claude_hyper_at_or_above_remaining: hyper } = seats.routing;
+  const line = (id: QuotaAccount, label: string, bounds = ''): string => {
     const account = quota[id];
-    return `${label} mode: ${account.mode} (${account.remaining === null ? 'weekly quota unavailable' : `${account.remaining}% left ${bounds}`})`;
+    return `${label} mode: ${account.mode} (${account.remaining === null ? 'weekly quota unavailable' : `${account.remaining}% left${bounds ? ` ${bounds}` : ''}`})`;
   };
   const claude = { saving: `< ${saving}%`, hyper: `>= ${hyper}%`, normal: `>= ${saving}% and < ${hyper}%`, unknown: '' }[quota.claude.mode];
-  return [line('claude', 'claude', claude),
-    line('chatgpt', 'codex', quota.chatgpt.mode === 'hyper' ? `>= ${codexHyper}%` : `< ${codexHyper}%`)].join('\n');
+  return [line('claude', 'claude', claude), line('chatgpt', 'codex')].join('\n');
 }
 
 export type SeatRouteV1 =

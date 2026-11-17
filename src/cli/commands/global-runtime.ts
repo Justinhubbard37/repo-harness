@@ -1845,7 +1845,7 @@ function withPlugin(plugins: readonly PluginId[], id: PluginId): readonly Plugin
   return [...new Set([...plugins, id])].sort() as PluginId[];
 }
 
-/** Update is the only caller that fills introduced seats and routing keys and removes the stored routing mode. */
+/** Update is the only caller that fills introduced seats and routing keys and removes retired routing keys. */
 export function migrateSeatsConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: RuntimeTransactionContext): boolean {
   return mutateGlobalConfiguration(env, config => {
     try {
@@ -1877,11 +1877,11 @@ export function migrateSeatsConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: 
           || value.effort !== null && !ranges.efforts.includes(value.effort as string)) invalid();
       }
       const { mode: _mode, hyper: _hyper, ...kept } = row;
-      routing = { ...kept, claude_saving_below_remaining: DEFAULT_SEATS_CONFIG.routing.claude_saving_below_remaining,
-        codex_hyper_at_or_above_remaining: DEFAULT_SEATS_CONFIG.routing.codex_hyper_at_or_above_remaining };
+      routing = { ...kept, claude_saving_below_remaining: DEFAULT_SEATS_CONFIG.routing.claude_saving_below_remaining };
     }
     if (typeof routing === 'object' && routing !== null && !Array.isArray(routing)) {
-      routing = { ...INTRODUCED_ROUTING_DEFAULTS, ...routing };
+      const { codex_hyper_at_or_above_remaining: _codexHyper, ...kept } = routing as Record<string, unknown>;
+      routing = { ...INTRODUCED_ROUTING_DEFAULTS, ...kept };
     }
     const seats = decodeSeatsConfig({ ...introduced, 'worker-light': null, ...stored, ...(routing === undefined ? {} : { routing }) });
     checkSeatRoutingModels(seats.routing);

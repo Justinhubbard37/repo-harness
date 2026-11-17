@@ -615,13 +615,13 @@ describe('seat settings contract without transport', () => {
     expect(decoded['worker-deep']).toEqual(DEFAULT_SEATS_CONFIG['worker-deep']);
     expect(decoded.routing).toEqual(DEFAULT_SEATS_CONFIG.routing);
     expect(before.config['worker-light']).toBeNull();
-    const routing: SeatRoutingV1 = { ...before.config.routing, claude_saving_below_remaining: 30, codex_hyper_at_or_above_remaining: 60, codex_credit_mode: 'review', codex_credit_floor: 2000,
+    const routing: SeatRoutingV1 = { ...before.config.routing, claude_saving_below_remaining: 30, claude_hyper_at_or_above_remaining: 60, codex_credit_mode: 'review', codex_credit_floor: 2000,
       simple_fast: ['worker-deep', 'worker'], frontend: ['worker-important-fast'] };
     const { revision: _revision, ...storedSection } = before.config;
     const section = { ...storedSection, routing };
     const response = await seatsSettingsWriteRoute(env).decode({ expected_revision: before.config.revision, seats: section }, []).execute();
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ config_revision: sha256(path), changed_keys: ['seats.routing.simple_fast', 'seats.routing.frontend', 'seats.routing.claude_saving_below_remaining', 'seats.routing.codex_hyper_at_or_above_remaining',
+    expect(response.body).toEqual({ config_revision: sha256(path), changed_keys: ['seats.routing.simple_fast', 'seats.routing.frontend', 'seats.routing.claude_saving_below_remaining', 'seats.routing.claude_hyper_at_or_above_remaining',
       'seats.routing.codex_credit_mode', 'seats.routing.codex_credit_floor'] });
     const after = readSeatsSettings(env);
     expect(after.config).toEqual({ revision: sha256(path), ...section });
@@ -663,7 +663,7 @@ describe('seat settings contract without transport', () => {
 
   test('routing accepts percent thresholds and the credit mode range and rejects old stored fields on save', () => {
     const route = seatsSettingsWriteRoute();
-    for (const field of ['claude_saving_below_remaining', 'codex_hyper_at_or_above_remaining']) {
+    for (const field of ['claude_saving_below_remaining', 'claude_hyper_at_or_above_remaining']) {
       for (const value of [0, 100, 25.5]) expect(decodeSeatsConfig({ ...DEFAULT_SEATS_CONFIG,
         routing: { ...DEFAULT_SEATS_CONFIG.routing, [field]: value } }).routing[field as keyof SeatRoutingV1]).toBe(value);
       for (const value of [-1, 101, null, '20']) expect(() => route.decode({ expected_revision: 'absent', seats: {
@@ -678,8 +678,8 @@ describe('seat settings contract without transport', () => {
         ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing, [field]: value },
       } }, [])).toThrow('seats_settings_request_invalid');
     }
-    for (const field of ['mode', 'hyper']) expect(() => route.decode({ expected_revision: 'absent', seats: {
-      ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing, [field]: field === 'mode' ? 'hyper' : {} },
+    for (const field of ['mode', 'hyper', 'codex_hyper_at_or_above_remaining']) expect(() => route.decode({ expected_revision: 'absent', seats: {
+      ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing, [field]: field === 'mode' ? 'hyper' : field === 'hyper' ? {} : 50 },
     } }, [])).toThrow('seats_settings_request_invalid');
   });
 

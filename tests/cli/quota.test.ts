@@ -99,16 +99,19 @@ describe('seat quota routing', () => {
     expect(formatSeatRoutes(empty, seatAccountQuotas([claude({ seven_day: week(10, 84) })], empty.routing))).toContain('reviewer: reviewer (pi default)');
   });
 
-  test.each([50, 51])('Codex %s%% used selects hyper only at or above remaining threshold', used => {
+  test.each([10, 50, 51, 90])('Codex %s%% used preserves configured seat models and efforts', used => {
     const account = classifyQuotaReading(decodeCodexRateLimitsResult({ rateLimits: {
       primary: { usedPercent: used, windowDurationMins: 10080, resetsAt: (NOW + 84 * HOUR) / 1000 },
     } }, new Date(NOW).toISOString()), NOW);
-    const quota = seatAccountQuotas([account], DEFAULT_SEATS_CONFIG.routing);
-    const model = used === 50 ? 'gpt-6-astra' : DEFAULT_SEATS_CONFIG.worker.model;
-    expect(quota.chatgpt.mode).toBe(used === 50 ? 'hyper' : 'normal');
-    expect(effectiveSeatConfig('worker', DEFAULT_SEATS_CONFIG, quota).model).toBe(model);
-    expect(formatSeatRoutes(DEFAULT_SEATS_CONFIG, quota)).toContain(`route simple_fast: worker (codex ${model} high`);
-    expect(effectiveSeatConfig('worker-light', DEFAULT_SEATS_CONFIG, quota)).toEqual(DEFAULT_SEATS_CONFIG['worker-light']);
+    const seats = { ...DEFAULT_SEATS_CONFIG,
+      advisor: { ...DEFAULT_SEATS_CONFIG.advisor, runtime: 'pi' as const, model: 'magpie/codex/gpt-6-astra', effort: null },
+      reviewer: { ...DEFAULT_SEATS_CONFIG.reviewer, runtime: 'pi' as const, model: 'magpie/codex/gpt-6.1-sol', effort: 'medium' } };
+    const quota = seatAccountQuotas([account], seats.routing);
+    expect(quota.chatgpt.mode).toBe('normal');
+    for (const id of ['worker', 'worker-deep', 'worker-light', 'gatekeeper', 'gatekeeper-deep', 'reviewer', 'advisor'] as const)
+      expect(effectiveSeatConfig(id, seats, quota)).toEqual(seats[id]);
+    expect(formatSeatModes(seats, quota)).toContain(`codex mode: normal (${100 - used}% left)`);
+    expect(formatSeatRoutes(seats, quota)).toContain(`route simple_fast: worker (codex ${seats.worker.model} high`);
   });
 
   test.each([
@@ -136,14 +139,14 @@ describe('seat quota routing', () => {
 
   test('configured thresholds decide modes while other windows keep their exhaustion stop', () => {
     const seats = { ...DEFAULT_SEATS_CONFIG, routing: { ...DEFAULT_SEATS_CONFIG.routing,
-      claude_saving_below_remaining: 60, claude_hyper_at_or_above_remaining: 40, codex_hyper_at_or_above_remaining: 80 } };
+      claude_saving_below_remaining: 60, claude_hyper_at_or_above_remaining: 40 } };
     const accounts = [claude({ seven_day: week(50, 84), five_hour: week(95, 2) }),
       classifyQuotaReading(decodeCodexRateLimitsResult({ rateLimits: {
         primary: { usedPercent: 40, windowDurationMins: 10080, resetsAt: (NOW + 84 * HOUR) / 1000 },
       } }, new Date(NOW).toISOString()), NOW)];
     const quota = seatAccountQuotas(accounts, seats.routing);
     // Saving wins below its own threshold, also at or above the Claude hyper threshold.
-    expect(formatSeatModes(seats, quota)).toBe('claude mode: saving (50% left < 60%)\ncodex mode: normal (60% left < 80%)');
+    expect(formatSeatModes(seats, quota)).toBe('claude mode: saving (50% left < 60%)\ncodex mode: normal (60% left)');
     expect(formatSeatRoutes(seats, quota)).toContain('route frontend: none (claude exhausted, reserved for advisor and orchestrator; frontend waits for claude)');
   });
 
@@ -176,12 +179,12 @@ describe('seat quota routing', () => {
     const exhausted = { ...DEFAULT_SEATS_CONFIG };
     const routes = formatSeatRoutes(exhausted, seatAccountQuotas([codex(97)], exhausted.routing)).split('\n');
     expect(routes).toContain('gatekeeper-deep: none (chatgpt exhausted)');
-    const hyper = seatAccountQuotas([codex(10)], DEFAULT_SEATS_CONFIG.routing);
-    expect(hyper.chatgpt.mode).toBe('hyper');
-    expect(effectiveSeatConfig('gatekeeper-deep', DEFAULT_SEATS_CONFIG, hyper)).toEqual(DEFAULT_SEATS_CONFIG['gatekeeper-deep']);
-    expect(effectiveSeatConfig('gatekeeper', DEFAULT_SEATS_CONFIG, hyper).model).not.toBe(DEFAULT_SEATS_CONFIG['gatekeeper-deep'].model);
-    const same = { ...DEFAULT_SEATS_CONFIG, 'gatekeeper-deep': { ...DEFAULT_SEATS_CONFIG['gatekeeper-deep'], model: 'magpie/codex/gpt-6-astra' } };
-    expect(formatSeatRoutes(same, hyper).split('\n')).toContain('gatekeeper-deep: none (same model as gatekeeper)');
+    const quota = seatAccountQuotas([codex(10)], DEFAULT_SEATS_CONFIG.routing);
+    expect(quota.chatgpt.mode).toBe('normal');
+    expect(effectiveSeatConfig('gatekeeper-deep', DEFAULT_SEATS_CONFIG, quota)).toEqual(DEFAULT_SEATS_CONFIG['gatekeeper-deep']);
+    expect(effectiveSeatConfig('gatekeeper', DEFAULT_SEATS_CONFIG, quota).model).not.toBe(DEFAULT_SEATS_CONFIG['gatekeeper-deep'].model);
+    const same = { ...DEFAULT_SEATS_CONFIG, 'gatekeeper-deep': { ...DEFAULT_SEATS_CONFIG['gatekeeper-deep'], model: `magpie/codex/${DEFAULT_SEATS_CONFIG.gatekeeper.model}` } };
+    expect(formatSeatRoutes(same, quota).split('\n')).toContain('gatekeeper-deep: none (same model as gatekeeper)');
   });
 
   test('gatekeeper-deep repeats the route that the gatekeeper launch selects, after the default model and the Pi Codex prefix resolve', () => {
@@ -423,7 +426,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
   } else if (message.method === 'account/rateLimits/read') {
     if (mode === 'error') return out({ id: message.id, error: { code: -32603, message: 'not logged in' } });
     const resetsAt = Math.floor(Date.now() / 1000) + 167 * 3600;
-    out({ id: message.id, result: { rateLimits: { primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 2 * 3600 }, secondary: { usedPercent: mode === 'exhausted' ? 95 : 1, windowDurationMins: 10080, resetsAt }, credits: { hasCredits: true, unlimited: false, balance: '34410.83' }, planType: 'pro', rateLimitReachedType: null } } });
+    out({ id: message.id, result: { rateLimits: { primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 2 * 3600 }, secondary: { usedPercent: mode === 'exhausted' ? 95 : mode === '90-left' ? 10 : 1, windowDurationMins: 10080, resetsAt }, credits: { hasCredits: true, unlimited: false, balance: '34410.83' }, planType: 'pro', rateLimitReachedType: null } } });
   }
 });
 `;
@@ -469,7 +472,11 @@ describe('rh quota', () => {
   });
 
   test('reads the capture file and one app-server rateLimits read, grouped by account', () => {
-    const f = fixture('ok');
+    const f = fixture('90-left');
+    writeFileSync(join(f.home, '.repo-harness', 'config.json'), JSON.stringify({ seats: { ...DEFAULT_SEATS_CONFIG,
+      'worker-deep': { ...DEFAULT_SEATS_CONFIG['worker-deep'], runtime: 'pi', model: 'magpie/codex/gpt-6.1-sol', effort: 'medium' },
+      advisor: { ...DEFAULT_SEATS_CONFIG.advisor, runtime: 'pi', model: 'magpie/codex/gpt-6-astra', effort: null },
+    } }));
     const resetsAt = Math.floor(Date.now() / 1000) + 2 * 3600;
     writeFileSync(join(f.home, '.repo-harness', 'quota', 'claude.json'), JSON.stringify({ observed_at: new Date().toISOString(), rate_limits: {
       five_hour: { used_percentage: 97, resets_at: resetsAt }, seven_day: { used_percentage: 95, resets_at: resetsAt },
@@ -491,7 +498,11 @@ describe('rh quota', () => {
     expect(text.status).toBe(0);
     const lines = text.stdout.trim().split('\n');
     expect(lines.slice(0, 2).map(line => line.split(' | ')[0])).toEqual(['claude: exhausted', 'chatgpt: normal']);
-    expect(lines.slice(2, 4)).toEqual(['claude mode: saving (5% left < 20%)', 'codex mode: hyper (99% left >= 50%)']);
+    expect(lines.slice(2, 4)).toEqual(['claude mode: saving (5% left < 20%)', 'codex mode: normal (90% left)']);
+    for (const expected of ['route simple_fast: worker (codex gpt-6.1-terra high',
+      'route simple_deep: worker-deep (pi magpie/codex/gpt-6.1-sol medium',
+      'gatekeeper: gatekeeper (codex gpt-6.1-terra high', 'gatekeeper-deep: gatekeeper-deep (codex gpt-6.1-sol high',
+      'advisor: advisor (pi magpie/codex/gpt-6-astra)']) expect(text.stdout).toContain(expected);
     expect(lines.slice(4).map(line => line.split(':')[0])).toEqual(['route important_deep', 'route important_fast', 'route simple_deep', 'route simple_fast', 'route frontend', 'explorer', 'gatekeeper', 'gatekeeper-deep', 'reviewer', 'advisor']);
   });
 

@@ -316,13 +316,13 @@ describe("rh seats argv", () => {
     }
   });
 
-  test("a Pi GPT worker passes thinking, draws on the ChatGPT account and takes the hyper model", () => {
+  test("a Pi GPT worker passes configured thinking and model, and draws on the ChatGPT account", () => {
     const worker = { ...DEFAULT_SEATS_CONFIG.worker, runtime: "pi" as const, model: "magpie/codex/gpt-6.1-terra", fleet: [] };
     withHome({ ...DEFAULT_SEATS_CONFIG, worker }, home => {
       writeFileSync(join(home, 'codex-used'), '51');
       expect(bare(launch(home, "worker").argv).slice(0, 7)).toEqual(["pi", "--provider", "magpie", "--model", "codex/gpt-6.1-terra", "--thinking", "high"]);
-      writeFileSync(join(home, 'codex-used'), '50');
-      expect(bare(launch(home, "worker").argv).slice(0, 7)).toEqual(["pi", "--provider", "magpie", "--model", "codex/gpt-6-astra", "--thinking", "high"]);
+      writeFileSync(join(home, 'codex-used'), '10');
+      expect(bare(launch(home, "worker").argv).slice(0, 7)).toEqual(["pi", "--provider", "magpie", "--model", "codex/gpt-6.1-terra", "--thinking", "high"]);
       writeFileSync(join(home, 'codex-used'), '95');
       const exhausted = argv(home, "worker", "--json");
       expect([exhausted.status, JSON.parse(exhausted.stderr).error]).toEqual([1, "seat_quota_exhausted"]);
@@ -365,10 +365,10 @@ describe("rh seats argv", () => {
     });
   });
 
-  test("quota changes Codex models and Claude control-seat effort, preserves Pi, and stops exhaustion", () => {
+  test("quota preserves Codex models and Pi, changes Claude control-seat effort, and stops exhaustion", () => {
     withHome(DEFAULT_SEATS_CONFIG, home => {
-      writeFileSync(join(home, 'codex-used'), '50');
-      expect(bare(launch(home, "worker").argv).slice(0, 5)).toEqual(["codex", "-m", "gpt-6-astra", "-c", 'model_reasoning_effort="high"']);
+      writeFileSync(join(home, 'codex-used'), '10');
+      expect(bare(launch(home, "worker").argv).slice(0, 5)).toEqual(["codex", "-m", DEFAULT_SEATS_CONFIG.worker.model, "-c", 'model_reasoning_effort="high"']);
       writeFileSync(join(home, 'codex-used'), '51');
       expect(bare(launch(home, "worker").argv).slice(0, 3)).toEqual(["codex", "-m", DEFAULT_SEATS_CONFIG.worker.model]);
       expect(bare(launch(home, "worker-important-fast").argv).slice(0, 5)).toEqual(["claude", "--model", "sonnet", "--effort", "medium"]);

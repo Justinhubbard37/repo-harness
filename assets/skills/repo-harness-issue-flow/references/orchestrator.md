@@ -297,7 +297,7 @@ module is in the title so that a list view shows the write scopes.
 Before each dispatch wave, run `rh quota`. It prints the account
 states, one mode line per account and one route line per task class. For
 example: `claude mode: saving (5% left < 20%)` and
-`codex mode: hyper (68% left >= 50%)`. Launch each task on the seat its
+`codex mode: normal (68% left)`. Launch each task on the seat its
 route line names with `rh seats argv <seat>`; state the boundary
 in the task. A `none` route waits, or it changes through the seats
 configuration: the owner sets the seat order and each fallback there, and
@@ -319,12 +319,10 @@ every other Claude mode it uses `opus` high. Claude hyper changes no worker
 route and not the orchestrator entry. The `advisor:` line of
 `rh quota` names the advisor model. A seat that runs takes a new
 model only at a tier-2 reset (`/clear`), where `seats reset` starts it again
-from its argv; see Seat reset in herdr-notify. Codex hyper mode applies
-when weekly remaining quota is at or above
-`routing.codex_hyper_at_or_above_remaining` (default 50). Quota modes are
-derived, never stored. Codex hyper seats use `gpt-6-astra` high, except `gatekeeper-deep`, which
-keeps its configured model and effort. A Pi seat on `magpie/codex/` takes the
-same hyper model as `magpie/codex/gpt-6-astra` with that effort.
+from its argv; see Seat reset in herdr-notify. Codex seats and Pi seats on
+`magpie/codex/` keep their configured model and effort at every quota level.
+A Codex or Pi advisor keeps its own configured model and effort too. Quota
+modes are derived, never stored.
 
 Claude in saving mode or exhausted is reserved for the advisor and
 orchestrator; both use `opus` high. An important non-frontend route that

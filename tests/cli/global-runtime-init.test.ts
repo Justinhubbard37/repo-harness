@@ -38,7 +38,7 @@ test('update removes stored routing mode and hyper values once, keeps a null wor
   try {
     mkdirSync(join(home, '.repo-harness'));
     const path = join(home, '.repo-harness', 'config.json');
-    const { claude_saving_below_remaining: _claude, claude_hyper_at_or_above_remaining: _claudeHyper, codex_hyper_at_or_above_remaining: _codex, exhausted_at_or_above_used: _exhausted, codex_credit_mode: _mode, codex_credit_floor: _floor, unavailable_pi_providers: _unavailable, ...routes } = DEFAULT_SEATS_CONFIG.routing;
+    const { claude_saving_below_remaining: _claude, claude_hyper_at_or_above_remaining: _claudeHyper, exhausted_at_or_above_used: _exhausted, codex_credit_mode: _mode, codex_credit_floor: _floor, unavailable_pi_providers: _unavailable, ...routes } = DEFAULT_SEATS_CONFIG.routing;
     const seats = { ...DEFAULT_SEATS_CONFIG, 'worker-light': null, routing: { ...routes, mode: 'hyper', hyper: {
       claude: { model: 'opus', effort: 'high' }, advisor: { model: 'opus', effort: 'max' }, codex: { model: 'gpt-6-astra', effort: 'high' },
     } } };
@@ -67,7 +67,38 @@ test('update removes stored routing mode and hyper values once, keeps a null wor
     writeFileSync(path, JSON.stringify({ seats: stored }));
     expect(migrateSeatsConfiguration({ HOME: home })).toBe(true);
     expect(JSON.parse(readFileSync(path, 'utf8')).seats.routing)
-      .toEqual({ ...DEFAULT_SEATS_CONFIG.routing, claude_saving_below_remaining: 30, codex_hyper_at_or_above_remaining: 70 });
+      .toEqual({ ...DEFAULT_SEATS_CONFIG.routing, claude_saving_below_remaining: 30 });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('update removes the Codex hyper threshold once, preserves other settings, and refuses malformed sections without writing', () => {
+  const home = mkdtempSync(join(tmpdir(), 'codex-hyper-migration-'));
+  try {
+    mkdirSync(join(home, '.repo-harness'));
+    const path = join(home, '.repo-harness', 'config.json');
+    const seats = { ...DEFAULT_SEATS_CONFIG,
+      advisor: { ...DEFAULT_SEATS_CONFIG.advisor, runtime: 'pi', model: 'magpie/codex/gpt-6-astra', effort: null },
+      routing: { ...DEFAULT_SEATS_CONFIG.routing, claude_saving_below_remaining: 30 } };
+    for (const threshold of [0, 50, 100]) {
+      const stored = { ...seats, routing: { ...seats.routing, codex_hyper_at_or_above_remaining: threshold } };
+      expect(() => decodeSeatsConfig(stored)).toThrow(expect.objectContaining({ code: 'seats_config_migration_required' }));
+      writeFileSync(path, JSON.stringify({ seats: stored, security: { mode: 'strict' } }));
+      expect(migrateSeatsConfiguration({ HOME: home })).toBe(true);
+      const migrated = readFileSync(path, 'utf8');
+      expect(JSON.parse(migrated)).toEqual({ seats, security: { mode: 'strict' } });
+      expect(migrateSeatsConfiguration({ HOME: home })).toBe(false);
+      expect(readFileSync(path, 'utf8')).toBe(migrated);
+    }
+    for (const routing of [
+      ...[-1, 101, null, '50'].map(value => ({ ...seats.routing, codex_hyper_at_or_above_remaining: value })),
+      { ...seats.routing, codex_hyper_at_or_above_remaining: 50, extra: true },
+      { ...seats.routing, codex_hyper_at_or_above_remaining: 50, claude_saving_below_remaining: -1 },
+    ]) {
+      const original = JSON.stringify({ seats: { ...seats, routing } });
+      writeFileSync(path, original);
+      expect(() => migrateSeatsConfiguration({ HOME: home })).toThrow('seats_config_invalid');
+      expect(readFileSync(path, 'utf8')).toBe(original);
+    }
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

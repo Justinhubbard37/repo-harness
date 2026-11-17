@@ -338,7 +338,6 @@ function RoutingEditor({ form, settings, quota, locked, t }: {
   const thresholds = [
     { field: 'claude_saving_below_remaining', account: 'claude', quota: accounts.claude },
     { field: 'claude_hyper_at_or_above_remaining', account: 'claude', quota: accounts.claude },
-    { field: 'codex_hyper_at_or_above_remaining', account: 'chatgpt', quota: accounts.chatgpt },
   ] as const;
   return (
     <section aria-labelledby="seats-routing-heading" className="flex flex-col overflow-hidden rounded-xl border border-kumo-line bg-kumo-base" data-seats-routing>
