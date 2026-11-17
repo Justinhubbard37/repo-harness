@@ -252,6 +252,11 @@ export function runArchctxPassThrough(cwd: string, args: readonly string[], opti
 
 /** Lifecycle readback is separate from the CLI-only capabilities handshake. */
 export function verifyArchctxDaemonRuntime(repoRoot: string, options: ArchctxProviderOptions = {}, packageRoot?: string): void {
+  hasUsableArchctxDaemon(repoRoot, options, packageRoot);
+}
+
+/** Validate status without starting a daemon. True means a usable daemon answered. */
+function hasUsableArchctxDaemon(repoRoot: string, options: ArchctxProviderOptions = {}, packageRoot?: string): boolean {
   const policy = options.policy ?? loadArchitectureProjectionPolicy(options.env);
   const client = new ArchctxClient(repoRoot, policy.requiredVersion, options, packageRoot);
   const resolved = client.resolved;
@@ -273,6 +278,7 @@ export function verifyArchctxDaemonRuntime(repoRoot: string, options: ArchctxPro
   if (data.running && (data.rpcVersionCompatible !== true || data.productVersionCompatible !== true)) {
     throw new Error('archctx daemon status did not prove runtime compatibility');
   }
+  return data.running === true && data.responding !== false && data.usable !== false;
 }
 
 function daemonStopFailure(stateDir: string | null, error: ArchctxClientError): ArchitectureDaemonStopFailure {
@@ -572,6 +578,34 @@ export function checkpointArchitectureDebt(repoRoot: string, ownership: Capabili
   return { branch, report };
 }
 
+/** Read task context only when the repository has an adopted model authority. */
+export function prepareArchitectureTask(repoRoot: string, task: string, options: ArchctxProviderOptions): { posture: string; constraints: number } | null {
+  if (capabilitySource(repoRoot) !== 'archcontext' || !capabilityAuthorityReady(repoRoot)) return null;
+  const policy = options.policy ?? loadArchitectureProjectionPolicy(options.env);
+  if (policy.provider === 'disabled') return null;
+  // Warm reads measured 1326–1395 ms. Reserve that time after the status probe too.
+  const requirePrepareTime = () => {
+    if (remainingTimeout(options, 3_000, 'notice prepare') < 1_500) {
+      throw new ArchctxClientError({ code: 'RH_ARCHCTX_TIMEOUT', action: 'retry', message: 'architecture prepare skipped: less than 1500 ms remains' });
+    }
+  };
+  requirePrepareTime();
+  // In archctx 0.15.0, status never starts a daemon; prepare can start one if none answers.
+  if (!hasUsableArchctxDaemon(repoRoot, { ...options, policy })) {
+    throw new ArchctxClientError({ code: 'AC_RUNTIME_UNAVAILABLE', action: 'start-or-reconnect-runtime', message: 'architecture prepare skipped: no usable daemon answered' });
+  }
+  requirePrepareTime();
+  const data = new ArchctxClient(repoRoot, policy.requiredVersion, options).data(['prepare', '--task', task, '--json'], 3_000);
+  remainingTimeout(options, 3_000, 'notice prepare decode');
+  const context = isRecord(data) && isRecord(data.context) ? data.context : null;
+  if (!context || context.schemaVersion !== 'archcontext.task-context/v1' || context.task !== task
+    || !['normal', 'structural', 'intervention', 'proof-required'].includes(context.posture as string)
+    || !Array.isArray(context.constraints) || !isRecord(data) || data.posture !== context.posture) {
+    throw new Error('architecture prepare returned invalid task context');
+  }
+  return { posture: context.posture as string, constraints: context.constraints.length };
+}
+
 /** The client already refused an error envelope; this binds the review to the commit and decodes its debt. */
 function decodeCompleteArchitectureDebt(data: unknown, headSha: string): ArchitectureDebtReportV1 {
   const review = isRecord(data) ? data : {};
@@ -639,7 +673,7 @@ function runProjectionCommand(command: 'run' | 'readback', request: ProjectionRe
   }
 }
 
-function remainingTimeout(options: Pick<ArchctxProviderOptions, 'deadlineMs' | 'nowMs'>, maximumMs: number, phase: string): number {
+export function remainingTimeout(options: Pick<ArchctxProviderOptions, 'deadlineMs' | 'nowMs'>, maximumMs: number, phase: string): number {
   if (options.deadlineMs === undefined) return maximumMs;
   const remaining = Math.floor(options.deadlineMs - (options.nowMs ?? Date.now)());
   if (remaining <= 0) throw new ArchctxClientError({ code: 'RH_ARCHCTX_TIMEOUT', action: 'retry', message: `architecture projection timeout before ${phase}` });

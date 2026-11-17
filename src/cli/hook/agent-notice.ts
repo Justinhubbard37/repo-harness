@@ -5,10 +5,10 @@ import type { ArchitectureDebtReportV1 } from 'archctx-contracts';
 import { ARCHCONTEXT_MANIFEST, ARCHITECTURE_DEBT_COMMAND, ArchctxClientError, managedArchctxAction } from '../../core/architecture/projection';
 import { ARCHITECTURE_CONTRACT_VERSION, type AgentNotice, type AgentNoticePoint, type ArchctxProviderOptions, type ArchitectureNoticePort } from '../../core/architecture/contracts';
 import type { CapabilityOwnership } from '../../core/capabilities/registry';
-import { capabilitySource, changedSinceReviewBase, checkpointArchitectureDebt } from '../../effects/architecture/archctx-provider';
+import { capabilitySource, changedSinceReviewBase, checkpointArchitectureDebt, prepareArchitectureTask, remainingTimeout } from '../../effects/architecture/archctx-provider';
 import { readGlobalArchitectureConfiguration } from '../../effects/architecture/projection-config';
 import { assertSafeRepoWritePath, writeHookStateFile } from '../../effects/hook-state-file';
-import { CapabilityOwnershipError, loadRegistryAuthority, readWorkflowPolicy, resolveReviewBase } from '../../effects/state/resolve-effective-state';
+import { CapabilityOwnershipError, loadRegistryAuthority, parseIssueBranch, policyReviewBase, readWorkflowPolicy } from '../../effects/state/resolve-effective-state';
 import { boundedHookDiagnostic } from './hook-protocol';
 import { gitExecFileSync } from '../../effects/git/runner';
 
@@ -243,17 +243,18 @@ function observe(repoRoot: string, ownership: (options: ArchctxProviderOptions) 
   catch (error) { ownershipError = error; }
   const failed = ownershipError !== undefined;
   const changedFor = memoChanged(repoRoot, options);
+  const changed = owned?.review_base ? changedFor(owned.review_base) : null;
+  // Measure debt before the optional map and posture reads spend the shared budget.
+  const rest = failed ? { status: statusOf(ownershipError), unowned: null, debt: null } : observeDebt(repoRoot, source, owned, changed, options);
   // An ownership answer carries its review base. Without one (an archctx
   // failure, or no answer on a clean tree), read the same policy base from Git.
-  const mapBase = () => !failed && owned ? owned.review_base : resolveReviewBase(repoRoot);
+  const mapBase = () => !failed && owned ? owned.review_base : policyReviewBase(readWorkflowPolicy(repoRoot));
   let archimap: Observation['archimap'] = null;
   let archimapError: unknown;
   try {
     const paths = archimapPaths(repoRoot, mapBase, changedFor);
     archimap = paths.length > 0 ? { paths, block: archimapBlock(paths) } : null;
   } catch (error) { archimapError = error; }
-  const changed = owned?.review_base ? changedFor(owned.review_base) : null;
-  const rest = failed ? { status: statusOf(ownershipError), unowned: null, debt: null } : observeDebt(repoRoot, source, owned, changed, options);
   return { ...rest, archimap, ...(archimapError === undefined ? {} : { archimapError }) };
 }
 
@@ -282,14 +283,14 @@ function observeDebt(repoRoot: string, source: ReturnType<typeof capabilitySourc
   } catch (error) { return { status: statusOf(error), unowned, debt: null }; }
 }
 
-function currentBranch(repoRoot: string, env: NodeJS.ProcessEnv | undefined): string {
+function currentBranch(repoRoot: string, options: ArchctxProviderOptions): string {
   return gitExecFileSync(['-C', repoRoot, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-    encoding: 'utf8', env: env ?? process.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 3_000,
+    encoding: 'utf8', env: options.env ?? process.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: remainingTimeout(options, 3_000, 'notice branch'),
   }).trim();
 }
 
-function ignored(repoRoot: string, path: string, env: NodeJS.ProcessEnv | undefined): boolean {
-  try { gitExecFileSync(['-C', repoRoot, 'check-ignore', '-q', '--', path], { env: env ?? process.env, stdio: 'ignore', timeout: 3_000 }); }
+function ignored(repoRoot: string, path: string, options: ArchctxProviderOptions): boolean {
+  try { gitExecFileSync(['-C', repoRoot, 'check-ignore', '-q', '--', path], { env: options.env ?? process.env, stdio: 'ignore', timeout: remainingTimeout(options, 3_000, 'notice ignore') }); }
   catch (error) {
     // check-ignore exits 1 when no rule ignores the path.
     if ((error as { status?: unknown }).status === 1) return false;
@@ -299,49 +300,49 @@ function ignored(repoRoot: string, path: string, env: NodeJS.ProcessEnv | undefi
 }
 
 /** True when the key is new. The key is written before delivery, so a failed write delivers nothing. */
-function claim(repoRoot: string, path: string, key: string, env: NodeJS.ProcessEnv | undefined): boolean {
+function claim(repoRoot: string, path: string, key: string, options: ArchctxProviderOptions): boolean {
   const marker = join(repoRoot, path);
   assertSafeRepoWritePath(repoRoot, marker);
   try { if (readFileSync(marker, 'utf8').trim() === key) return false; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  if (!ignored(repoRoot, path, env)) throw new Error(`${path} is not Git-ignored`);
+  if (!ignored(repoRoot, path, options)) throw new Error(`${path} is not Git-ignored`);
   writeHookStateFile(repoRoot, marker, `${key}\n`);
   return true;
 }
 
 /** One line per readiness change. A failure never touches the debt marker, so a later success still delivers the debt. */
-function statusNotice(repoRoot: string, env: NodeJS.ProcessEnv | undefined, status: Status): NoticeBlock | null {
+function statusNotice(repoRoot: string, options: ArchctxProviderOptions, status: Status): NoticeBlock | null {
   switch (status.kind) {
     // A Claude Stop block for a timeout would start one more turn with nothing to do.
     case 'disabled': case 'timeout': return null;
     case 'active':
       // The active key ends the previous state, so a cause that returns prints again.
-      if (existsSync(join(repoRoot, STATUS_MARKER))) claim(repoRoot, STATUS_MARKER, digest(['active']), env);
+      if (existsSync(join(repoRoot, STATUS_MARKER))) claim(repoRoot, STATUS_MARKER, digest(['active']), options);
       return null;
-    case 'inactive': return claim(repoRoot, STATUS_MARKER, digest(['inactive', status.cause]), env) ? inactiveBlock(status.cause) : null;
+    case 'inactive': return claim(repoRoot, STATUS_MARKER, digest(['inactive', status.cause]), options) ? inactiveBlock(status.cause) : null;
     case 'failure': {
-      const key = digest(['failure', currentBranch(repoRoot, env), failureCode(status.error)]);
-      return claim(repoRoot, STATUS_MARKER, key, env) ? failureBlock(status.error) : null;
+      const key = digest(['failure', currentBranch(repoRoot, options), failureCode(status.error)]);
+      return claim(repoRoot, STATUS_MARKER, key, options) ? failureBlock(status.error) : null;
     }
   }
 }
 
 /** Ownership and citation debt share one marker. Their key changes when a debt item or an unowned path changes. */
-function debtNotice(repoRoot: string, env: NodeJS.ProcessEnv | undefined, observation: Observation): NoticeBlock[] {
+function debtNotice(repoRoot: string, options: ArchctxProviderOptions, observation: Observation): NoticeBlock[] {
   const { unowned, debt } = observation;
   // A failed or timed-out checkpoint has no measured set. Claiming the unowned paths alone would
   // make every recovery print them again.
   if (observation.status.kind === 'failure' || observation.status.kind === 'timeout' || (!unowned && !debt)) return [];
-  const key = digest([debt?.branch ?? currentBranch(repoRoot, env), debt?.ids ?? [], unowned?.paths ?? []]);
-  if (!claim(repoRoot, MARKER, key, env)) return [];
+  const key = digest([debt?.branch ?? currentBranch(repoRoot, options), debt?.ids ?? [], unowned?.paths ?? []]);
+  if (!claim(repoRoot, MARKER, key, options)) return [];
   return [unowned?.block, debt?.block].filter((block): block is NoticeBlock => block !== undefined);
 }
 
 /** Its own marker, so the map reminder never consumes or repeats the debt notice. */
-function archimapNotice(repoRoot: string, env: NodeJS.ProcessEnv | undefined, observation: Observation): NoticeBlock[] {
+function archimapNotice(repoRoot: string, options: ArchctxProviderOptions, observation: Observation): NoticeBlock[] {
   const { archimap } = observation;
   if (!archimap) return [];
-  return claim(repoRoot, ARCHIMAP_MARKER, digest([currentBranch(repoRoot, env), archimap.paths]), env) ? [archimap.block] : [];
+  return claim(repoRoot, ARCHIMAP_MARKER, digest([currentBranch(repoRoot, options), archimap.paths]), options) ? [archimap.block] : [];
 }
 
 /**
@@ -360,10 +361,33 @@ function noticeProblems() {
     lines(): string {
       return [
         ...(texts.length > 0 ? [boundedHookDiagnostic(`repo-harness: architecture notice unavailable: ${texts.join('; ')}`)] : []),
-        ...(timedOut ? [NOTICE_TIMEOUT_LINE] : []),
+        ...(timedOut ? [boundedHookDiagnostic(NOTICE_TIMEOUT_LINE)] : []),
       ].map(line => `${line}\n`).join('');
     },
   };
+}
+
+function taskNotice(repoRoot: string, options: ArchctxProviderOptions): NoticeBlock | null {
+  const task = parseIssueBranch(currentBranch(repoRoot, options));
+  if (!task) return null;
+  const prepared = prepareArchitectureTask(repoRoot, `Issue #${task.issue}: ${task.slug.replace(/-/g, ' ')}`, options);
+  if (!prepared) return null;
+  const content = `[Architecture] posture: ${prepared.posture}; constraints: ${prepared.constraints}; run: rh arch prepare --task ... --json`;
+  return { content, systemMessage: content };
+}
+
+/** Debt wins. Keep complete blocks in their original order, including commands and overflow counts. */
+function fitNoticeBlocks(blocks: readonly NoticeBlock[]): NoticeBlock[] {
+  const debt = (block: NoticeBlock) => block.content.startsWith('[ArchitectureDebt]');
+  const selected = new Set<NoticeBlock>();
+  let bytes = 0;
+  for (const block of [...blocks.filter(debt), ...blocks.filter(block => !debt(block))]) {
+    const size = Buffer.byteLength(block.content, 'utf8') + (selected.size > 0 ? 1 : 0);
+    if (bytes + size > MAX_BYTES) continue;
+    selected.add(block);
+    bytes += size;
+  }
+  return blocks.filter(block => selected.has(block));
 }
 
 /**
@@ -374,6 +398,8 @@ function noticeProblems() {
  * A Claude Stop line would start one more turn at each stop.
  */
 export function collectAgentNotice(repoRoot: string, ownership: (options: ArchctxProviderOptions) => CapabilityOwnership | null, options: ArchctxProviderOptions = {}, point: AgentNoticePoint = 'turn'): AgentNotice {
+  const now = options.nowMs ?? Date.now;
+  if (point === 'session-start') options = { ...options, deadlineMs: Math.min(options.deadlineMs ?? Infinity, now() + 3_000) };
   const observation = observe(repoRoot, ownership, options);
   if (!observation) return {};
   const blocks: NoticeBlock[] = [];
@@ -382,25 +408,35 @@ export function collectAgentNotice(repoRoot: string, ownership: (options: Archct
   if (status.kind === 'failure' || status.kind === 'timeout') problems.add(status.error);
   if (observation.unmeasured !== undefined) problems.add(observation.unmeasured);
   try {
-    const block = statusNotice(repoRoot, options.env, status);
+    const block = statusNotice(repoRoot, options, status);
     if (block) blocks.push(block);
   } catch (error) { problems.add(error); }
-  try { blocks.push(...debtNotice(repoRoot, options.env, observation)); }
+  try { blocks.push(...debtNotice(repoRoot, options, observation)); }
   catch (error) { problems.add(error); }
   // A failure that the status or unowned filter already reported (the shared
   // diff, or the same unavailable review subject) is not repeated.
   const { archimapError } = observation;
   const reported = status.kind === 'failure' ? status.error : observation.unmeasured;
   if (archimapError !== undefined && (reported === undefined || errorText(archimapError) !== errorText(reported))) problems.add(archimapError);
-  try { blocks.push(...archimapNotice(repoRoot, options.env, observation)); }
+  try { blocks.push(...archimapNotice(repoRoot, options, observation)); }
   catch (error) { problems.add(error); }
   if (point === 'session-start') {
-    try { if (![STATUS_MARKER, MARKER, ARCHIMAP_MARKER].every(path => ignored(repoRoot, path, options.env))) blocks.push(unignoredBlock()); }
+    try { if (![STATUS_MARKER, MARKER, ARCHIMAP_MARKER].every(path => ignored(repoRoot, path, options))) blocks.push(unignoredBlock()); }
     catch (error) { problems.add(error); }
+    if (status.kind === 'active') {
+      try {
+        const block = taskNotice(repoRoot, options);
+        if (block) blocks.push(block);
+      } catch (error) {
+        // The subprocess can echo task text or stderr. Report only its code.
+        problems.add(noticeTimeout(error) ? error : new Error(`architecture prepare unavailable (${failureCode(error)})`));
+      }
+    }
   }
+  const chosen = fitNoticeBlocks(blocks);
   const diagnostics = problems.lines();
   return {
-    ...(blocks.length > 0 ? { content: blocks.map(block => block.content).join('\n'), systemMessage: blocks.map(block => block.systemMessage).join('\n') } : {}),
+    ...(chosen.length > 0 ? { content: chosen.map(block => block.content).join('\n'), systemMessage: chosen.map(block => block.systemMessage).join('\n') } : {}),
     ...(diagnostics === '' ? {} : { diagnostics }),
   };
 }

@@ -560,7 +560,7 @@ export function capabilityOwnersForPaths(
   return owners;
 }
 
-function policyReviewBase(policy: WorkflowPolicy): string {
+export function policyReviewBase(policy: WorkflowPolicy): string {
   return policyString(
     policy,
     'worktree_strategy.review_base',
@@ -582,6 +582,14 @@ function collectStateSnapshotFacts(
   };
 }
 
+/** Parse the canonical issue branch once for state and SessionStart task context. */
+export function parseIssueBranch(branch: string): { issue: number; slug: string } | null {
+  const match = /^[^/]+\/([1-9]\d*)-([^/]+)$/.exec(branch);
+  if (!match) return null;
+  const issue = Number(match[1]);
+  return Number.isSafeInteger(issue) && issue > 0 ? { issue, slug: match[2]! } : null;
+}
+
 /**
  * The next unit when the branch is the canonical `<type>/<digits>-<slug>` form:
  * the branch names one GitHub issue and the message names both. Any other
@@ -599,11 +607,8 @@ function branchIssueNextAction(cwd: string): string | null {
   } catch {
     return null;
   }
-  const match = /^[^/]+\/([1-9]\d*)-[^/]+$/.exec(branch);
-  if (!match) return null;
-  const issue = Number(match[1]);
-  if (!Number.isSafeInteger(issue) || issue <= 0) return null;
-  return `Continue GitHub issue #${issue} on branch ${branch}.`;
+  const task = parseIssueBranch(branch);
+  return task ? `Continue GitHub issue #${task.issue} on branch ${branch}.` : null;
 }
 
 /**
