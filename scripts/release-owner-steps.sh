@@ -200,7 +200,7 @@ A step whose result shows it is done (npm shows the version, the tag is at ${sha
 7. bash scripts/release-owner-steps.sh check tagged ${version}
 
 Post-release steps, a joint decision of the orchestrator and the advisor after step 7 passes:
-8. bun add -g ${core_name}@${version} --no-cache && ${core_name} update --version ${version}
+8. bun add -g ${core_name}@${version} --no-cache && rh update --version ${version}
 9. The upgrade steps of the release notes:
 ${upgrade:-   (the [${version}] section has no Upgrade part)}
 10. Each of the orchestrator and advisor seats writes its handoff. Close its old pane, then start it again:
