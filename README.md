@@ -177,7 +177,7 @@ sequenceDiagram
 | --- | --- |
 | **Session continuity** | The branch names the issue; the issue and PR carry scope and the next step, so any agent resumes without the original chat. |
 | **Typed hook runtime** | 6 public routes (Claude 5, Codex 5), each bound to exactly one in-process handler. |
-| **Edit-boundary guards** | `RepoScopeGuard`, `ExternalReferenceGuard`, `OpsPrivateGuard`, `EditScopeGuard`, `ApplyPatchScopeGuard`. |
+| **Safety hook** | `CredentialGuard` (I1), `UserFileGuard` (I2), `RecursiveDeleteGuard`, `EditScopeGuard`, `ApplyPatchScopeGuard`. |
 | **Progressive context** | Root context plus per-capability contracts, backed by ArchContext and CodeGraph. |
 | **Acceptance review** | A persistent, sandboxed reviewer in a linked checkout, up to three repair rounds per PR. |
 | **Operator console** | A loopback-only local web board for tasks, repos, agents, skills, hooks and architecture. |

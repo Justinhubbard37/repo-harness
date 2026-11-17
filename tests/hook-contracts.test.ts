@@ -31,22 +31,6 @@ describe("Hook contracts", () => {
   });
 
 
-  // HRD-03: worktree-guard.sh and pre-edit-guard.sh are retired; their
-  // decision surface -- including the exact reason tokens and message text
-  // this test protects -- now lives in the in-process mutation-guard
-  // handler. Shell-specific assertions (sourcing hook-input.sh, calling the
-  // bash hook_structured_error helper) are dropped as not applicable to a
-  // TypeScript module; every guard-name/message-text string stays checked
-  // against the new handler's source.
-  test("mutation-guard preserves private path fences", () => {
-    const script = read("src/cli/hook/mutation-guard.ts");
-    expect(script).toContain("canonicalRepoRelativePath");
-    expect(script).toContain("RepoScopeGuard");
-    expect(script).toContain("OpsPrivateGuard");
-    expect(script).toContain("ExternalReferenceGuard");
-    expect(script).not.toContain(".claude/.require-worktree");
-  });
-
   test("one typed handler owns each subagent route", () => {
     const returnChannel = read("src/cli/hook/return-channel.ts");
     expect(returnChannel).toContain("[repo-harness:return-channel]");

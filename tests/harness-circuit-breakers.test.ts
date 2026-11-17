@@ -376,19 +376,19 @@ describe('workflow circuit breakers', () => {
     }
   }));
 
-  test('three consecutive _ops writes through the Claude host each exit 2 with the reason and fix on stderr', () => withOptInRepo((cwd) => {
+  test.skipIf(process.platform === 'win32')('three consecutive outside overwrites through the Claude host each exit 2 with the reason and fix on stderr', () => withOptInRepo((cwd) => {
     const home = join(cwd, '.home');
     mkdirSync(home, { recursive: true });
     for (let index = 1; index <= 3; index += 1) {
       const result = spawnSync(process.execPath, [HOOK_ENTRY, 'PreToolUse', '--route', 'edit'], {
         cwd,
         encoding: 'utf-8',
-        input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: '_ops/x.env', content: 'secret' } }),
+        input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: '/etc/hosts', content: 'x' } }),
         env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: home, HOOK_HOST: 'claude', HOOK_REPO_ROOT: cwd },
       });
       expect({ index, status: result.status }).toEqual({ index, status: 2 });
       expect(result.stdout).toBe('');
-      expect(result.stderr).toContain('[OpsPrivateGuard] _ops/x.env is under _ops/');
+      expect(result.stderr).toContain('[UserFileGuard] I2: the edit would overwrite');
       expect(result.stderr).toContain('  Fix: ');
       expect(result.stderr).not.toContain('"tripped"');
     }

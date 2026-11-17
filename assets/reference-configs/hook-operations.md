@@ -37,9 +37,9 @@ Other documents link here. They do not copy this table.
 | Route | Matcher | Host | Typed handler | Responsibility |
 | --- | --- | --- | --- | --- |
 | `SessionStart.default` | all sessions | Claude, Codex | `session-context` | Emit the Effective State section first, then the edit-guard-scope, architecture-debt and pending-plan sections under one budget. |
-| `PreToolUse.edit` | `Edit\|Write` | Claude, Codex | `mutation-guard` | Block an `Edit`, `Write` or Codex `apply_patch` target outside the repository, under `_ref/` or `_ops/`, or without a parseable target path. Bash writes skip it; see [Edit guard coverage](#edit-guard-coverage). |
+| `PreToolUse.edit` | `Edit\|Write` | Claude, Codex | `mutation-guard` | Safety hook: block an `Edit`, `Write` or Codex `apply_patch` removal or overwrite of an existing user file outside the worktree and temp roots (I2), or input without a parseable target path. See [Safety hook coverage](#safety-hook-coverage). |
 | `PreToolUse.subagent` | `Agent` | Claude | `return-channel` | Append the return-channel contract and standing orders to a Claude `Agent` prompt. |
-| `PreToolUse.bash` | `Bash` | Claude | `bash-mutation-guard` | Deny a literal write destination under `_ops/`, `_ref/` or outside the repository, and whole-repository recursion (`git clean -x`, `find -delete`, `rm -r` of the root). A command that names `_ops` or `_ref` runs only as simple read-only commands; any other shell form is denied. |
+| `PreToolUse.bash` | `Bash` | Claude | `bash-mutation-guard` | Safety hook: deny a credential read (I1), a removal or overwrite of an existing user file outside the worktree and temp roots (I2), and whole-repository recursion (`git clean -x`, `find -delete`, `rm -r` of the root). |
 | `UserPromptSubmit.inbox` | all prompts | Claude, Codex | `agent-notice` | Deliver architecture debt on Codex; Claude emits nothing. |
 | `SubagentStart.context` | subagent start | Codex | `subagent-context` | Record the native role and model observation. Add the bounded child context and standing orders. |
 | `Stop.default` | session stop | Claude, Codex | `stop` | Publish the evidence checkpoint and render handoff and resume. Report protected path changes. Claude can get architecture debt. |
@@ -187,68 +187,88 @@ When a hook blocks work:
    and elapsed time of each hook event.
 4. Use the external runbook for extended examples and historical failure modes.
 
-Edit guards:
+Safety hook guards:
 
-- `RepoScopeGuard`: the target path is not a canonical path inside the
-  repository.
-- `ExternalReferenceGuard`: the target is under `_ref/`.
-- `OpsPrivateGuard`: the target is under `_ops/`. A repository can list
-  directories strictly below `_ops/` in `operations.agent_writable_private_dirs`
-  of `.ai/harness/policy.json`, for example `["_ops/dispatch"]`. Edit, Write and
-  apply_patch writes below a listed directory pass. Bash writes there stay
-  denied, because Bash targets come from text. The guard denies a listed target
-  unless it is written as its canonical repository path: a root alias, another
-  letter case, a `.` or `..` segment, or an existing symlink that resolves
-  inside the repository changes the spelling. It also denies a glob character
-  and a dangling symlink at or below the listed directory. A symlink that
-  resolves outside the repository follows the ordinary external-path rule for
-  Edit and Write. An invalid entry denies every `_ops/`
-  write and the reason names the entry. Stop still reports these changes.
+- `CredentialGuard` (I1): a call prints or sends a credential store: an SSH
+  private key or the `.ssh` directory, `auth.json`, `*credentials*.json`, a
+  `.env*` file other than `.env.example`, `.env.sample` or `.env.template`, a
+  keychain dump (`security dump-keychain`, `security find-*-password -w` or
+  `-g`), or the whole environment (`env` with no command, `printenv` with no
+  name). The hook judges the file operands that each program reads, after
+  quote removal and brace expansion. A glob counts when it can match a
+  credential name in its directory. A curl `@file`, `field=@file` or
+  `field=<file` value is a send. Programs that read no file content (`ls`,
+  `stat`, `test`, `chmod`, `rm`, `mv`, `cd`, `echo`, `source`, `ssh-add` and
+  similar), a grep pattern (also `-e` and `--regexp`), a `cp` destination, a git
+  path filter (`git status`, `ls-files`, `log` without `-p`), an `--env-file`
+  value and an `ssh -i` identity pass. Secret redaction stays as the second
+  layer.
+- `UserFileGuard` (I2): a call removes or overwrites an existing file outside
+  the worktree, the managed worktree root (`/tmp` on POSIX unless
+  `REPO_HARNESS_WORKTREE_ROOT` moves it), the system temp directory and the
+  host agent's own memory and plan directories (Claude
+  `~/.claude/projects/*/memory` and `~/.claude/plans`, Codex
+  `~/.codex/memories`; the rest of `~/.claude`, `~/.codex` and `~/.pi` stays
+  protected), and the install ledger in `~/.repo-harness/install-state.json` does not record the
+  file, or a directory tree above it, as rh-created. A create or an append
+  passes everywhere. A removal (`rm`, `unlink`, `shred`, `truncate`, each `mv`
+  operand, `sed -i`, `find -delete`) whose target is not known before the
+  command runs is refused; an overwrite with an unknown target passes. A
+  target with a glob or a parameter is judged by its literal directory before
+  the first such character (a leading `$HOME` or `~` is literal): inside an
+  allowed root it passes, and an existing directory outside them takes the
+  outside rule. The hook checks every simple command, also after `then`, `do`, `else`, `&&`,
+  `||`, `;`, `|`, a newline and inside a subshell. A `cd` narrows the working
+  directory only when `&&` follows it, `||` does not come before it and its
+  directory exists; after any other `cd` the working directory is not known. A target resolves as the kernel
+  resolves it: each symlink before the `..` after it, and the existing child
+  that a `cp` or redirect into a directory writes. In a
+  Claude session whose `permission_mode` is not `bypassPermissions` or
+  `dontAsk`, the hook returns the host's ask decision and the user answers
+  locally. A bypass or `dontAsk` session (the owner's own bypass sessions
+  included), a payload without a mode, Codex and the Pi bridge get the deny;
+  the bridge renders an ask as a block. The deny names every allowed root and
+  the step the user can take: the exact `! <command>` line for a one-line Bash
+  command, or the target path that the user can edit themselves. The prompt,
+  stderr and the failure record get the reason and fix after secret
+  redaction; a command that holds a secret shows its redacted form, or no
+  command when the redaction leaves a secret.
+- `RecursiveDeleteGuard`: `rm -r`, `find -delete` or `find -exec` with a program
+  that is not a reader, or `git clean -x`/`-X` starts at the repository root, an
+  ancestor of it, or a start that is not known.
 - `ApplyPatchScopeGuard`: Codex `apply_patch` input has no parseable target
   path.
 - `EditScopeGuard`: an `Edit` or `Write` call has no `tool_input.file_path`.
 
-### Edit guard coverage
+### Safety hook coverage
 
 `PreToolUse.edit` matches `Edit|Write`. On Codex it also reads `apply_patch`
-input. Claude also has a separate `PreToolUse.bash` tripwire in both install
-profiles. Codex shell tools have no Bash route. The tripwire is not a complete
-shell parser. Bash writes get no `[CapabilityOwner]` line. #764 and #766 removed
+input: `Add File` and `Move to` create or replace a file, `Update File` and
+`Delete File` need an existing file. Claude and Pi also run the safety hook on
+`PreToolUse.bash` in both install profiles. Codex shell tools have no Bash
+route. Bash writes get no `[CapabilityOwner]` line. #764 and #766 removed
 `PostToolUse.bash` after each call paid about 5 seconds. That route stays absent.
 
-The Bash handler checks command strings without Effective State, Git or owner
-resolution. Only a suspicious literal destination runs the shared path guard.
-It recognizes `>` and `>>`, `tee -a`, single-file `sed -i`, `rm`, `mv`, `cp`
-destinations, and literal Python `open`/`Path` and Node file-write calls in
-`-c`/`-e` source or a heredoc. Read operands and quoted shell examples do not
-count as writes. A literal `cd DIR &&` changes the target base. Other `cd` forms
-leave subsequent relative targets unchecked. A glob below a literal
-protected directory also triggers the check.
+The Bash handler reads the command line without Effective State, Git or owner
+resolution. It is a shell word reader, not a shell interpreter. It reads quotes,
+substitution bodies, heredocs, redirects and `cd` before each simple command.
+It recognizes `>`, `>|` and `&>` redirects, `rm`, `unlink`, `shred`, `truncate`,
+`mv`, `cp`, `ln -f`, `tee` without `-a`, `sed -i`, `dd of=`, `find -delete`, and
+literal Python `open`/`Path`/`os.remove` and Node file-write or unlink calls in
+`-c`/`-e` source or a heredoc. `$HOME` and `~` resolve to the home directory;
+other parameters, `~user` and `~-` are not known. A glob removes entries below
+its literal directory, so that directory decides. Paths under `/dev/` pass.
 
-A known `_ops/`, `_ref/` or outside-repository destination gets exit 2 and the
-same guard diagnostic and failure record as an edit. Bash uses a repository-only
-boundary; Edit/Write retains its verified external absolute-path allowance.
-`/dev/null`, `/dev/stdout`, `/dev/stderr`, `/dev/tty` and numeric `/dev/fd/N`
-targets are output streams and pass.
+The threat model is accidents. A target built at run time for an overwrite, a
+script or binary that writes, `xargs`, `eval` and `sh -c` can skip the hook. A
+handler failure on the Bash route exits 1 and does not block.
 
-Missing absolute host `cwd`, commands above 64 KiB, variable expansion,
-grouping, unsupported options, indirect scripts, code generators, `eval`,
-`sh -c`, `git checkout`, `find` and `xargs` can skip the tripwire. Symlink aliases
-without a protected or external path token can also skip it. Interpreter checks
-recognize literal call text; they do not evaluate Python or JavaScript control
-flow. The unparsed remainder passes. A handler failure exits 1 and does not block.
-More than one heredoc on a line or an unresolved delimiter leaves the remaining
-command unchecked. Earlier parsed targets still get checked. This is a tripwire,
-not proof that an allowed command cannot write private files.
+The `edit-guard-scope` SessionStart section tells the Agent this scope on every
+host, also when Effective State is unavailable.
 
-The `edit-guard-scope` SessionStart section tells the Agent this limit on every
-host, also when Effective State is unavailable: Claude Bash has only a literal
-tripwire; use the edit tools to change
-repository files, and use Bash to run commands.
-
-Stop reports a change under `_ops/` or `_ref/` after the fact. The guard denies
-every `Edit`, `Write` and `apply_patch` target there, so a change there came from
-Bash, a script or the person. The report cannot tell which one. It does not block.
+Stop reports a change under `_ops/` or `_ref/` after the fact. Agent edits,
+Bash, scripts and the person can all change these directories. The report
+cannot tell which one. It does not block.
 
 - Stop walks `_ops/` and `_ref/` with `lstat`. It does not follow symbolic links.
   It records the size and mtime of each entry in the Git-ignored

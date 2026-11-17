@@ -154,7 +154,7 @@ export interface SetupHookRouteUsage {
 /** One guard denial from `.ai/harness/failures/latest.jsonl`. */
 export interface SetupHookDenial {
   at: string;
-  /** Guard name, e.g. `RepoScopeGuard`. */
+  /** Guard name, e.g. `UserFileGuard`. */
   guard: string;
   /** Redacted denial reason. */
   reason: string;

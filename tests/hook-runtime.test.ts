@@ -163,11 +163,11 @@ describe('hook runtime typed dispatch', () => {
     }
   }, 30_000);
 
-  test('telemetry gives a policy denial and a crash different reasons', () => {
+  test.skipIf(process.platform === 'win32')('telemetry gives a policy denial and a crash different reasons', () => {
     const root = fixture();
     try {
       const denied = runHook({ event: 'PreToolUse', routeId: 'edit', cwd: root, env: env(root),
-        input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: '_ops/private', content: 'forbidden' } }) });
+        input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: '/etc/hosts', content: 'forbidden' } }) });
       expect(denied).toMatchObject({ exitCode: 2, reason: 'blocked' });
       crashGuard(root, 'claude');
       const [denial, crash] = telemetry(root);

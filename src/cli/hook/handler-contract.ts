@@ -3,9 +3,9 @@ import type { HookIdentity, HookPayload } from './hook-input';
 import type { SessionContextSection } from './session-context-budget';
 import type { HookEvent, HookHandlerId } from './route-registry';
 
-/** A tool admission decision. `updatedInput` replaces the tool input on allow. */
+/** A tool admission decision. `updatedInput` replaces the tool input on allow; `ask` hands the call to the user locally. */
 export interface HookPermission {
-  readonly decision: 'allow' | 'deny';
+  readonly decision: 'allow' | 'deny' | 'ask';
   readonly reason: string;
   readonly updatedInput?: Readonly<Record<string, unknown>>;
 }

@@ -151,26 +151,6 @@ export function resolveHarnessPaths(cwd: string): HarnessPaths {
   };
 }
 
-/**
- * Directories below `_ops/` that Edit, Write and apply_patch may target. An
- * absent key is an empty list. An entry must be a canonical repo-relative path
- * strictly below `_ops`; any other value throws so the caller keeps denying.
- */
-export function agentWritablePrivateDirs(policy: WorkflowPolicy): readonly string[] {
-  const jqPath = '.operations.agent_writable_private_dirs';
-  const value = resolverValue(policy, 'operations.agent_writable_private_dirs');
-  if (value === POLICY_ABSENT) return [];
-  if (!Array.isArray(value)) throw new Error(`invalid workflow policy value ${jqPath}: not an array`);
-  return value.map((entry: unknown) => {
-    const segments = typeof entry === 'string' ? entry.split('/') : [];
-    if (typeof entry !== 'string' || /[\\\0\n\r]/.test(entry) || win32.isAbsolute(entry) || /^[A-Za-z]:/.test(entry)
-      || segments.length < 2 || segments[0] !== '_ops' || segments.some(s => s === '' || s === '.' || s === '..')) {
-      throw new Error(`invalid workflow policy entry ${jqPath}: ${JSON.stringify(entry)} is not a canonical directory strictly below _ops/`);
-    }
-    return entry;
-  });
-}
-
 function policyString(policy: WorkflowPolicy, path: PolicyPath, fallback: string): string {
   const jqPath = `.${path}`;
   const value = resolverValue(policy, path);

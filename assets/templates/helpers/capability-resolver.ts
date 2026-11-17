@@ -1720,7 +1720,7 @@ export type PolicyKeyTree = {
 export const WORKFLOW_POLICY_KEYS = {
   tasks: { research_dir: true },
   external_sources: {},
-  operations: { agent_writable_private_dirs: true, deploy_sql: {} },
+  operations: { deploy_sql: {} },
   context: { map_file: true, capability_source: true },
   harness: { runs_dir: true },
   information_lifecycle: {

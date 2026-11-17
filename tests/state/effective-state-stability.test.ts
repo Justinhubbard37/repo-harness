@@ -231,6 +231,7 @@ describe('Effective State stability contract: authority-only partition (hook-gua
         repoRoot: fixture.cwd,
         payload: { tool_input: { file_path: 'src/feature.ts' } },
         identity: hookIdentity(),
+        env: process.env,
       });
 
       expect(result.exitCode).toBe(0);

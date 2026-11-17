@@ -20,7 +20,7 @@ import { recordPluginSelection } from './helpers/install-ownership';
 const HOOK_ENTRY = join(import.meta.dir, "../src/cli/hook-entry.ts");
 const RESUME = ".ai/harness/handoff/resume.md";
 const SPRINT = "plans/sprints/fixture.sprint.md";
-const EDIT_GUARD_SCOPE = "[EditGuardScope] The edit guard checks Edit, Write and apply_patch. Claude and Pi Bash have a literal-write tripwire only; other shell writes skip it. Use the edit tools to change repository files. Use Bash to run commands.";
+const EDIT_GUARD_SCOPE = "[EditGuardScope] The safety hook checks Edit, Write and apply_patch, and Claude and Pi Bash commands. It refuses a credential read and a removal or overwrite of an existing file outside the worktree, the temp directories and the agent's own memory and plans. Codex Bash and files written by scripts skip it. Use the edit tools to change repository files. Use Bash to run commands.";
 
 interface Fixture {
   readonly root: string;

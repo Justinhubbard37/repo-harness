@@ -95,11 +95,12 @@ export interface BridgeHookOutput {
 
 /**
  * A direct package host bridge reads exactly one JSON object from stdout.
- * Exit 2 or a deny permission is a block. Operator text stays on stderr.
+ * Exit 2, a deny or an ask permission is a block: a bridge has no user prompt, so an ask must never pass.
+ * Operator text stays on stderr.
  */
 function renderBridgeOutput(outcome: HookOutcome): HostOutput {
   const permission = outcome.exitCode === 0 ? outcome.permission?.decision : undefined;
-  const decision = outcome.exitCode === 2 || permission === 'deny' ? 'block' : permission === 'allow' ? 'allow' : 'none';
+  const decision = outcome.exitCode === 2 || permission === 'deny' || permission === 'ask' ? 'block' : permission === 'allow' ? 'allow' : 'none';
   const output: BridgeHookOutput = {
     protocol: BRIDGE_HOOK_PROTOCOL,
     event: outcome.event,

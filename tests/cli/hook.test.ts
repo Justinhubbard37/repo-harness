@@ -69,6 +69,8 @@ describe('hook host output fields', () => {
     const edit = { ...outcome, event: 'PreToolUse' as const, routeId: 'edit' as const, additionalContext: null, systemMessage: undefined };
     expect(JSON.parse(HOST_RENDERERS.pi({ ...edit, exitCode: 2, reason: 'blocked' }).stdout).decision).toBe('block');
     expect(JSON.parse(HOST_RENDERERS.pi({ ...edit, permission: { decision: 'deny', reason: 'x' } }).stdout).decision).toBe('block');
+    // The bridge has no user prompt, so an ask never passes.
+    expect(JSON.parse(HOST_RENDERERS.pi({ ...edit, permission: { decision: 'ask', reason: 'x' } }).stdout).decision).toBe('block');
     expect(JSON.parse(HOST_RENDERERS.pi({ ...edit, permission: { decision: 'allow', reason: 'x' } }).stdout).decision).toBe('allow');
     expect(JSON.parse(HOST_RENDERERS.pi({ ...edit, permission: {
       decision: 'allow', reason: 'x', updatedInput: { file_path: 'changed.txt' },
@@ -143,7 +145,7 @@ describe('typed hook runtime', () => {
     } finally { clean(root); }
   }, 30_000);
 
-  test('a newer declared minimum leaves every edit guard in force and reports on SessionStart', () => {
+  test.skipIf(process.platform === 'win32')('a newer declared minimum leaves every edit guard in force and reports on SessionStart', () => {
     const root = repo();
     try {
       writeFileSync(join(root, '.ai/harness/workflow-contract.json'), `${JSON.stringify({ minimum_harness_version: '999.0.0' })}\n`);
@@ -152,11 +154,10 @@ describe('typed hook runtime', () => {
         input: `${JSON.stringify({ tool_name: 'Write', tool_input: { file_path: filePath, content: 'x' } })}\n`,
       });
       // The tool route runs; the gate does not turn a deny into an allow.
-      const denied = edit(join(root, '_ops', 'private'));
+      const denied = edit('/etc/hosts');
       expect(denied.status).toBe(2);
-      expect(denied.stderr).toContain('OpsPrivateGuard');
+      expect(denied.stderr).toContain('UserFileGuard');
       expect(denied.stderr).not.toContain('needs repo-harness');
-      expect(existsSync(join(root, '_ops', 'private'))).toBe(false);
       expect(edit(join(root, 'README.md')).status).toBe(0);
 
       const session = spawnSync(process.execPath, [HOOK_ENTRY, 'SessionStart', '--route', 'default'], { cwd: root, env: env(root), input: '', encoding: 'utf8' });

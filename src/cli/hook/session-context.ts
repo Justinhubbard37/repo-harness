@@ -51,14 +51,14 @@ export function projectUnavailableStateSessionSection(
 }
 
 /**
- * PreToolUse.edit matches Edit|Write and Codex apply_patch only. No Bash route
- * exists, because #764 removed the per-call Bash cost (#851). Every host and
+ * The safety hook runs on PreToolUse.edit (Edit|Write and Codex apply_patch)
+ * and on the Claude and Pi Bash route; Codex has no Bash route. Every host and
  * every state gets this line, because the limit does not depend on state.
  */
 export const EDIT_GUARD_SCOPE_SECTION: SessionContextSection = Object.freeze({
   id: 'edit-guard-scope',
   priority: 1,
-  content: '[EditGuardScope] The edit guard checks Edit, Write and apply_patch. Claude and Pi Bash have a literal-write tripwire only; other shell writes skip it. Use the edit tools to change repository files. Use Bash to run commands.',
+  content: '[EditGuardScope] The safety hook checks Edit, Write and apply_patch, and Claude and Pi Bash commands. It refuses a credential read and a removal or overwrite of an existing file outside the worktree, the temp directories and the agent\'s own memory and plans. Codex Bash and files written by scripts skip it. Use the edit tools to change repository files. Use Bash to run commands.',
   mandatory: true,
   source: 'docs/reference-configs/hook-operations.md',
 });

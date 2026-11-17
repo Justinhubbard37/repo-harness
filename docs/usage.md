@@ -287,9 +287,10 @@ When a hook blocks work, read the terminal output first: one `[<Guard>] <reason>
 line and one `Fix:` line. The durable record in
 `.ai/harness/failures/latest.jsonl` carries `guard`, `reason`, `fix`,
 `failure_class`, and `run_id`. `.ai/harness/runs/hook-events.jsonl` records
-each hook event. The edit guards are `RepoScopeGuard` (a path outside the
-repository), `ExternalReferenceGuard` (`_ref/`), `OpsPrivateGuard` (`_ops/`),
-and `ApplyPatchScopeGuard` and `EditScopeGuard` (no parseable target path).
+each hook event. The safety hook guards are `CredentialGuard` (a credential
+read, I1), `UserFileGuard` (a removal or overwrite of an existing user file
+outside the worktree and temp roots, I2), `RecursiveDeleteGuard`, and
+`ApplyPatchScopeGuard` and `EditScopeGuard` (no parseable target path).
 Full playbook:
 [`docs/reference-configs/hook-operations.md`](reference-configs/hook-operations.md).
 

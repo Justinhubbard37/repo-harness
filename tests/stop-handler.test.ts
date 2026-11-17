@@ -358,13 +358,13 @@ describe('Stop protected path report (#851)', () => {
     expect(result.systemMessage).toStartWith('Protected paths: 3 changes under _ops/ or _ref/ since the last Stop');
   });
 
-  test('an edit the guard allows and an edit the guard denies produce no report', () => {
+  test.skipIf(process.platform === 'win32')('an edit the guard allows and an edit the guard denies produce no report', () => {
     const cwd = baselined();
     const identity = hookIdentity();
-    const allowed = runMutationGuard({ repoRoot: cwd, payload: { tool_input: { file_path: 'src/x.ts' } }, identity });
+    const allowed = runMutationGuard({ repoRoot: cwd, payload: { tool_input: { file_path: 'src/x.ts' } }, identity, env: process.env });
     expect(allowed.exitCode).toBe(0);
     write(cwd, 'src/x.ts', 'export const x = 1;\n');
-    const denied = runMutationGuard({ repoRoot: cwd, payload: { tool_input: { file_path: '_ops/env/a.env' } }, identity });
+    const denied = runMutationGuard({ repoRoot: cwd, payload: { tool_input: { file_path: '/etc/hosts' } }, identity, env: process.env });
     expect(denied.exitCode).toBe(2);
 
     const result = stop(cwd);

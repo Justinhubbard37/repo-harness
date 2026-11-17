@@ -24,7 +24,7 @@ function runEditHandler(
   cwd: string,
   payload: Record<string, unknown>,
 ): { status: number; stdout: string; stderr: string } {
-  const result = runMutationGuard({ repoRoot: cwd, payload, identity: hookIdentity() });
+  const result = runMutationGuard({ repoRoot: cwd, payload, identity: hookIdentity(), env: process.env });
   return { status: result.exitCode, stdout: result.stdout, stderr: result.stderr };
 }
 
@@ -62,34 +62,6 @@ describe("Claude Code hook protocol compliance", () => {
       const res = runEditHandler(cwd, { tool_input: { file_path: "src/app.ts" } });
       expect(res.status).toBe(0);
       expect(res.stderr).not.toContain("[WorktreeGuard]");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  test("pre-edit-guard: ExternalReferenceGuard uses exit 2 with reason on stderr", () => {
-    const cwd = tmpWorkspace("hook-proto-ref");
-    try {
-      initGitRepo(cwd);
-
-      const res = runEditHandler(cwd, { tool_input: { file_path: "_ref/upstream/README.md" } });
-      expect(res.status).toBe(2);
-      expect(res.stderr).toContain("[ExternalReferenceGuard]");
-      expect(res.stderr).toContain("_ref/");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  test("pre-edit-guard: OpsPrivateGuard uses exit 2 with reason on stderr", () => {
-    const cwd = tmpWorkspace("hook-proto-ops");
-    try {
-      initGitRepo(cwd);
-
-      const res = runEditHandler(cwd, { tool_input: { file_path: "_ops/env/.env.production" } });
-      expect(res.status).toBe(2);
-      expect(res.stderr).toContain("[OpsPrivateGuard]");
-      expect(res.stderr).toContain("_ops/");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -150,28 +122,6 @@ describe("Claude Code hook protocol compliance", () => {
     }
   }, 30_000);
 
-
-  test("hook_get_file_path: normalizes absolute paths inside the repo to repo-relative paths", () => {
-    // Background: Edit/Write/post-edit hooks receive `tool_input.file_path` as an
-    // absolute path. Guards that match against repo-relative patterns
-    // (`_ref/*`, `_ops/*`, `.ai/hooks/`, `apps/*/src/...`) silently fail on
-    // absolute paths. Standardising the path at the input boundary fixes
-    // ContractScopeGuard, ExternalReferenceGuard, OpsPrivateGuard, and the
-    // post-edit doc-drift / brain-sync matchers in one move.
-
-    // Case 1: absolute path inside the repo → repo-relative match still triggers
-    // the _ref guard (regression for repo-internal absolute inputs).
-    const cwd = tmpWorkspace("hook-proto-abs-ref");
-    try {
-      initGitRepo(cwd);
-
-      const refRes = runEditHandler(cwd, { tool_input: { file_path: `${cwd}/_ref/upstream/README.md` } });
-      expect(refRes.status).toBe(2);
-      expect(refRes.stderr).toContain("[ExternalReferenceGuard]");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  }, 30_000);
 
   test("pre-edit-guard: ignores paths outside the repo contract boundary", () => {
     // Case 2: an absolute path outside the repo (e.g. a global plan file under
@@ -263,7 +213,7 @@ describe("Claude Code hook protocol compliance", () => {
     }
   }, 30_000);
 
-  test("hook_structured_error: writes the diagnostic to stderr and one failure record", () => {
+  test.skipIf(process.platform === "win32")("hook_structured_error: writes the diagnostic to stderr and one failure record", () => {
     // The host reads the stderr reason. Trace consumers read the failure
     // record; a denial writes nothing to stdout.
     const cwd = tmpWorkspace("hook-proto-emit-shape");
@@ -272,15 +222,16 @@ describe("Claude Code hook protocol compliance", () => {
       mkdirSync(join(cwd, ".claude"), { recursive: true });
       writeFileSync(join(cwd, ".claude/.require-worktree"), "1\n");
 
-      const res = runEditHandler(cwd, { tool_input: { file_path: "_ops/private.env" } });
+      // /etc/hosts is an existing file outside the worktree and the temp directories, so the I2 rule denies the overwrite.
+      const res = runEditHandler(cwd, { tool_input: { file_path: "/etc/hosts" } });
       expect(res.status).toBe(2);
       // stderr keeps the human-readable diagnostic (this is what Claude / the user reads).
-      expect(res.stderr).toContain("[OpsPrivateGuard]");
+      expect(res.stderr).toContain("[UserFileGuard]");
       expect(res.stdout).toBe("");
       const records = readFileSync(join(cwd, ".ai/harness/failures/latest.jsonl"), "utf-8").trim().split("\n");
       expect(records).toHaveLength(1);
       expect(records[0]).toContain('"failure_class":"state_violation"');
-      expect(records[0]).toContain('"guard":"OpsPrivateGuard"');
+      expect(records[0]).toContain('"guard":"UserFileGuard"');
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

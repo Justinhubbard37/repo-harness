@@ -177,7 +177,7 @@ describe('risk-based runtime profile enforcement', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   }, 30_000);
 
-  test('Codex apply_patch permits authorized high-risk edits and refuses private targets', () => {
+  test.skipIf(process.platform === 'win32')('Codex apply_patch permits authorized high-risk edits and refuses an outside overwrite', () => {
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'profile-apply-patch-')));
     try {
       initRepo(cwd);
@@ -190,21 +190,16 @@ describe('risk-based runtime profile enforcement', () => {
       expect(migration.status).toBe(0);
       expect(`${migration.stdout}${migration.stderr}`).not.toContain('action\":\"block');
 
-      // _ops/secret.txt is listed first: OpsPrivateGuard is a pure path match
-      // evaluated before workflow-profile resolution, so checking it first keeps
-      // this assertion independent of the batch-scope strict-token leak that A1
-      // deliberately introduces (a "secret" sibling now promotes src/safe.ts to
-      // strict too, which would otherwise trip SpecGuard first depending on order).
+      // /etc/hosts is an existing file outside the worktree and the temp directory, so one hunk denies the batch.
       const multi = preApplyPatch(cwd, [
         '*** Begin Patch',
-        '*** Add File: _ops/secret.txt',
-        '+private',
+        '*** Delete File: /etc/hosts',
         '*** Add File: src/safe.ts',
         '+export const safe = true;',
         '*** End Patch',
       ].join('\n'));
       expect(multi.status).toBe(2);
-      expect(multi.stderr).toContain('OpsPrivateGuard');
+      expect(multi.stderr).toContain('[UserFileGuard] I2:');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   }, 30_000);
 

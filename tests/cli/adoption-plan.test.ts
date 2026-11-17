@@ -54,7 +54,7 @@ describe("canonical adoption plan", () => {
       mkdirSync(join(repo, ".ai/harness"), { recursive: true });
       const owner = `{
   "publication": { "acceptance_merge": "on", "generated_artifacts": {"x": 1} },
-  "operations": { "agent_writable_private_dirs": ["_ops/notes"], "dir": "deploy" },
+  "operations": { "agent_writable_private_dirs": ["_ops/notes"], "dir": "deploy", "deploy_sql": { "dir": "deploy/sql" } },
   "external_tooling": { "herdr": { "url": "u" }, "agent_fleet": { "managed_agents": ["explorer", "orchestrator"] } },
   "sidecar_research": { "default": true },
   "guards": { "edit_plan_gate": "off" },
@@ -69,16 +69,16 @@ describe("canonical adoption plan", () => {
       const plan = planAdoption({ repoRoot: repo, mode: "standard", apply: true });
       expect(plan.warnings).toContainEqual({
         code: "unknown-policy-keys",
-        message: "Removed policy keys that no reader uses: agentic_development.routing.simple, context.capability_match_rule, enforcement.worktree_guard, external_tooling.herdr.url, guards.edit_plan_gate, merge_gate.enabled, operations.dir, sidecar_research.default, worktree_strategy.worktree_dir_template",
+        message: "Removed policy keys that no reader uses: agentic_development.routing.simple, context.capability_match_rule, enforcement.worktree_guard, external_tooling.herdr.url, guards.edit_plan_gate, merge_gate.enabled, operations.agent_writable_private_dirs, operations.dir, sidecar_research.default, worktree_strategy.worktree_dir_template",
         risk: "medium",
       });
       expect(applyAdoptionPlan(plan).ok).toBe(true);
       const text = readFileSync(join(repo, ".ai/harness/policy.json"), "utf8");
       expect(text).toContain(`"publication": { "acceptance_merge": "on", "generated_artifacts": {"x": 1} }`);
-      expect(text).toContain(`"agent_writable_private_dirs": ["_ops/notes"]`);
+      expect(text).toContain(`"deploy_sql": { "dir": "deploy/sql" }`);
       expect(JSON.parse(text)).toEqual({
         publication: { acceptance_merge: "on", generated_artifacts: { x: 1 } },
-        operations: { agent_writable_private_dirs: ["_ops/notes"] },
+        operations: { deploy_sql: { dir: "deploy/sql" } },
         external_tooling: { agent_fleet: { managed_agents: ["explorer", "orchestrator"] } },
         context: { capability_source: "archcontext" },
         worktree_strategy: { base_branch: "trunk" },

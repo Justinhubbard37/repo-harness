@@ -70,10 +70,13 @@ async function fixture(options: {
   mkdirSync(root, { recursive: true });
   mkdirSync(agentDir, { recursive: true });
   if (options.gitRepo !== false) initGitRepo(root);
-  mkdirSync(join(root, '_ops'));
-  writeFileSync(join(root, '_ops/x'), 'protected original\n');
+  // The hook child's temp and managed worktree roots are fixture directories, so `outside/x` is an existing file outside every
+  // root that I2 allows.
+  for (const dir of ['outside', 'tmp', 'managed']) mkdirSync(join(workspace, dir));
+  const protectedFile = join(workspace, 'outside/x');
+  writeFileSync(protectedFile, 'protected original\n');
   writeFileSync(join(root, 'normal.txt'), 'original\n');
-  writeFileSync(join(root, '.gitignore'), '_ops/\n.ai/harness/state/\n.ai/harness/runs/\n.ai/harness/handoff/\n');
+  writeFileSync(join(root, '.gitignore'), '.ai/harness/state/\n.ai/harness/runs/\n.ai/harness/handoff/\n');
   if (options.optIn !== false) {
     mkdirSync(join(root, '.ai/harness'), { recursive: true });
     writeFileSync(join(root, '.ai/harness/workflow-contract.json'), '{}\n');
@@ -85,7 +88,8 @@ async function fixture(options: {
   writeFileSync(join(bin, 'repo-harness-hook'), '#!/bin/sh\n: > "$HOME/decoy-ran"\nexit 99\n');
   chmodSync(join(bin, 'repo-harness-hook'), 0o755);
   const env = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir,
-    PATH: `${bin}${delimiter}${process.env.PATH}`, HOOK_HOST: 'codex', HOOK_REPO_ROOT: '/stale-root', REPO_HARNESS_RUN_ID: 'stale-run' };
+    PATH: `${bin}${delimiter}${process.env.PATH}`, HOOK_HOST: 'codex', HOOK_REPO_ROOT: '/stale-root', REPO_HARNESS_RUN_ID: 'stale-run',
+    TMPDIR: join(workspace, 'tmp'), REPO_HARNESS_WORKTREE_ROOT: join(workspace, 'managed') };
   const bridges: ObservedBridge[] = [];
   const script: AssistantMessage[] = [];
   const providerContexts: unknown[] = [];
@@ -151,7 +155,7 @@ async function fixture(options: {
   }
   let counter = 0;
   return {
-    root, home, session, bridges, providerContexts,
+    root, home, session, bridges, providerContexts, protected: protectedFile,
     async tool(name: string, args: ToolCall['arguments']) {
       const id = `fixture-${++counter}`;
       script.push(assistant([{ type: 'toolCall', id, name, arguments: args }], 'toolUse'));
@@ -185,7 +189,7 @@ function customMessages(session: AgentSession) {
 }
 
 describe('Pi real SDK with scripted provider fixture', () => {
-  test('normal tools pass; protected direct and codemode writes keep their bytes', async () => {
+  test('normal tools pass; outside overwrites through direct and codemode tools keep their bytes', async () => {
     const f = await fixture();
     try {
       expect((await f.tool('write', { path: 'new.txt', content: 'new bytes\n' })).isError).toBe(false);
@@ -193,20 +197,20 @@ describe('Pi real SDK with scripted provider fixture', () => {
       expect((await f.tool('edit', { path: '@normal.txt', oldText: 'original', newText: 'edited' })).isError).toBe(false);
       expect(readFileSync(join(f.root, 'normal.txt'), 'utf8')).toBe('edited\n');
       for (const [name, args] of [
-        ['write', { path: '_ops/x', content: 'forbidden' }],
-        ['edit', { path: '_ops/x', oldText: 'protected original', newText: 'forbidden' }],
-        ['bash', { command: 'printf forbidden > _ops/x' }],
-        ['codemode', { code: 'await tools.write({path: "_ops/x", content: "forbidden"});' }],
+        ['write', { path: f.protected, content: 'forbidden' }],
+        ['edit', { path: f.protected, oldText: 'protected original', newText: 'forbidden' }],
+        ['bash', { command: `printf forbidden > ${f.protected}` }],
+        ['codemode', { code: `await tools.write({path: ${JSON.stringify(f.protected)}, content: "forbidden"});` }],
       ] as const) {
         const result = await f.tool(name, args);
         expect(result.isError, `${name}: ${JSON.stringify(result)}`).toBe(true);
-        expect(JSON.stringify(result)).toContain('OpsPrivateGuard');
-        expect(readFileSync(join(f.root, '_ops/x'), 'utf8')).toBe('protected original\n');
+        expect(JSON.stringify(result)).toContain('UserFileGuard');
+        expect(readFileSync(f.protected, 'utf8')).toBe('protected original\n');
       }
       const requests = f.bridges.flatMap(bridge => bridge.requests);
       const nested = requests.find(request => request.payload.parent_tool_call_id !== null && request.payload.parent_tool_call_id !== undefined);
       expect(nested?.payload).toMatchObject({ tool_name: 'Write', tool_call_id: 'fixture-6/1', parent_tool_call_id: 'fixture-6' });
-      expect(nested?.payload.tool_input).toEqual({ file_path: join(f.root, '_ops/x') });
+      expect(nested?.payload.tool_input).toEqual({ file_path: f.protected });
       const toolRecords = records(f.root).filter(record => record.event === 'PreToolUse');
       expect(toolRecords).toHaveLength(6);
       expect(toolRecords.every(record => record.host === 'pi' && record.session_id === f.session.sessionManager.getSessionId())).toBe(true);
@@ -262,8 +266,8 @@ describe('Pi real SDK with scripted provider fixture', () => {
     const capture = spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => { stdout.push(String(chunk)); return true; });
     try {
       expect(f.session.extensionRunner.hasUI()).toBe(false);
-      expect((await f.tool('write', { path: '_ops/x', content: 'forbidden' })).isError).toBe(true);
-      expect(readFileSync(join(f.root, '_ops/x'), 'utf8')).toBe('protected original\n');
+      expect((await f.tool('write', { path: f.protected, content: 'forbidden' })).isError).toBe(true);
+      expect(readFileSync(f.protected, 'utf8')).toBe('protected original\n');
       expect(stdout.join('')).toBe('');
     } finally { capture.mockRestore(); await f.close(); }
   });
@@ -275,15 +279,15 @@ describe('Pi real SDK with scripted provider fixture', () => {
     const f = await fixture({ probe });
     try {
       for (const [name, args] of [
-        ['write', { path: '_ops/x', content: 'forbidden' }],
-        ['edit', { path: '_ops/x', oldText: 'protected original', newText: 'forbidden' }],
-        ['bash', { command: 'printf forbidden > _ops/x' }],
+        ['write', { path: f.protected, content: 'forbidden' }],
+        ['edit', { path: f.protected, oldText: 'protected original', newText: 'forbidden' }],
+        ['bash', { command: `printf forbidden > ${f.protected}` }],
       ] as const) {
         const result = await f.tool(name, args);
         expect(result.isError).toBe(true);
         expect(JSON.stringify(result)).toContain(code);
       }
-      expect(readFileSync(join(f.root, '_ops/x'), 'utf8')).toBe('protected original\n');
+      expect(readFileSync(f.protected, 'utf8')).toBe('protected original\n');
       expect(f.bridges.flatMap(bridge => bridge.requests)).toHaveLength(0);
       expect(JSON.stringify(customMessages(f.session))).toContain(code);
     } finally { await f.close(); }
@@ -293,8 +297,8 @@ describe('Pi real SDK with scripted provider fixture', () => {
     let probes = 0;
     const f = await fixture({ optIn: false, probe: async () => { probes++; throw new Error('must not probe'); } });
     try {
-      expect((await f.tool('write', { path: '_ops/x', content: 'inactive write' })).isError).toBe(false);
-      expect(readFileSync(join(f.root, '_ops/x'), 'utf8')).toBe('inactive write');
+      expect((await f.tool('write', { path: f.protected, content: 'inactive write' })).isError).toBe(false);
+      expect(readFileSync(f.protected, 'utf8')).toBe('inactive write');
       expect(probes).toBe(0);
       expect(f.bridges.flatMap(bridge => bridge.requests)).toHaveLength(0);
       expect(customMessages(f.session)).toHaveLength(0);
@@ -326,15 +330,15 @@ describe('Pi real SDK with scripted provider fixture', () => {
     } });
     try {
       for (const [name, args] of [
-        ['write', { path: '_ops/x', content: 'forbidden' }],
-        ['edit', { path: '_ops/x', oldText: 'protected original', newText: 'forbidden' }],
-        ['bash', { command: 'printf forbidden > _ops/x' }],
-        ['codemode', { code: 'await tools.write({path: "_ops/x", content: "forbidden"});' }],
+        ['write', { path: f.protected, content: 'forbidden' }],
+        ['edit', { path: f.protected, oldText: 'protected original', newText: 'forbidden' }],
+        ['bash', { command: `printf forbidden > ${f.protected}` }],
+        ['codemode', { code: `await tools.write({path: ${JSON.stringify(f.protected)}, content: "forbidden"});` }],
       ] as const) {
         const result = await f.tool(name, args);
         expect(result.isError).toBe(true);
         expect(JSON.stringify(result)).toContain('PI_HOST_REPO_PROBE_FAILED');
-        expect(readFileSync(join(f.root, '_ops/x'), 'utf8')).toBe('protected original\n');
+        expect(readFileSync(f.protected, 'utf8')).toBe('protected original\n');
       }
       expect(probes).toBe(0);
       expect(f.bridges.flatMap(bridge => bridge.requests)).toHaveLength(0);
@@ -356,8 +360,10 @@ describe('Pi real SDK with scripted provider fixture', () => {
       expect(f.session.extensionRunner.getExtensionPaths()).toContain(join(import.meta.dir, '../src/pi/extension.ts'));
       expect((await f.tool('write', { path: 'normal.txt', content: 'native entry' })).isError).toBe(false);
       expect(readFileSync(join(f.root, 'normal.txt'), 'utf8')).toBe('native entry');
-      expect((await f.tool('write', { path: '_ops/x', content: 'forbidden' })).isError).toBe(true);
-      expect(readFileSync(join(f.root, '_ops/x'), 'utf8')).toBe('protected original\n');
+      // The native entry's hook child inherits this process's temp root, so a credential read is the refused call here.
+      const refused = await f.tool('bash', { command: 'cat .env' });
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused)).toContain('CredentialGuard');
       expect(records(f.root).some(record => record.host === 'pi' && record.blocked === true)).toBe(true);
     } finally { await f.close(); }
   });
@@ -409,20 +415,23 @@ describe('Pi extension with the real Pi CLI', () => {
     mkdirSync(home);
     initGitRepo(repo);
     writeFileSync(join(repo, 'README.md'), 'seed\n');
-    writeFileSync(join(repo, '.gitignore'), '_ops/\n.ai/harness/runs/\n.ai/harness/state/\n.ai/harness/handoff/\n.ai/harness/journal/\n.ai/harness/checks/\n.ai/harness/failures/\n.ai/harness/events.jsonl\n');
+    writeFileSync(join(repo, '.gitignore'), '.ai/harness/runs/\n.ai/harness/state/\n.ai/harness/handoff/\n.ai/harness/journal/\n.ai/harness/checks/\n.ai/harness/failures/\n.ai/harness/events.jsonl\n');
     if (optIn) {
       mkdirSync(join(repo, '.ai/harness'), { recursive: true });
       writeFileSync(join(repo, '.ai/harness/workflow-contract.json'), '{}\n');
       writeFileSync(join(repo, '.ai/harness/policy.json'), '{}\n');
     }
     commitAll(repo, 'seed');
-    mkdirSync(join(repo, '_ops'));
-    writeFileSync(join(repo, '_ops/keep.txt'), protectedBytes);
+    // The hook child's temp and managed worktree roots are fixture directories, so `outside/keep.txt` is outside every root.
+    for (const dir of ['outside', 'tmp', 'managed']) mkdirSync(join(base, dir));
+    const keep = join(base, 'outside/keep.txt');
+    writeFileSync(keep, protectedBytes);
     const log = join(base, 'provider.jsonl');
     const env = sandboxEnv({ HOME: home, BUN_INSTALL: join(home, '.bun'), REPO_HARNESS_HOME: join(home, '.repo-harness'),
       PI_CODING_AGENT_DIR: join(home, '.pi/agent'), PI_PACKAGE_DIR: packageDir,
-      PI_FIXTURE_LOG: log, REPO_HARNESS_WORKFLOW_PROFILE: 'routine', NO_COLOR: '1', FORCE_COLOR: '0' });
-    return { root: repo, env, log, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+      PI_FIXTURE_LOG: log, REPO_HARNESS_WORKFLOW_PROFILE: 'routine', NO_COLOR: '1', FORCE_COLOR: '0',
+      TMPDIR: join(base, 'tmp'), REPO_HARNESS_WORKTREE_ROOT: join(base, 'managed') });
+    return { root: repo, env, log, keep, cleanup: () => rmSync(base, { recursive: true, force: true }) };
   }
 
   function piArgs(...extra: string[]): string[] {
@@ -450,25 +459,23 @@ describe('Pi extension with the real Pi CLI', () => {
   }
   const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
-  test('print mode admits normal edits and blocks protected edit, write, bash and nested codemode writes', () => {
+  test('print mode admits normal edits and blocks outside overwrites through edit, write, bash and nested codemode', () => {
     const f = fixture();
     try {
       const result = print(f, [[
         ['write', { path: 'ok.txt', content: 'normal' }],
         ['edit', { path: 'README.md', edits: [{ oldText: 'seed', newText: 'edited' }] }],
-        ['write', { path: '_ops/new.txt', content: 'forbidden' }],
-        ['edit', { path: '_ops/keep.txt', edits: [{ oldText: 'protected', newText: 'changed' }] }],
-        ['bash', { command: 'printf changed > _ops/keep.txt' }],
-        ['codemode', { code: 'await tools.write({path: "_ops/nested.txt", content: "forbidden"}); return "nested";' }],
+        ['write', { path: f.keep, content: 'forbidden' }],
+        ['edit', { path: f.keep, edits: [{ oldText: 'protected', newText: 'changed' }] }],
+        ['bash', { command: `printf changed > ${f.keep}` }],
+        ['codemode', { code: `await tools.write({path: ${JSON.stringify(f.keep)}, content: "forbidden"}); return "nested";` }],
         ['codemode', { code: 'await tools.write({path: "nested-ok.txt", content: "nested"}); return "nested";' }],
       ]], '-e', 'builtin:codemode', '--tools', '+codemode');
       expect(result.stdout).toBe('Done.\n');
       expect(readFileSync(join(f.root, 'ok.txt'), 'utf8')).toBe('normal');
       expect(readFileSync(join(f.root, 'README.md'), 'utf8')).toBe('edited\n');
       expect(readFileSync(join(f.root, 'nested-ok.txt'), 'utf8')).toBe('nested');
-      expect(readFileSync(join(f.root, '_ops/keep.txt'), 'utf8')).toBe(protectedBytes);
-      expect(existsSync(join(f.root, '_ops/new.txt'))).toBe(false);
-      expect(existsSync(join(f.root, '_ops/nested.txt'))).toBe(false);
+      expect(readFileSync(f.keep, 'utf8')).toBe(protectedBytes);
       expect(routes(f.root)).toEqual([
         'SessionStart.default', 'UserPromptSubmit.inbox',
         'PreToolUse.edit', 'PreToolUse.edit', 'PreToolUse.edit blocked', 'PreToolUse.edit blocked', 'PreToolUse.bash blocked',
@@ -479,22 +486,22 @@ describe('Pi extension with the real Pi CLI', () => {
       expect(runIds.size).toBe(1);
       const final = transcripts(f.log).at(-1)!;
       expect(occurrences(final, '[EditGuardScope]')).toBe(1);
-      expect(final).toContain('Claude and Pi Bash have a literal-write tripwire only');
-      expect(final).toContain('OpsPrivateGuard');
+      expect(final).toContain('The safety hook checks Edit, Write and apply_patch, and Claude and Pi Bash commands.');
+      expect(final).toContain('UserFileGuard');
     } finally { f.cleanup(); }
   });
 
   test('JSON mode keeps stdout to Pi events and still blocks a protected write', () => {
     const f = fixture();
     try {
-      const result = print(f, [[['write', { path: '_ops/new.txt', content: 'forbidden' }]]], '--mode', 'json');
+      const result = print(f, [[['write', { path: f.keep, content: 'forbidden' }]]], '--mode', 'json');
       for (const line of result.stdout.trim().split('\n')) {
         const event = JSON.parse(line);
         expect(typeof event.type).toBe('string');
         expect(event.protocol).toBeUndefined();
       }
       expect(result.stdout).not.toContain('repo-harness-hook');
-      expect(existsSync(join(f.root, '_ops/new.txt'))).toBe(false);
+      expect(readFileSync(f.keep, 'utf8')).toBe(protectedBytes);
       expect(routes(f.root)).toContain('PreToolUse.edit blocked');
     } finally { f.cleanup(); }
   });
@@ -509,12 +516,12 @@ describe('Pi extension with the real Pi CLI', () => {
       f.env.GIT_DIR = join(foreign, '.git');
       f.env.GIT_WORK_TREE = foreign;
       print(f, [[
-        ['write', { path: '_ops/keep.txt', content: 'forbidden' }],
-        ['edit', { path: '_ops/keep.txt', edits: [{ oldText: 'protected', newText: 'changed' }] }],
-        ['bash', { command: 'printf changed > _ops/keep.txt' }],
-        ['codemode', { code: 'await tools.write({path: "_ops/keep.txt", content: "forbidden"});' }],
+        ['write', { path: f.keep, content: 'forbidden' }],
+        ['edit', { path: f.keep, edits: [{ oldText: 'protected', newText: 'changed' }] }],
+        ['bash', { command: `printf changed > ${f.keep}` }],
+        ['codemode', { code: `await tools.write({path: ${JSON.stringify(f.keep)}, content: "forbidden"});` }],
       ]], '-e', 'builtin:codemode', '--tools', '+codemode');
-      expect(readFileSync(join(f.root, '_ops/keep.txt'), 'utf8')).toBe(protectedBytes);
+      expect(readFileSync(f.keep, 'utf8')).toBe(protectedBytes);
       expect(routes(f.root)).toEqual([
         'SessionStart.default', 'UserPromptSubmit.inbox',
         'PreToolUse.edit blocked', 'PreToolUse.edit blocked', 'PreToolUse.bash blocked', 'PreToolUse.edit blocked',
@@ -530,7 +537,7 @@ describe('Pi extension with the real Pi CLI', () => {
     const f = fixture();
     const child = spawn(process.env.REPO_HARNESS_NODE_BIN ?? 'node', piArgs('--mode', 'rpc'), {
       cwd: f.root, env: { ...f.env, PI_FIXTURE_CALLS: JSON.stringify([
-        [['write', { path: '_ops/new.txt', content: 'forbidden' }]],
+        [['write', { path: f.keep, content: 'forbidden' }]],
         [['bash', { command: 'printf started; exec sleep 60' }]],
       ]) }, stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -571,7 +578,7 @@ describe('Pi extension with the real Pi CLI', () => {
       await until(event => event.type === 'tool_execution_update', mark);
       send({ id: 'a1', type: 'abort' });
       await until(event => event.type === 'agent_settled' && event.aborted === true, mark);
-      expect(existsSync(join(f.root, '_ops/new.txt'))).toBe(false);
+      expect(readFileSync(f.keep, 'utf8')).toBe(protectedBytes);
       expect(routes(f.root)).toEqual([
         'SessionStart.default', 'UserPromptSubmit.inbox', 'PreToolUse.edit blocked', 'Stop.default',
         'UserPromptSubmit.inbox', 'PreToolUse.bash', 'Stop.default',
@@ -593,8 +600,8 @@ describe('Pi extension with the real Pi CLI', () => {
   test('a repository without the opt-in marker stays inactive', () => {
     const f = fixture(false);
     try {
-      print(f, [[['write', { path: '_ops/new.txt', content: 'outside the harness' }]]]);
-      expect(readFileSync(join(f.root, '_ops/new.txt'), 'utf8')).toBe('outside the harness');
+      print(f, [[['write', { path: f.keep, content: 'outside the harness' }]]]);
+      expect(readFileSync(f.keep, 'utf8')).toBe('outside the harness');
       expect(telemetry(f.root)).toEqual([]);
       expect(transcripts(f.log).some(text => text.includes('[EditGuardScope]'))).toBe(false);
     } finally { f.cleanup(); }

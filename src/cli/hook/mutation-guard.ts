@@ -1,53 +1,53 @@
 /**
  * Mutation guard: the in-process decision handler for `PreToolUse.edit`.
  *
- * It keeps only the path boundaries that block: repository scope, `_ref`,
- * `_ops` (except the policy's `operations.agent_writable_private_dirs`), and a
- * parseable target. Target paths come from
- * `tool_input.file_path`, or from the apply_patch text in
- * `tool_input.command`. The guard checks them in order and stops at the first
- * denial. A denial writes one stderr reason with its fix and one failure
- * record. An allowed edit can carry the `[CapabilityOwner]` line.
+ * Target paths come from `tool_input.file_path`, or from the apply_patch text in `tool_input.command`; input without a parseable
+ * target fails closed. The safety hook's I2 rule then judges each target. A denial writes one stderr reason with its fix and one
+ * failure record. An allowed edit can carry the `[CapabilityOwner]` line.
  */
 
-import { appendFileSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'fs';
-import { tmpdir } from 'os';
-import { dirname, isAbsolute, join, posix, relative, sep, win32 } from 'path';
-import { managedWorktreeRoot } from '../../effects/git/managed-worktree';
-import {
-  canonicalExternalPath,
-  canonicalRepoRelativePath,
-  isForeignDriveAbsolutePath,
-} from '../../effects/state/collect-state-inputs';
+import { appendFileSync, mkdirSync } from 'fs';
+import { dirname, isAbsolute, join, posix, sep, win32 } from 'path';
+import { canonicalRepoRelativePath } from '../../effects/state/collect-state-inputs';
 import { parseStatusZ, splitNul } from '../../effects/review/diff-fingerprint';
 import {
-  agentWritablePrivateDirs,
   capabilityOwnersForPaths,
   FAILURE_LOG_FILE,
-  readWorkflowPolicy,
   type CapabilityPathOwner,
 } from '../../effects/state/resolve-effective-state';
+import type { HookPermission } from './handler-contract';
 import { payloadString, type HookIdentity, type HookPayload } from './hook-input';
-import { protectedRepoDir } from './mutation-protected-dirs';
+import { writeTargetDenial, type TargetKind, type WriteTarget } from './safety-hook';
 import { gitExecFileSync } from '../../effects/git/runner';
+import { replaceSecrets } from '../../core/security/secret-patterns';
 
 export interface MutationGuardInput {
   readonly repoRoot: string;
   readonly payload: HookPayload;
   readonly identity: HookIdentity;
+  readonly env: NodeJS.ProcessEnv;
 }
 
 export interface MutationGuardResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+  readonly permission?: HookPermission;
 }
 
 export interface Denial {
   readonly guard: string;
   readonly reason: string;
   readonly fix: string;
+  /** The user can authorize the call locally (I2), so an interactive Claude session asks instead of denying. */
+  readonly askable?: true;
 }
+
+/**
+ * Claude modes in which a hook ask is not shown to reach the user, so an ask could pass unseen. These sessions, the owner's
+ * bypass sessions included, get the deny. A payload without a mode also gets the deny.
+ */
+const NO_PROMPT_MODES = new Set(['bypassPermissions', 'dontAsk']);
 
 const APPLY_PATCH_SCOPE_DENIAL: Denial = {
   guard: 'ApplyPatchScopeGuard',
@@ -61,154 +61,32 @@ const EDIT_SCOPE_DENIAL: Denial = {
   fix: 'Send the target path in tool_input.file_path so it can be checked before the write.',
 };
 
+interface EditTarget { readonly kind: TargetKind; readonly raw: string }
+
 export function runMutationGuard(opts: MutationGuardInput): MutationGuardResult {
   const { repoRoot, payload } = opts;
   const command = payloadString(payload, 'tool_input.command');
   const filePath = payloadString(payload, 'tool_input.file_path');
-  const rawPaths = command ? extractApplyPatchPaths(command) : (filePath ? [filePath] : []);
-  const paths = rawPaths.map(raw => normalizeFilePath(repoRoot, raw));
-  const denial = paths.length === 0
-    ? (command ? APPLY_PATCH_SCOPE_DENIAL : EDIT_SCOPE_DENIAL)
-    : firstDenial(repoRoot, rawPaths);
-  if (denial) return deny(repoRoot, denial, opts.identity.runId);
-  return { exitCode: 0, stdout: capabilityOwnerLines(repoRoot, paths), stderr: '' };
-}
-
-/** Bash uses the same private path authority; outside the repository it may write only below a Bash write root. */
-export function runMutationPathGuard(opts: MutationGuardInput, rawPaths: readonly string[]): MutationGuardResult {
-  const denial = firstDenial(opts.repoRoot, rawPaths, bashWriteRoots());
-  return denial ? deny(opts.repoRoot, denial, opts.identity.runId) : { exitCode: 0, stdout: '', stderr: '' };
-}
-
-/** Canonical system temp roots and the managed worktree root. */
-function bashWriteRoots(): readonly string[] {
-  const roots: string[] = [];
-  const candidates: Array<() => string> = [
-    () => realpathSync(tmpdir()),
-    ...(process.platform === 'win32' ? [] : [() => realpathSync('/tmp')]),
-    () => managedWorktreeRoot(),
-  ];
-  for (const candidate of candidates) {
-    // A root that does not exist contains no canonical target, so it adds no allowance.
-    try { roots.push(candidate()); } catch { /* fail closed for this root */ }
-  }
-  return roots;
-}
-
-/** Strictly below the root: the root itself and prefix neighbours such as /tmp-x are outside. */
-function isBelowRoot(root: string, target: string): boolean {
-  const rel = relative(root, target);
-  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-}
-
-function externalTargetAllowed(repoRoot: string, filePath: string, bashRoots: readonly string[] | null): boolean {
-  const external = canonicalExternalPath(repoRoot, filePath);
-  if (bashRoots === null) return external !== null || isForeignDriveAbsolutePath(repoRoot, filePath);
-  return external !== null && bashRoots.some(root => isBelowRoot(root, external)) && !isDanglingSymlink(filePath);
-}
-
-/** canonicalTarget reads a dangling leaf link as a missing file, but the shell writes through it to the link target. */
-function isDanglingSymlink(filePath: string): boolean {
-  return lstatSync(filePath, { throwIfNoEntry: false })?.isSymbolicLink() === true && !existsSync(filePath);
+  // Edit and Write name one file that they change or replace.
+  const targets: readonly EditTarget[] = command ? extractApplyPatchTargets(command) : (filePath ? [{ kind: 'overwrite', raw: filePath }] : []);
+  if (targets.length === 0) return deny(repoRoot, command ? APPLY_PATCH_SCOPE_DENIAL : EDIT_SCOPE_DENIAL, opts.identity.runId);
+  // The path keeps its `..` parts: the kernel follows each link before the `..` after it.
+  const writes: WriteTarget[] = targets.map(({ kind, raw }) => ({ kind, via: command ? 'apply_patch' : 'the edit', spelled: raw, path: isAbsolute(raw) ? raw : `${repoRoot}${sep}${raw}` }));
+  const userStep = (path: string) => `the user can edit ${path} themselves`;
+  const denial = writeTargetDenial(writes, { repoRoot, env: opts.env, host: opts.identity.host }, userStep);
+  if (denial) return runMutationDenial(opts, denial);
+  return { exitCode: 0, stdout: capabilityOwnerLines(repoRoot, targets.map(({ raw }) => normalizeFilePath(repoRoot, raw))), stderr: '' };
 }
 
 /** A caller that owns its own decision reports it through the same denial record and exit code. */
-export function runMutationDenial(opts: MutationGuardInput, denial: Denial): MutationGuardResult {
+export function runMutationDenial(opts: MutationGuardInput, found: Denial): MutationGuardResult {
+  // The reason and fix quote the command, which can hold a token; the prompt, stderr and failure record get the redacted text.
+  const denial: Denial = { ...found, reason: replaceSecrets(found.reason), fix: replaceSecrets(found.fix) };
+  const mode = payloadString(opts.payload, 'permission_mode');
+  if (denial.askable && opts.identity.host === 'claude' && mode !== '' && !NO_PROMPT_MODES.has(mode)) {
+    return { exitCode: 0, stdout: '', stderr: '', permission: { decision: 'ask', reason: `[${denial.guard}] ${denial.reason}` } };
+  }
   return deny(opts.repoRoot, denial, opts.identity.runId);
-}
-
-/**
- * `bashRoots` null is the Edit/Write rule: any verified external path passes.
- * Only that structured route may use the `_ops` allowlist; Bash targets are
- * inferred from text, so every Bash write under `_ops/` stays denied.
- */
-function firstDenial(repoRoot: string, rawPaths: readonly string[], bashRoots: readonly string[] | null = null): Denial | null {
-  let writableDirs: WritablePrivateDirs | undefined;
-  for (const raw of rawPaths) {
-    const filePath = normalizeFilePath(repoRoot, raw);
-    // normalizeFilePath leaves an absolute path raw both for a verified external
-    // target and for input it could not resolve (e.g. `/repo/src/../_ops/x`);
-    // only the first, or for Edit/Write a foreign Win32 drive path, may skip
-    // the repository boundary checks below.
-    if (isRepoScopedPath(filePath)
-      ? canonicalRepoRelativePath(repoRoot, filePath) !== filePath
-      : !externalTargetAllowed(repoRoot, filePath, bashRoots)) {
-      return {
-        guard: 'RepoScopeGuard',
-        reason: bashRoots === null
-          ? `${filePath} is not a canonical path contained by the current repository.`
-          : `${filePath} is not a canonical path contained by the current repository or below a Bash write root (${bashRoots.join(', ')}).`,
-        fix: bashRoots === null
-          ? 'Use a canonical repository-relative path without traversal or symlink escape.'
-          : 'Write inside the repository or below a system temp root or the managed worktree root, without traversal or symlink escape.',
-      };
-    }
-    if (protectedRepoDir(filePath) === '_ref') {
-      return {
-        guard: 'ExternalReferenceGuard',
-        reason: `${filePath} is under _ref/, external comparison material that is not a product edit surface.`,
-        fix: 'Refresh _ref/ from upstream sources when needed, keep it ignored, and do not edit it as repo implementation.',
-      };
-    }
-    if (protectedRepoDir(filePath) === '_ops') {
-      if (bashRoots === null) {
-        writableDirs ??= readWritablePrivateDirs(repoRoot);
-        const dir = writableDirs.ok ? writableDirs.dirs.find(d => filePath.startsWith(`${d}/`)) : undefined;
-        if (dir) {
-          // normalizeFilePath follows symlinks and folds case and root aliases. Only a target written as its
-          // canonical repository path is the file the allowlist names.
-          if (spelledRepoPath(repoRoot, raw) === filePath) {
-            const unsafe = writableTargetHazard(repoRoot, filePath, dir);
-            if (!unsafe) continue;
-            return {
-              guard: 'OpsPrivateGuard',
-              reason: `${filePath} is a write target inside a writable _ops/ directory that ${unsafe}.`,
-              fix: 'Name one literal file that is not a symlink.',
-            };
-          }
-        }
-      }
-      return {
-        guard: 'OpsPrivateGuard',
-        reason: `${filePath} is under _ops/, the ignored local private operations state for secrets, real env files, provider state, artifacts, logs, and scratch files.`
-          + (writableDirs?.ok === false ? ` The policy allowlist is not usable: ${writableDirs.error}` : ''),
-        fix: writableDirs?.ok === false
-          ? 'Correct .operations.agent_writable_private_dirs in .ai/harness/policy.json; until then every _ops/ write stays denied.'
-          : 'Commit deploy/ runbooks, release checklists, scripts, submissions, and env examples; do not write _ops/* through agent edits.',
-      };
-    }
-  }
-  return null;
-}
-
-/** The raw target spelled relative to the repository root, with no resolution of `.`, `..`, case or aliases. */
-function spelledRepoPath(repoRoot: string, raw: string): string {
-  return raw.startsWith(`${repoRoot}/`) ? raw.slice(repoRoot.length + 1) : raw;
-}
-
-/** A glob or a dangling symlink at or below the allowlisted directory can send the write to a file the allowlist does not name. */
-function writableTargetHazard(repoRoot: string, filePath: string, dir: string): string | null {
-  if (/[*?[]/.test(filePath)) return 'contains a glob character';
-  let current = repoRoot;
-  for (const [index, part] of filePath.split('/').entries()) {
-    current = join(current, part);
-    if (index < dir.split('/').length - 1) continue;
-    const stat = lstatSync(current, { throwIfNoEntry: false });
-    if (!stat) return null;
-    if (stat.isSymbolicLink()) return `resolves through the symlink ${relative(repoRoot, current)}`;
-  }
-  return null;
-}
-
-type WritablePrivateDirs = { readonly ok: true; readonly dirs: readonly string[] } | { readonly ok: false; readonly error: string };
-
-/** Read only when a target is under _ops/; a policy that does not parse grants nothing. */
-function readWritablePrivateDirs(repoRoot: string): WritablePrivateDirs {
-  try {
-    return { ok: true, dirs: agentWritablePrivateDirs(readWorkflowPolicy(repoRoot)) };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
 }
 
 function deny(repoRoot: string, denial: Denial, runId: string | null): MutationGuardResult {
@@ -292,18 +170,28 @@ function normalizeFilePath(repoRoot: string, raw: string): string {
 // U+FEFF, so JS `\s` does not fit. `*** Move to: ` must start at column 0;
 // only its trailing whitespace is trimmed. Inner path whitespace is kept.
 const PATCH_WS = '[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
-const APPLY_PATCH_FILE_LINE = new RegExp(`^${PATCH_WS}*\\*\\*\\* (?:Add|Update|Delete) File: (.+?)${PATCH_WS}*$`, 's');
+const APPLY_PATCH_FILE_LINE = new RegExp(`^${PATCH_WS}*\\*\\*\\* (Add|Update|Delete) File: (.+?)${PATCH_WS}*$`, 's');
 const APPLY_PATCH_MOVE_LINE = new RegExp(`^\\*\\*\\* Move to: (.+?)${PATCH_WS}*$`, 's');
 
-function extractApplyPatchPaths(command: string): readonly string[] {
-  const paths: string[] = [];
+/**
+ * Add and Update write file content (through a link); Delete removes the entry. Move to writes its destination and removes the
+ * Update source entry.
+ */
+function extractApplyPatchTargets(command: string): readonly EditTarget[] {
+  const targets: EditTarget[] = [];
+  let update: string | null = null;
   for (const line of command.split('\n')) {
     const fileMatch = APPLY_PATCH_FILE_LINE.exec(line);
     const moveMatch = fileMatch ? null : APPLY_PATCH_MOVE_LINE.exec(line);
-    const raw = fileMatch?.[1] ?? moveMatch?.[1];
-    if (raw) paths.push(raw);
+    if (fileMatch) {
+      targets.push({ kind: fileMatch[1] === 'Delete' ? 'destroy' : 'overwrite', raw: fileMatch[2]! });
+      update = fileMatch[1] === 'Update' ? fileMatch[2]! : null;
+    } else if (moveMatch) {
+      targets.push({ kind: 'overwrite', raw: moveMatch[1]! });
+      if (update !== null) targets.push({ kind: 'destroy', raw: update });
+    }
   }
-  return paths;
+  return targets;
 }
 
 // ---------------------------------------------------------------------------

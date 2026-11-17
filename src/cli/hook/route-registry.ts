@@ -100,7 +100,7 @@ export const ROUTES: readonly Route[] = Object.freeze([
     matcher: 'Bash',
     hosts: ['claude', 'pi'] as const,
     handler: 'bash-mutation-guard',
-    // Exit 2 denies a write target outside the repository or in _ops/_ref, and a command that names _ops/_ref outside the strict form.
+    // Exit 2 denies a credential read (I1), a removal or overwrite of an existing user file (I2) and a whole-repository recursive delete.
   }),
   Object.freeze({
     event: 'UserPromptSubmit' as const,
