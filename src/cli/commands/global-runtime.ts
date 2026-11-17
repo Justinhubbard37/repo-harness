@@ -10,6 +10,7 @@ import { globalConfigurationWriter, mutateGlobalConfiguration } from '../../effe
 import { DEFAULT_SEATS_CONFIG, INTRODUCED_ROUTING_DEFAULTS, ROUTING_CLASSES, SeatsConfigMigrationRequiredError, decodeSeatsConfig } from '../../core/board/seats-settings';
 import { checkSeatRoutingModels, seatsRanges } from '../../effects/board/seats-configuration';
 import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { createFileExclusiveDurably, syncDirectoryDurably } from '../../effects/atomic-append';
 import { renderJsonObjectUpdate } from "../../effects/adoption/standard-plan";
 import { retireUserExcludesBlock, writeRepositoryExcludes } from "../installer/repository-excludes";
 import { sha256Hex } from "../../core/evidence/sha256";
@@ -1826,7 +1827,7 @@ function withPlugin(plugins: readonly PluginId[], id: PluginId): readonly Plugin
 }
 
 /** Update is the only caller that fills introduced seats and routing keys and removes retired routing keys. */
-export function migrateSeatsConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: RuntimeTransactionContext): boolean {
+export function migrateSeatsConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: RuntimeTransactionContext, beforeWrite?: (path: string, text: string) => void): boolean {
   return mutateGlobalConfiguration(env, config => {
     try {
       decodeSeatsConfig(config.seats);
@@ -1866,14 +1867,14 @@ export function migrateSeatsConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: 
     const seats = decodeSeatsConfig({ ...introduced, 'worker-light': null, ...stored, ...(routing === undefined ? {} : { routing }) });
     checkSeatRoutingModels(seats.routing);
     return { config: { ...config, seats }, value: true };
-  }, { runtimeLock }).value;
+  }, { runtimeLock, beforeWrite }).value;
 }
 
 /** Update removes the retired `brainRoot` key once. That key is the only member it edits; every other byte stays. */
-export function removeBrainRootConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: RuntimeTransactionContext): boolean {
+export function removeBrainRootConfiguration(env: NodeJS.ProcessEnv, runtimeLock?: RuntimeTransactionContext, beforeWrite?: (path: string, text: string) => void): boolean {
   return mutateGlobalConfiguration(env, config => (Object.hasOwn(config, 'brainRoot')
     ? { config: Object.fromEntries(Object.entries(config).filter(([key]) => key !== 'brainRoot')), value: true }
-    : { value: false }), { runtimeLock, render: renderJsonObjectUpdate }).value;
+    : { value: false }), { runtimeLock, beforeWrite, render: renderJsonObjectUpdate }).value;
 }
 
 export function runGlobalRuntimeSetup(
@@ -1911,9 +1912,18 @@ export function runGlobalRuntimeSetup(
   const globalRules = preflightGlobalContextRefresh(sourceRoot, homeDir(env), hostIds(target), opts.reportLanguage);
 
   if (updateMode) {
+    let backupPath: string | undefined;
+    const beforeWrite = (path: string, text: string): void => {
+      if (backupPath !== undefined) return;
+      const backup = `${path}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}-update`;
+      createFileExclusiveDurably(backup, Buffer.from(text, 'utf8'));
+      syncDirectoryDurably(dirname(backup));
+      backupPath = backup;
+      steps.push({ step: 'back up global configuration', status: 'ok', detail: `Saved the configuration before update migrations to ${backup}.` });
+    };
     const step = 'migrate seats configuration';
     try {
-      const migrated = migrateSeatsConfiguration(env, opts.runtimeLock);
+      const migrated = migrateSeatsConfiguration(env, opts.runtimeLock, beforeWrite);
       steps.push({ step, status: migrated ? 'ok' : 'skipped', detail: migrated ? 'Wrote the complete seats section.' : 'No seats migration required.' });
     } catch (error) {
       steps.push({ step, status: 'failed', detail: error instanceof Error ? error.message : String(error) });
@@ -1921,7 +1931,7 @@ export function runGlobalRuntimeSetup(
     }
     const brainStep = 'remove the retired brainRoot configuration key';
     try {
-      const removed = removeBrainRootConfiguration(env, opts.runtimeLock);
+      const removed = removeBrainRootConfiguration(env, opts.runtimeLock, beforeWrite);
       steps.push({ step: brainStep, status: removed ? 'ok' : 'skipped', detail: removed ? 'Removed brainRoot; every other configuration byte stays.' : 'No brainRoot key.' });
     } catch (error) {
       steps.push({ step: brainStep, status: 'failed', detail: error instanceof Error ? error.message : String(error) });

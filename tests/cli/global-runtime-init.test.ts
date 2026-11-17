@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from 'bun:test';
+import { beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, lstatSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { legacySections } from '../../scripts/check-released-managed-values';
 import { tmpdir } from 'os';
@@ -100,6 +100,53 @@ test('update removes the Codex hyper threshold once, preserves other settings, a
       expect(readFileSync(path, 'utf8')).toBe(original);
     }
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('update keeps one exact configuration backup for both migrations, skips unchanged files and stops on backup failure', () => {
+  const timestamp = '2026-11-17T00:00:00.000Z';
+  const clock = spyOn(Date.prototype, 'toISOString').mockReturnValue(timestamp);
+  try {
+    for (const kind of ['both', 'threshold-only', 'brain-only', 'unchanged', 'backup-failure'] as const) {
+      const home = mkdtempSync(join(tmpdir(), 'update-config-backup-'));
+      try {
+        const directory = join(home, '.repo-harness');
+        mkdirSync(directory);
+        const path = join(directory, 'config.json');
+        const backup = `${path}.bak-${timestamp.replace(/[:.]/g, '-')}-update`;
+        const routing = kind === 'brain-only' || kind === 'unchanged' ? DEFAULT_SEATS_CONFIG.routing
+          : { ...DEFAULT_SEATS_CONFIG.routing, codex_hyper_at_or_above_remaining: 70 };
+        const seats = kind === 'both' || kind === 'backup-failure'
+          ? { ...DEFAULT_SEATS_CONFIG, routing, 'gatekeeper-deep': undefined } : { ...DEFAULT_SEATS_CONFIG, routing };
+        const original = Buffer.from(`${JSON.stringify({ seats, ...(kind === 'unchanged' || kind === 'threshold-only' ? {} : { brainRoot: '/old-vault' }), custom: '雪' }, null, 4)}\r\n`);
+        writeFileSync(path, original);
+        if (kind === 'backup-failure') mkdirSync(backup);
+        const bun = join(home, 'bun');
+        writeExecutable(bun, '#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+        const result = runGlobalRuntimeSetup({
+          sourceRoot: ROOT, cwd: home, plugins: [], updateMode: true, installCli: false,
+          syncSkill: false, hostAdapters: false, externalSkills: false, codegraph: false,
+          env: { ...sanitizedChildEnv(), HOME: home, REPO_HARNESS_HOME: directory, BUN_INSTALL: join(home, '.bun'), REPO_HARNESS_BUN_EXECUTABLE: bun },
+        });
+        const backups = readdirSync(directory).filter(name => name.startsWith('config.json.bak-'));
+        if (kind === 'backup-failure') {
+          expect(result.exitCode).toBe(1);
+          expect(result.steps.at(-1)).toMatchObject({ step: 'migrate seats configuration', status: 'failed' });
+          expect(readFileSync(path)).toEqual(original);
+          expect(lstatSync(backup).isDirectory()).toBe(true);
+          continue;
+        }
+        expect(result.steps.find(step => step.step === 'migrate seats configuration')?.status, result.stdout).toBe(kind === 'both' || kind === 'threshold-only' ? 'ok' : 'skipped');
+        expect(result.steps.find(step => step.step === 'remove the retired brainRoot configuration key')?.status).toBe(kind === 'unchanged' || kind === 'threshold-only' ? 'skipped' : 'ok');
+        expect(backups).toEqual(kind === 'unchanged' ? [] : [backup.slice(directory.length + 1)]);
+        if (kind === 'unchanged') expect(readFileSync(path)).toEqual(original);
+        else {
+          expect(readFileSync(backup)).toEqual(original);
+          expect(result.stdout).toContain(backup);
+          expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ seats: DEFAULT_SEATS_CONFIG, custom: '雪' });
+        }
+      } finally { rmSync(home, { recursive: true, force: true }); }
+    }
+  } finally { clock.mockRestore(); }
 });
 
 test('update preflight stops on a refused mcp.local.json before the seats write and quotes no file content', () => {

@@ -84,6 +84,8 @@ export function mutateGlobalConfiguration<T>(
     readonly runtimeLock?: RuntimeTransactionContext;
     /** Render the next document from the current text, so a caller that removes one member keeps every other byte. Default: `JSON.stringify(config, null, 2)`. */
     readonly render?: (text: string, next: Record<string, unknown>) => string;
+    /** Runs under the lock, only before replacing an existing document with different bytes. A failure prevents the write. */
+    readonly beforeWrite?: (path: string, text: string) => void;
   } = {},
 ): { readonly path: string; readonly revision: string; readonly changed: boolean; readonly value: T } {
   const scope = globalRuntimeScope(env);
@@ -108,6 +110,7 @@ export function mutateGlobalConfiguration<T>(
         : Buffer.from(options.render ? options.render(document.text, next.config) : `${JSON.stringify(next.config, null, 2)}\n`, 'utf8');
       const revision = globalConfigurationRevision(bytes);
       if (revision === document.revision) return { path, revision, changed: false, value: next.value };
+      if (document.revision !== 'absent') options.beforeWrite?.(path, document.text);
       replaceGlobalConfiguration(path, bytes, () => assertRuntimeTransactionContext(context, scope));
       return { path, revision, changed: true, value: next.value };
     }, { waitTimeoutMs: 1 });
