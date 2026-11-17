@@ -180,7 +180,7 @@ describe('safety hook: Bash host route', () => {
     const skill = join(home, '.claude/skills/repo-harness-cross-review');
     const savedTmp = process.env.TMPDIR;
     try {
-      for (const dir of ['repo/build/sub', 'repo/src', 'repo/stage/d', 'repo/stage/1', 'repo/big', 'repo/w/stage', 'repo/inner', 'outside/sub', 'outside/-archive', 'repo/links', 'repo/tree/cache/version', 'tmp', 'managed', 'home/links', 'home/stage']) {
+      for (const dir of ['repo/build/sub', 'repo/src', 'repo/stage/d', 'repo/stage/1', 'repo/big', 'repo/w/stage', 'repo/inner', 'outside/sub', 'outside/-archive', 'repo/links', 'repo/tree/cache/version', 'outside/big', 'repo/big/zdir', 'repo/seq', 'tmp', 'managed', 'home/links', 'home/stage']) {
         mkdirSync(join(root, dir), { recursive: true });
       }
       mkdirSync(skill, { recursive: true });
@@ -190,7 +190,13 @@ describe('safety hook: Bash host route', () => {
       writeFileSync(join(skill, 'SKILL.md'), 'skill');
       writeFileSync(join(repo, 'credentials .json'), 'x');
       // More entries than the glob match limit (1000).
-      for (let n = 0; n <= 1000; n++) writeFileSync(join(repo, `big/${n}`), 'x');
+      for (let n = 0; n <= 1000; n++) for (const dir of [repo, out]) writeFileSync(join(dir, `big/${n}`), 'x');
+      symlinkSync(join(out, 'victim.txt'), join(repo, 'big/out-link'));
+      symlinkSync(out, join(repo, 'big/out-dir'));
+      // A regular directory that a copy can write into, through a child link to an outside file.
+      symlinkSync(join(out, 'victim.txt'), join(repo, 'big/zdir/source.txt'));
+      writeFileSync(join(repo, 'seq/of=1'), 'x');
+      symlinkSync(join(out, 'victim.txt'), join(repo, 'seq/1025'));
       for (const link of ['linked', 'stage/linked', 'w/stage/linked']) symlinkSync(out, join(repo, link));
       symlinkSync(join(repo, 'inner'), join(out, 'link'));
       symlinkSync(repo, join(out, 'repo-link'));
@@ -254,9 +260,18 @@ describe('safety hook: Bash host route', () => {
         [refuse, `tee {build/$X,${out}/victim.txt}`], [refuse, `cp source.txt {build/$X,${out}}`], [refuse, 'tee {build/$X,links/x.txt}'],
         [refuse, `tee {build/$(printf x),${out}/victim.txt}`], [refuse, `tee {build/$'x',${out}/victim.txt}`], [refuse, `tee {~nouser/x,${out}/victim.txt}`],
         [refuse, `tee {big/*,${out}/victim.txt}`], [null, 'tee {build/$X,build/new.txt}'],
-        // #3025 r3: a write operand above an expansion limit refuses as an unknown target set, whatever siblings it has.
+        // #3025 r3: a write operand above an expansion limit still refuses when an item reaches outside the roots.
         [refuse, `tee {build/{1..1025},${out}/victim.txt}`], [refuse, `tee {${out}/victim.txt,build/{1..1025}}`],
         [refuse, `cp source.txt {build/{1..1025},${out}}`], [refuse, 'tee {build/{1..1025},links/x.txt}'],
+        // #3037: an over-limit glob in one directory inside a root is judged by its link children; a sequence stays in one name.
+        [null, 'rm -f big/*'], [null, 'rm -f *', 'big'], [null, 'tee big/[0123456789]*'], [null, 'echo x > big/[0123456789]*'], [refuse, 'tee big/*'],
+        [refuse, 'mv big/* build/'], [refuse, 'rm -f linked/big/*'], [null, 'tee {build/{1..1025},build/x.txt}'],
+        [refuse, `dd if=source.txt of=${out}/{1..1025}`],
+        // #3048 r1-r2: a copy, link or move destination above an expansion limit keeps the refusal; a collapsed sequence is never globbed.
+        [refuse, 'cp source.txt big/[0-9z]*'], [refuse, 'cp -R source big/*'], [refuse, 'cp -R source big/*/'], [refuse, 'cp -R source big/[0-9z]*'],
+        [refuse, 'dd if=/dev/null of={1..1025}', 'seq'],
+        // #3048 r3: a copy or link word keeps main's expansion, so a sequence never shapes a literal sibling into the destination.
+        [refuse, 'cp -R source {big/{1..1025},big/zdir}'], [refuse, 'cp source.txt {big/{1..1025},big/zdir}'], [refuse, 'ln -sf source.txt {big/{1..1025},big/zdir}'],
         // GNU getopt accepts a long option prefix.
         [refuse, 'mv --target=linked stage/b.json'], [refuse, 'cp --target=linked a.txt'],
         // #3026: a writing find that follows links below its start refuses; plain and read-only find keep today's judge.
