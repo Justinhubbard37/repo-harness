@@ -1,13 +1,14 @@
-import { Badge, Banner, Loader, cn } from '@cloudflare/kumo';
+import { Banner, Loader, cn } from '@cloudflare/kumo';
 import { WarningIcon } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
-import type { RuleGovernance, RuleStatusV1, RuleThemeV1, TriageEvidenceErrorV1, TriageFieldErrorV1 } from '../core/ci/rule-candidates';
+import type { RuleStatusV1, RuleThemeV1, TriageEvidenceErrorV1, TriageFieldErrorV1 } from '../core/ci/rule-candidates';
 import type { RulesSnapshotV1 } from '../core/operator/rules';
 import type { OperatorTranslate } from './i18n';
 import { ageWords } from './labels';
+import { GovernancePill, ProgressLabel, RulesCandidateDrawer, type RulesDrawerPorts } from './RulesCandidateDrawer';
 import { useRulesSnapshot, type RulesRead, type RulesReader } from './rules';
 import { BoardState, PageLink, StatusDot } from './ui';
-import { RULES_LEDGER_ITEM, type WorkspaceLocation } from './workspace-location';
+import { RULES_LEDGER_ITEM, rulesCandidateLocation, type WorkspaceLocation } from './workspace-location';
 
 export type RulesSegment = 'candidates' | 'ledger';
 
@@ -18,6 +19,9 @@ export interface RulesPageProps {
   readonly generation: number;
   readonly now: number;
   readonly segment: RulesSegment;
+  /** The candidate whose drawer is open, from `#rules/candidate/<id>`. */
+  readonly candidateId: string | null;
+  readonly ports: RulesDrawerPorts;
   readonly onOpen: (next: WorkspaceLocation) => void;
   readonly t: OperatorTranslate;
 }
@@ -26,17 +30,6 @@ const SEGMENT_LOCATION: Readonly<Record<RulesSegment, WorkspaceLocation>> = {
   candidates: { workspace: 'rules', module: null, item: null },
   ledger: { workspace: 'rules', module: null, item: RULES_LEDGER_ITEM },
 };
-
-/** Governance is a filled pill; task progress (#2888) will be a dot and text, so the two never share a shape. */
-const GOVERNANCE_TONE: Readonly<Record<RuleGovernance, string>> = {
-  structural: 'bg-kumo-success-tint text-kumo-success',
-  judgment_promoted: 'bg-kumo-fill text-kumo-default',
-  judgment_unpromoted: 'bg-kumo-warning-tint text-kumo-warning',
-};
-
-function GovernancePill({ governance, t }: { readonly governance: RuleGovernance; readonly t: OperatorTranslate }) {
-  return <span data-rules-governance={governance}><Badge className={GOVERNANCE_TONE[governance]}>{t(`rules.governance.${governance}`)}</Badge></span>;
-}
 
 function ThemeCell({ theme }: { readonly theme: RuleThemeV1 }) {
   return (
@@ -62,18 +55,25 @@ function HeaderRow({ columns, labels }: { readonly columns: string; readonly lab
 
 const CANDIDATE_COLUMNS = 'sm:grid-cols-[minmax(0,2fr)_6rem_minmax(0,1.4fr)_minmax(0,1.4fr)]';
 
-function CandidateList({ themes, t }: { readonly themes: readonly RuleThemeV1[]; readonly t: OperatorTranslate }) {
+/** The whole row opens the drawer of its first action: the theme link stretches over the row, and a PR link sits above it. */
+function CandidateList({ themes, onOpen, t }: { readonly themes: readonly RuleThemeV1[]; readonly onOpen: (next: WorkspaceLocation) => void; readonly t: OperatorTranslate }) {
   return (
     <ul className="flex flex-col gap-1.5" data-rules-candidates={themes.length}>
       <HeaderRow columns={CANDIDATE_COLUMNS} labels={[t('rules.column.theme'), t('rules.column.seen'), t('rules.column.governance'), t('rules.column.actions')]} />
       {themes.map(theme => (
-        <li key={theme.key} className={cn('grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-3 sm:items-center sm:gap-3', CANDIDATE_COLUMNS)} data-rules-candidate={theme.key}>
-          <ThemeCell theme={theme} />
+        <li key={theme.key} className={cn('relative grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-3 hover:border-kumo-brand sm:items-center sm:gap-3', CANDIDATE_COLUMNS)} data-rules-candidate={theme.key}>
+          <PageLink to={rulesCandidateLocation(theme.actions[0]!.candidate_id)} onOpen={onOpen} className="min-w-0 after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-kumo-brand" data-rules-open={theme.key}>
+            <ThemeCell theme={theme} />
+          </PageLink>
           <Seen count={theme.seen} t={t} />
           <div><GovernancePill governance={theme.governance} t={t} /></div>
-          {/* Action labels only: the snapshot carries no task progress until #2888. */}
-          <ul className="flex flex-col gap-0.5 text-sm text-kumo-default">
-            {theme.actions.map(action => <li key={action.kind} data-rules-action={action.kind}>{t(`rules.action.${action.kind}`)}</li>)}
+          <ul className="flex flex-col gap-1 text-sm text-kumo-default">
+            {theme.actions.map(action => (
+              <li key={action.kind} className="flex flex-col" data-rules-action={action.kind}>
+                <span>{t(`rules.action.${action.kind}`)}</span>
+                {action.task !== undefined && <span className="text-xs"><ProgressLabel task={action.task} t={t} /></span>}
+              </li>
+            ))}
           </ul>
         </li>
       ))}
@@ -177,9 +177,9 @@ function SegmentTabs({ segment, counts, onOpen, t }: {
   );
 }
 
-function RulesBody({ snapshot, segment, now, onOpen, t }: {
-  readonly snapshot: RulesSnapshotV1; readonly segment: RulesSegment; readonly now: number;
-  readonly onOpen: (next: WorkspaceLocation) => void; readonly t: OperatorTranslate;
+function RulesBody({ snapshot, segment, candidateId, ports, generation, now, onOpen, t }: {
+  readonly snapshot: RulesSnapshotV1; readonly segment: RulesSegment; readonly candidateId: string | null; readonly ports: RulesDrawerPorts;
+  readonly generation: number; readonly now: number; readonly onOpen: (next: WorkspaceLocation) => void; readonly t: OperatorTranslate;
 }) {
   const { ledger, themes } = snapshot.status;
   const invalid = ledger.field_errors.length > 0;
@@ -187,7 +187,7 @@ function RulesBody({ snapshot, segment, now, onOpen, t }: {
   let content: ReactNode;
   if (segment === 'ledger') content = invalid ? <FieldErrorList errors={ledger.field_errors} t={t} /> : <LedgerList themes={themes} t={t} />;
   else if (invalid) content = null;
-  else if (candidates.length > 0) content = <CandidateList themes={candidates} t={t} />;
+  else if (candidates.length > 0) content = <CandidateList themes={candidates} onOpen={onOpen} t={t} />;
   else {
     content = (
       <div className="flex flex-col items-center gap-2" data-rules-empty>
@@ -204,6 +204,8 @@ function RulesBody({ snapshot, segment, now, onOpen, t }: {
       <SegmentTabs segment={segment} counts={invalid ? null : { candidates: candidates.length, ledger: themes.length }} onOpen={onOpen} t={t} />
       <LedgerBanner ledger={ledger} t={t} />
       {content}
+      {candidateId !== null && <RulesCandidateDrawer snapshot={snapshot} candidateId={candidateId} generation={generation} ports={ports} t={t}
+        onSelect={id => onOpen(rulesCandidateLocation(id))} onClose={() => onOpen(SEGMENT_LOCATION.candidates)} />}
     </>
   );
 }
@@ -224,11 +226,12 @@ function RulesRefusal({ read, t }: { readonly read: Exclude<RulesRead, { readonl
 }
 
 /**
- * The read-only Rules page: the promotion candidates and the full lessons
- * ledger of one repository, as the cached `rh rules status` document states
- * them. The page computes no candidate and sends no write.
+ * The Rules page: the promotion candidates and the full lessons ledger of one
+ * repository, as the cached `rh rules status` document states them. The page
+ * computes no candidate; its only writes are the drawer's `rules_promote` and
+ * `rules_reconcile`.
  */
-export function RulesPage({ repositoryId, readRules, generation, now, segment, onOpen, t }: RulesPageProps) {
+export function RulesPage({ repositoryId, readRules, generation, now, segment, candidateId, ports, onOpen, t }: RulesPageProps) {
   const read = useRulesSnapshot(readRules, repositoryId, generation);
   return (
     <div className="flex min-w-0 flex-col gap-4" data-rules-page>
@@ -239,7 +242,7 @@ export function RulesPage({ repositoryId, readRules, generation, now, segment, o
       {repositoryId === null ? <p role="status" className="text-sm text-kumo-subtle">{t('repository.select')}</p>
         : read === null ? <p role="status" className="flex items-center gap-1.5 text-sm text-kumo-subtle" data-rules-loading><Loader size={12} />{t('rules.loading')}</p>
         : read.state !== 'ok' ? <RulesRefusal read={read} t={t} />
-        : <RulesBody snapshot={read.snapshot} segment={segment} now={now} onOpen={onOpen} t={t} />}
+        : <RulesBody snapshot={read.snapshot} segment={segment} candidateId={candidateId} ports={ports} generation={generation} now={now} onOpen={onOpen} t={t} />}
     </div>
   );
 }

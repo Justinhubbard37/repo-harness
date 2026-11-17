@@ -93,8 +93,10 @@ function ReadBack({ read, sending, t }: { readonly read: AdvisorTranscriptRead |
   );
 }
 
-export function OfficeAdvisorDialog({ repositoryId, parent, agent, portrait, read, write, onClose, t }: {
+export function OfficeAdvisorDialog({ repositoryId, parent, agent, portrait, initialDraft = '', read, write, onClose, t }: {
   readonly repositoryId: string; readonly parent: number; readonly agent: string; readonly portrait: ReactNode;
+  /** The text the field starts with; the owner edits it before a send. */
+  readonly initialDraft?: string;
   readonly read: AdvisorTranscriptReader; readonly write: AdvisorMessageWriter;
   readonly onClose: () => void; readonly t: OperatorTranslate;
 }) {
@@ -104,7 +106,7 @@ export function OfficeAdvisorDialog({ repositoryId, parent, agent, portrait, rea
   const inFlight = useRef(false);
   // Null while a send or a read is pending.
   const [transcript, setTranscript] = useState<AdvisorTranscriptRead | null>(null);
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(initialDraft);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<AdvisorSeatSendV1 | null>(null);
   const [failure, setFailure] = useState<OperatorWriteFailure | null>(null);

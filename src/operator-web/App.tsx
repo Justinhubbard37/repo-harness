@@ -60,13 +60,13 @@ import { fetchRuntimeOverlay, type RuntimeOverlayReader } from './RuntimeBadges'
 import { SystemPage } from './SystemPage';
 import { TestsPage } from './TestsPage';
 import { RulesPage } from './RulesPage';
-import { fetchRulesSnapshot, type RulesReader } from './rules';
+import { fetchRulesSnapshot, postRulesPromote, postRulesReconcile, type RulesPromoteWriter, type RulesReader, type RulesReconcileWriter } from './rules';
 import { ToolsPage } from './ToolsPage';
 import { CliPage, fetchCliInventory, useCliInventory, type CliInventoryReader } from './CliPage';
 import type { CliInventorySnapshotV1 } from '../core/setup/cli-inventory';
 import { useTheme } from './theme';
 import { useNow } from './ui';
-import { boardLayout, boardPlace, boardRoom, parseWorkspaceLocation, RULES_LEDGER_ITEM, SETUP_WORKSPACES, WORKSPACES, workspaceHash, type Workspace, type WorkspaceLocation } from './workspace-location';
+import { boardLayout, boardPlace, boardRoom, parseWorkspaceLocation, RULES_LEDGER_ITEM, rulesCandidateId, SETUP_WORKSPACES, WORKSPACES, workspaceHash, type Workspace, type WorkspaceLocation } from './workspace-location';
 import {
   cleanupPlanPorts, fetchWorktrees, postWorktreeCleanup, useWorktreeCleanup, useWorktrees, worktreesOf,
   type WorktreeCleanupWriter, type WorktreesReader, type WorktreesView,
@@ -146,6 +146,9 @@ export interface OperatorAppProps {
   readonly readTests?: TestsReader;
   /** The read-only Rules page's snapshot read, injectable on the same terms. */
   readonly readRules?: RulesReader;
+  /** The candidate drawer's two writes, injectable on the same terms. */
+  readonly writeRulesPromote?: RulesPromoteWriter;
+  readonly writeRulesReconcile?: RulesReconcileWriter;
   /** The docs page's tree and file reads; the browser default is the same-origin docs routes. */
   readonly readDocsTree?: DocsTreeReader;
   readonly readDocsFile?: DocsFileReader;
@@ -355,6 +358,8 @@ export function OperatorApp({
   readQuota = fetchQuota,
   readTests = fetchTestsSnapshot,
   readRules = fetchRulesSnapshot,
+  writeRulesPromote = postRulesPromote,
+  writeRulesReconcile = postRulesReconcile,
   readDocsTree = fetchDocsTree,
   readDocsFile = fetchDocsFile,
 }: OperatorAppProps) {
@@ -576,7 +581,8 @@ export function OperatorApp({
           </Suspense>}
           {workspace === 'tests' && <TestsPage repositoryId={activeRepository?.repository_id ?? null} readTests={readTests} generation={refreshGeneration} now={now} t={t} />}
           {workspace === 'rules' && <RulesPage repositoryId={activeRepository?.repository_id ?? null} readRules={readRules} generation={refreshGeneration} now={now}
-            segment={place.item === RULES_LEDGER_ITEM ? 'ledger' : 'candidates'} onOpen={openPlace} t={t} />}
+            segment={place.item === RULES_LEDGER_ITEM ? 'ledger' : 'candidates'} candidateId={rulesCandidateId(place.item)} onOpen={openPlace} t={t}
+            ports={{ writePromote: writeRulesPromote, writeReconcile: writeRulesReconcile, readBoardSeats, readAdvisorTranscript, writeAdvisorMessage }} />}
           {workspace === 'architecture' && (!activeRepository ? <p role="status" className="text-sm text-kumo-subtle">{t('repository.select')}</p>
             : <Suspense fallback={<p role="status" className="text-sm text-kumo-subtle">{t('workspace.loading')}</p>}>
               <ArchitectureWorkspace repositoryId={activeRepository.repository_id} github={(devSnapshot && repositoryById(devSnapshot, activeRepository.repository_id)?.github) ?? null} moduleId={place.module} refreshGeneration={refreshGeneration} readMap={readArchitectureMap} readHistory={readArchitectureHistory}

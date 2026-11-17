@@ -112,6 +112,11 @@ function decodeItem(value: string): string | null {
 
 /** `#rules/ledger` selects the Ledger segment of the Rules page; `#rules` is the Candidates segment. */
 export const RULES_LEDGER_ITEM = 'ledger';
+const RULES_CANDIDATE_ITEM = /^candidate\/([0-9a-f]{64})$/u;
+
+/** `#rules/candidate/<candidate_id>` opens the candidate drawer over the Candidates segment. */
+export const rulesCandidateLocation = (candidateId: string): WorkspaceLocation => ({ workspace: 'rules', module: null, item: `candidate/${candidateId}` });
+export const rulesCandidateId = (item: string | null): string | null => (item === null ? null : RULES_CANDIDATE_ITEM.exec(item)?.[1] ?? null);
 
 /** An empty or unknown fragment is the default page. A malformed parameter also falls to the default page. */
 export function parseWorkspaceLocation(hash: string): WorkspaceLocation {
@@ -130,11 +135,13 @@ export function parseWorkspaceLocation(hash: string): WorkspaceLocation {
     const place = boardPlace(item);
     return place === null ? DEFAULT_LOCATION : boardLocation(place);
   }
-  if (rest.length > 0) return DEFAULT_LOCATION;
   if (name === 'rules') {
     if (parameter === undefined) return { workspace: 'rules', module: null, item: null };
-    return parameter === RULES_LEDGER_ITEM ? { workspace: 'rules', module: null, item: RULES_LEDGER_ITEM } : DEFAULT_LOCATION;
+    if (parameter === RULES_LEDGER_ITEM && rest.length === 0) return { workspace: 'rules', module: null, item: RULES_LEDGER_ITEM };
+    const candidate = rulesCandidateId([parameter, ...rest].join('/'));
+    return candidate === null ? DEFAULT_LOCATION : rulesCandidateLocation(candidate);
   }
+  if (rest.length > 0) return DEFAULT_LOCATION;
   if (name === 'home' || name === 'repositories' || name === 'worktrees' || name === 'system' || name === 'agents' || name === 'skills' || name === 'hooks' || name === 'cli' || name === 'bots' || name === 'tests') {
     return parameter === undefined ? { workspace: name, module: null, item: null } : DEFAULT_LOCATION;
   }
