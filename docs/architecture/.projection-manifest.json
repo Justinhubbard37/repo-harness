@@ -780,7 +780,7 @@
     "projection_target.entity.capability-runtime-harness-global-runtime-reconciliation":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.global-runtime-reconciliation","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/global-runtime-reconciliation.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:6a5ad1ecf5a933db520cef5cfc4051535b4af98652478db0f1e339d32500b0d9"},
     "projection_target.entity.capability-runtime-harness-hook-adapters":
-      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.hook-adapters","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/hook-adapters.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:e59177dcaf7f1d4fa95a5124507dd145629cb46d3aa5457ce16650cddf50a151"},
+      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.hook-adapters","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/hook-adapters.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:2a6fc7318d580741c0e5db33b9e9629c709076a7cdfedbb283e04ff66b3da057"},
     "projection_target.entity.capability-runtime-harness-mcp-sidecar":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.mcp-sidecar","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/mcp-sidecar.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:56eabc1f7d76a09d5ab11b76a60811a59000b0137deb9aae518a22ee46819003"},
     "projection_target.entity.capability-runtime-harness-operator":
