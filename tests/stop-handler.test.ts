@@ -6,7 +6,7 @@ import { tmpdir } from 'os';
 import { runStopHandler as runStopHandlerRuntime } from '../src/cli/hook/stop-handler';
 import { runMutationGuard } from '../src/cli/hook/mutation-guard';
 import { seatHandoffPath, seatResetDirectory, seatResetRequestPath } from '../src/core/board/seat-reset';
-import { agentNoticeFixture, noticeEnv, NOTICE_CAPABILITY } from './helpers/agent-notice';
+import { agentNoticeFixture, noticeEnv, NOTICE_CAPABILITY, repeatUndeliveredNotice, streamNoticeAttempt } from './helpers/agent-notice';
 import { fixtureWrite, fixtureCommit } from './helpers/module-repository';
 import { hookIdentity } from './helpers/hook-identity';
 import { resolveCompatibleNodeRuntime } from '../src/effects/architecture/archctx-provider';
@@ -197,8 +197,9 @@ describe('Stop seat reset (#1972)', () => {
 
 describe('Stop architecture debt notice', () => {
   function noticeFixture() { const root = agentNoticeFixture(); fixtures.push(root); return root; }
+  /** One Stop run; an expired, undelivered notice budget repeats at most twice (#3118). */
   function stop(cwd: string, options: Partial<StopRuntimeInput> = {}) {
-    return runStopHandler({ collector: collector(cwd), env: noticeEnv(cwd), ...options });
+    return repeatUndeliveredNotice(() => runStopHandler({ collector: collector(cwd), env: noticeEnv(cwd), ...options }), streamNoticeAttempt);
   }
 
   test('review round 1: Stop uses the hook Node environment for ownership and checkpoint', () => {

@@ -84,3 +84,55 @@ export function noticeOwnership(root: string) {
 
 export const NOTICE_CAPABILITY = MODULE_ID;
 export const noticeEnv = (root: string) => ({ ...process.env, HOME: join(root, 'home') });
+
+/** The line a hook writes when its 3 s notice budget expires; the next hook measures again (#3070). */
+export const NOTICE_BUDGET_EXPIRED = 'repo-harness: architecture notice: not finished in its time budget';
+
+/** One hook attempt: whether it delivered or claimed a notice, and what it wrote to the diagnostic channel. */
+export interface NoticeAttempt {
+  /** A delivered or claimed notice never repeats. */
+  readonly delivered: boolean;
+  readonly diagnostics: string;
+}
+
+/** At most two repeats of one expired, undelivered notice run (#3084, #3118). */
+const NOTICE_REPEAT_LIMIT = 2;
+
+/**
+ * Runs `run` again after it expired its notice budget and delivered nothing, at most twice, and
+ * returns the last attempt. An expired budget claims no marker key, so the repeat measures the
+ * same state; a delivered notice or any other failure returns its own attempt unchanged.
+ */
+export function repeatUndeliveredNotice<T>(run: () => T, attempt: (result: NoInfer<T>) => NoticeAttempt): T {
+  let result = run();
+  for (let repeat = 0; repeat < NOTICE_REPEAT_LIMIT; repeat += 1) {
+    const { delivered, diagnostics } = attempt(result);
+    if (delivered || !diagnostics.includes(NOTICE_BUDGET_EXPIRED)) return result;
+    result = run();
+  }
+  return result;
+}
+
+/** A hook child or Stop handler: the notice travels on stdout, the diagnostics on stderr. */
+export function streamNoticeAttempt(result: { readonly stdout: string; readonly stderr: string; readonly systemMessage?: string }): NoticeAttempt {
+  return {
+    delivered: result.systemMessage !== undefined
+      || result.stdout.includes('"systemMessage"')
+      || result.stdout.includes('[ArchitectureDebt]'),
+    diagnostics: result.stderr,
+  };
+}
+
+/** A route handler result: the notice travels on its system message and its context sections. */
+export function handlerNoticeAttempt(result: {
+  readonly additionalContext?: string;
+  readonly sessionContexts?: readonly { readonly content?: string }[];
+  readonly systemMessage?: string;
+  readonly diagnostics?: string;
+}): NoticeAttempt {
+  const notices = [result.additionalContext ?? '', ...(result.sessionContexts ?? []).map((section) => section.content ?? '')];
+  return {
+    delivered: result.systemMessage !== undefined || notices.some((notice) => notice.includes('[ArchitectureDebt]')),
+    diagnostics: result.diagnostics ?? '',
+  };
+}

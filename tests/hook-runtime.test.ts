@@ -13,7 +13,7 @@ import {
 } from 'fs';
 import { fixtureWrite } from './helpers/module-repository';
 import { recordPluginSelection } from './helpers/install-ownership';
-import { registryNoticeFixture, registryProjectedFixture, unignoreNoticeState } from './helpers/agent-notice';
+import { registryNoticeFixture, registryProjectedFixture, repeatUndeliveredNotice, streamNoticeAttempt, unignoreNoticeState } from './helpers/agent-notice';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveCompatibleNodeRuntime } from '../src/effects/architecture/archctx-provider';
@@ -280,8 +280,11 @@ describe('host envelopes on the real hook entry (#678)', () => {
   }
 
   const HUMAN_DEBT = 'Architecture: 1 debt item in capability.core.owned; run rh arch debt --json.';
-  /** The SessionStart notice fails open inside 3 s: it writes this one line and delivers nothing. */
-  const NOTICE_TIMEOUT = 'not finished in its time budget';
+
+  /** One SessionStart run; an expired, undelivered notice budget repeats at most twice (#3118). */
+  function sessionStart(root: string, hostName: 'claude' | 'codex', input: unknown) {
+    return repeatUndeliveredNotice(() => host(root, hostName, 'SessionStart', 'default', input), streamNoticeAttempt);
+  }
 
   function context(stdout: string, event: string, systemMessage?: string): string {
     expect(stdout.endsWith('\n')).toBe(true);
@@ -301,7 +304,7 @@ describe('host envelopes on the real hook entry (#678)', () => {
         expect(context(edit.stdout, 'PreToolUse'))
           .toBe('[CapabilityOwner] src/owned/a.ts belongs to core-owned (docs/architecture/modules/core/owned.md).');
 
-        const session = host(root, hostName, 'SessionStart', 'default', { session_id: `owed-${hostName}` });
+        const session = sessionStart(root, hostName, { session_id: `owed-${hostName}` });
         expect(session.status).toBe(0);
         const sessionContext = context(session.stdout, 'SessionStart', hostName === 'claude' ? HUMAN_DEBT : undefined);
         if (hostName === 'claude') {
@@ -356,21 +359,12 @@ process.exit(child.status ?? 1);
             ['Stop', 'default', { stop_hook_active: false }],
             ['UserPromptSubmit', 'inbox', { prompt: 'continue' }],
           ] as const) {
-            // The notice path measures inside a 3 s fail-open budget. An expired budget is
-            // load, not a state change: the product writes one diagnostic line and the next
-            // hook measures again (#3070). Repeat an undelivered run so the delivery
-            // assertion tests the notice, not the runner's speed. A run that expired after its
-            // block was measured still delivers and claims the key, so it never repeats.
-            const runOnce = () => {
+            const { status, stdout, stderr, calls } = repeatUndeliveredNotice(() => {
               resetCalls();
               const run = host(root, hostName, event, route, input, { REPO_HARNESS_NODE_BIN: shim });
-              return { run, calls: archctxCalls() };
-            };
-            const undelivered = (run: { stdout: string; stderr: string }) => run.stderr.includes(NOTICE_TIMEOUT) && !run.stdout.includes('"systemMessage"');
-            let attempt = runOnce();
-            for (let retry = 0; retry < 2 && undelivered(attempt.run); retry += 1) attempt = runOnce();
-            const { run: result, calls } = attempt;
-            expect(result.status, result.stderr).toBe(0);
+              return { ...run, calls: archctxCalls() };
+            }, streamNoticeAttempt);
+            expect(status, stderr).toBe(0);
             const exports = calls.filter((argv) => argv.includes('export')).length;
             const resolves = calls.filter((argv) => argv.includes('resolve')).length;
             expect(exports, `${hostName} ${event}`).toBe(0);
@@ -378,7 +372,7 @@ process.exit(child.status ?? 1);
             if (event === 'PreToolUse') {
               expect(resolves, `${checkout} ${hostName} edit`).toBe(editResolved ? 0 : 1);
               editResolved = true;
-              expect(context(result.stdout, event)).toBe('[CapabilityOwner] src/owned/a.ts belongs to core-owned (docs/architecture/modules/core/owned.md).');
+              expect(context(stdout, event)).toBe('[CapabilityOwner] src/owned/a.ts belongs to core-owned (docs/architecture/modules/core/owned.md).');
             }
             if (event === 'SessionStart' || (event === 'Stop' && hostName === 'claude') || (event === 'UserPromptSubmit' && hostName === 'codex')) expect(resolves).toBe(1);
             const checkpoints = calls.filter(argv => argv.includes('checkpoint')).length;
@@ -387,7 +381,7 @@ process.exit(child.status ?? 1);
             expect(calls.some(argv => argv.includes('complete') || argv.includes('doctor') || argv.includes('apply'))).toBe(false);
             if (event === 'SessionStart') {
               const firstNotice = checkout !== 'main' && hostName === 'claude';
-              const body = context(result.stdout, event, firstNotice ? HUMAN_DEBT : undefined);
+              const body = context(stdout, event, firstNotice ? HUMAN_DEBT : undefined);
               expect(body.includes('[ArchitectureDebt]')).toBe(firstNotice);
             }
             console.log(`[ArchctxHookProbe] ${checkout} ${hostName} ${event}: export=${exports} resolve=${resolves}`);
@@ -506,7 +500,7 @@ process.exit(child.status ?? 1);
       expect(host(root, 'claude', 'Stop', 'default', { stop_hook_active: false }).stdout).toBe('');
       // The notice marker dedupes the same ids across Stop and SessionStart.
       for (const sessionId of ['owed-session-one', 'owed-session-two']) {
-        const session = host(root, 'claude', 'SessionStart', 'default', { session_id: sessionId });
+        const session = sessionStart(root, 'claude', { session_id: sessionId });
         expect(session.status).toBe(0);
         expect(context(session.stdout, 'SessionStart')).not.toContain('[ArchitectureDebt]');
       }
@@ -520,7 +514,7 @@ process.exit(child.status ?? 1);
       writeFileSync(join(root, 'docs/architecture/.projection-manifest.json'), '{"profile":"repo-harness/v1","refreshed":true,"targets":{"t":{"type":"entity-summary","path":"docs/architecture/modules/core/owned.md","scope":{"kind":"entity","id":"capability.core.owned","entityKind":"capability"}}}}\n');
       execFileSync('git', ['commit', '-q', '-am', 'refresh the projection'], { cwd: root });
       for (const hostName of ['claude', 'codex'] as const) {
-        const session = host(root, hostName, 'SessionStart', 'default', { session_id: `clear-${hostName}` });
+        const session = sessionStart(root, hostName, { session_id: `clear-${hostName}` });
         expect(session.status).toBe(0);
         expect(session.stdout.includes('ArchitectureDebt')).toBe(hostName === 'claude');
         expect(JSON.parse(session.stdout).systemMessage).toBe(hostName === 'claude' ? HUMAN_DEBT : undefined);
@@ -539,7 +533,7 @@ process.exit(child.status ?? 1);
       expect(codex.status, codex.stderr).toBe(0);
       expect(codex.stdout).toBe('');
 
-      const session = host(root, 'claude', 'SessionStart', 'default', { session_id: 'consumer-session' });
+      const session = sessionStart(root, 'claude', { session_id: 'consumer-session' });
       expect(session.status, session.stderr).toBe(0);
       const systemMessage = (JSON.parse(session.stdout) as { systemMessage?: string }).systemMessage;
       expect(systemMessage).toContain('Architecture: inactive (');
@@ -560,7 +554,7 @@ process.exit(child.status ?? 1);
     try {
       // Effective State leaves capability ownership null on a clean tree.
       rmSync(join(root, 'packages'), { recursive: true, force: true });
-      const session = host(root, 'claude', 'SessionStart', 'default', { session_id: 'clean-consumer-session' });
+      const session = sessionStart(root, 'claude', { session_id: 'clean-consumer-session' });
       expect(session.status, session.stderr).toBe(0);
       const systemMessage = (JSON.parse(session.stdout) as { systemMessage?: string }).systemMessage;
       expect(systemMessage).toContain('Architecture: inactive (');
@@ -573,7 +567,7 @@ process.exit(child.status ?? 1);
   test('a clean branch does not report unowned paths that main changed after the last projection (#852)', () => {
     const root = registryProjectedFixture();
     try {
-      const session = host(root, 'claude', 'SessionStart', 'default', { session_id: 'clean-branch-session' });
+      const session = sessionStart(root, 'claude', { session_id: 'clean-branch-session' });
       expect(session.status, session.stderr).toBe(0);
       const systemMessage = (JSON.parse(session.stdout) as { systemMessage?: string }).systemMessage;
       expect(systemMessage).toBe('Architecture: inactive (no ArchContext model (.archcontext/manifest.yaml is missing)); run rh arch projection status --json.');
@@ -591,11 +585,11 @@ process.exit(child.status ?? 1);
     try {
       unignoreNoticeState(root);
       for (const sessionId of ['unignored-one', 'unignored-two']) {
-        const session = host(root, 'claude', 'SessionStart', 'default', { session_id: sessionId });
+        const session = sessionStart(root, 'claude', { session_id: sessionId });
         expect(session.status, session.stderr).toBe(0);
         expect(context(session.stdout, 'SessionStart', HUMAN_UNIGNORED)).toContain(UNIGNORED);
       }
-      const codexSession = host(root, 'codex', 'SessionStart', 'default', { session_id: 'unignored-codex' });
+      const codexSession = sessionStart(root, 'codex', { session_id: 'unignored-codex' });
       expect(codexSession.status, codexSession.stderr).toBe(0);
       expect(context(codexSession.stdout, 'SessionStart')).toContain(UNIGNORED);
 

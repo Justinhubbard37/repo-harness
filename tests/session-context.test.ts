@@ -1,4 +1,4 @@
-import { agentNoticeFixture, NOTICE_CAPABILITY } from './helpers/agent-notice';
+import { agentNoticeFixture, handlerNoticeAttempt, NOTICE_CAPABILITY, repeatUndeliveredNotice, streamNoticeAttempt } from './helpers/agent-notice';
 import { fixtureWrite, fixtureGit, fixtureCommit } from './helpers/module-repository';
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "child_process";
@@ -68,8 +68,8 @@ function writeActiveSprint(f: Fixture): void {
   f.write(".ai/harness/sprint/active-sprint", `${SPRINT}\n`);
 }
 
-/** The additionalContext a host reads from one real `repo-harness-hook SessionStart` run. */
-function sessionStartContext(f: Fixture, host: "claude" | "codex" = "claude"): string {
+/** One real `repo-harness-hook SessionStart` run. */
+function sessionStartRun(f: Fixture, host: "claude" | "codex" = "claude") {
   const result = spawnSync(process.execPath, [HOOK_ENTRY, "SessionStart", "--route", "default"], {
     cwd: f.root,
     encoding: "utf8",
@@ -77,6 +77,15 @@ function sessionStartContext(f: Fixture, host: "claude" | "codex" = "claude"): s
     env: { ...process.env, HOME: f.home, HOOK_REPO_ROOT: f.root, HOOK_HOST: host },
   });
   expect(result.status, result.stderr).toBe(0);
+  return result;
+}
+
+/** The additionalContext a host reads from one real `repo-harness-hook SessionStart` run. */
+function sessionStartContext(f: Fixture, host: "claude" | "codex" = "claude"): string {
+  return sessionStartContextOf(sessionStartRun(f, host));
+}
+
+function sessionStartContextOf(result: { readonly stdout: string }): string {
   const envelope = JSON.parse(result.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
   expect(envelope.hookSpecificOutput.hookEventName).toBe("SessionStart");
   return envelope.hookSpecificOutput.additionalContext;
@@ -255,15 +264,19 @@ describe("buildSessionStartSections", () => {
 });
 
 describe("architecture debt section", () => {
+  /** The SessionStart context; an expired, undelivered notice budget repeats at most twice (#3118). */
+  const noticeContext = (f: Fixture, host: "claude" | "codex" = "claude"): string =>
+    sessionStartContextOf(repeatUndeliveredNotice(() => sessionStartRun(f, host), streamNoticeAttempt));
+
   test('review round 1: a large mandatory state cannot replace a consumed notice with a pointer', () => {
     const root = realpathSync(agentNoticeFixture());
     try {
       const state = { ...resolveEffectiveState(root), guidance: 'x'.repeat(7_000) };
       const collector = createStateInputCollector({ repoRoot: root, resolveEffectiveState: () => ({ ok: true, state }) });
-      const result = getHandlerForRoute(getRoute('SessionStart', 'default')!).run({
+      const result = repeatUndeliveredNotice(() => getHandlerForRoute(getRoute('SessionStart', 'default')!).run({
         event: 'SessionStart', repoRoot: root, payload: {}, identity: hookIdentity({ host: 'codex' }),
         env: { ...process.env, HOME: join(root, 'home') }, now: new Date(), collector,
-      });
+      }), handlerNoticeAttempt);
       const notice = result.sessionContexts!.find(section => section.id === 'architecture-debt')!;
       expect(notice.content).toContain('[ArchitectureDebt]');
       const budgeted = budgetSessionContext(result.sessionContexts!);
@@ -286,9 +299,9 @@ describe("architecture debt section", () => {
       try {
         fixtureCommit(f.root);
         fixtureGit(f.root, ['branch', '-f', 'main', 'HEAD']);
-        expect(sessionStartContext(f, host)).not.toContain('[ArchitectureDebt]');
+        expect(noticeContext(f, host)).not.toContain('[ArchitectureDebt]');
         f.write('src/module/read.ts', 'export const read = () => 3;\n');
-        expect(sessionStartContext(f, host)).toContain(`[ArchitectureDebt] 1 new in ${NOTICE_CAPABILITY}`);
+        expect(noticeContext(f, host)).toContain(`[ArchitectureDebt] 1 new in ${NOTICE_CAPABILITY}`);
       } finally { f.cleanup(); }
     }
   });
@@ -297,18 +310,18 @@ describe("architecture debt section", () => {
     for (const host of ['claude', 'codex'] as const) {
       const f = nativeFixture();
       try {
-        const result = spawnSync(process.execPath, [HOOK_ENTRY, 'SessionStart', '--route', 'default'], {
+        const result = repeatUndeliveredNotice(() => spawnSync(process.execPath, [HOOK_ENTRY, 'SessionStart', '--route', 'default'], {
           cwd: f.root, encoding: 'utf8', input: JSON.stringify({ session_id: 'worker-session', agent_type: 'worker' }),
           env: { ...process.env, HOME: f.home, HOOK_REPO_ROOT: f.root, HOOK_HOST: host },
-        });
+        }), streamNoticeAttempt);
         expect(result.status, result.stderr).toBe(0);
         const envelope = JSON.parse(result.stdout);
         expect(envelope.hookSpecificOutput.additionalContext).toContain('[ArchitectureDebt]');
         expect(envelope.hookSpecificOutput.additionalContext).toContain(NOTICE_CAPABILITY);
         expect(envelope.systemMessage).toBe(host === 'claude' ? `Architecture: 1 debt item in ${NOTICE_CAPABILITY}; run rh arch debt --json.` : undefined);
-        expect(sessionStartContext(f, host)).not.toContain('[ArchitectureDebt]');
+        expect(noticeContext(f, host)).not.toContain('[ArchitectureDebt]');
         f.write('docs/architecture/.projection-manifest.json', '{"profile":"repo-harness/v1","refreshed":true}\n');
-        expect(sessionStartContext(f, host)).not.toContain('[ArchitectureDebt]');
+        expect(noticeContext(f, host)).not.toContain('[ArchitectureDebt]');
       } finally { f.cleanup(); }
     }
   });
