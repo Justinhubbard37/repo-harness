@@ -1,8 +1,8 @@
 # verification/evals-checks 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-evals-checks" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:fd27981730c36777bc087543e5b8a9b94f247d075c2077b3a4e6ac268b3890d5" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-verification-evals-checks" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:44390b27cafad0769252ff8d9a5d4e92178ee0d01989b4be2db71512b3f62347" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.verification.evals-checks`(kind `capability`)
-> **Matched Prefixes**:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`、`src/cli/commands/rules.ts`、`src/cli/commands/verify.ts`
+> **Matched Prefixes**:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/check-ledger-enforcement.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`、`src/cli/commands/rules.ts`、`src/cli/commands/verify.ts`
 > **Local Contracts**:`AGENTS.md`、`CLAUDE.md`
 > **事實優先級**:倉庫當前狀態 > 本文檔機器區 > 本文檔人工區。機器區(引言、§1、§2)由 ArchContext 從架構模型與源碼度量投影生成,手改會在下次投影被覆蓋。本文檔不記錄出處;本次投影所驗證的 commit 見 `docs/architecture/.projection-manifest.json`。
 
@@ -51,7 +51,7 @@ flowchart LR
 ### 1.3 規模信號
 
 - 規模量級:`500–1000` 個文件 / `100k–200k` 行
-- 匹配前綴:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`、`src/cli/commands/rules.ts`、`src/cli/commands/verify.ts`
+- 匹配前綴:`tests/**`、`evals/**`、`scripts/run-skill-evals.ts`、`scripts/run-harness-profile-benchmark.ts`、`scripts/validate-harness-profile-benchmark.ts`、`scripts/verify-sprint.sh`、`scripts/check-agent-tooling.sh`、`bunfig.toml`、`.github/**`、`scripts/verification-plan.ts`、`scripts/check-ci.sh`、`scripts/host-test-queue.ts`、`scripts/check-protected-paths.ts`、`scripts/select-ci-coverage.ts`、`scripts/replay-ci-coverage.ts`、`scripts/report-ci.ts`、`scripts/check-archimap-links.ts`、`scripts/check-ledger-enforcement.ts`、`scripts/select-test-suite.ts`、`scripts/ci-documentation-consumers.ts`、`scripts/harness-trace-grade.sh`、`src/cli/commands/rules.ts`、`src/cli/commands/verify.ts`
 - 排除前綴:`tests/cli/adoption-plan.test.ts`、`tests/fixtures/adoption/**`、`tests/architecture-projection-provider.test.ts`、`tests/cli/global-runtime-init.test.ts`、`tests/cli/global-runtime.test.ts`、`tests/cli/mcp-codegraph-contract.test.ts`、`tests/cli/mcp-policy.test.ts`、`tests/cli/mcp-reader-tools.test.ts`、`tests/cli/mcp-tools.test.ts`、`tests/cli/codegraph-resolver.test.ts`
 - 推導:掃描 `source.include` 減 `source.exclude`,跳過 `.git/` 與 `node_modules/`,再按 1–2–5 階梯分桶。精確計數不入本文檔:量級足以回答「這個能力有多大」,而逐行計數會讓覆蓋範圍內任何一次源碼改動都改寫本文檔。
 
@@ -83,6 +83,7 @@ flowchart LR
 - `depends-on` ← `capability.organization.board` — Match open CI repair issues by the marker that the CI report writes
 - `depends-on` ← `capability.verification.codegraph-readiness` — Use shared repository fixtures for CodeGraph resolver tests.
 - `depends-on` ← `capability.runtime-harness.global-runtime-reconciliation` — Use shared test fixtures for global runtime checks.
+- `depends-on` ← `capability.organization.publication` — Read the TestBudget configuration, exception digest and stored result document through the rule's own parser at merge readiness.
 
 組件出向關係:
 

@@ -1,5 +1,5 @@
 # workflow-engine/contract-assets 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-contract-assets" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:47544999d2a498a3460a3f76338c42a6984d9b2d3c60c620f2d38dc5f82e178e" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-contract-assets" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:e7e3897f5edeece1d946ea2f113448b0a463c594081a09ba452b8d8ef51207ce" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.workflow-engine.contract-assets`(kind `capability`)
 > **Matched Prefixes**:`agents/fleet/**`、`.codex/agents/**`、`scripts/install-agent-fleet.sh`、`assets/workflow-contract.v1.json`、`assets/released-managed-values.v1.json`、`scripts/check-released-managed-values.ts`、`.ai/context/**`、`.archcontext/model/nodes/**`、`scripts/capability-resolver.ts`、`scripts/capability-config.ts`、`scripts/contract-worktree.sh`、`scripts/merge-gate.ts`、`scripts/ship-worktrees.sh`、`assets/templates/**`、`assets/reference-configs/**`、`docs/reference-configs/**`、`assets/AGENTS.md`、`assets/CLAUDE.md`、`.archcontext/**`、`docs/adr/**`、`src/core/capabilities/**`、`assets/project-structures/**`、`assets/plan-map.json`、`assets/versions.json`、`.claude/templates/**`、`scripts/workflow-contract.ts`、`scripts/check-context-map.ts`、`scripts/check-context-files.sh`、`scripts/select-agent-context-blocks.sh`、`scripts/sync-reference-configs.ts`、`scripts/contract-worktree-runtime.ts`、`scripts/worktree-merge-lib.sh`、`scripts/cutover-closure.ts`、`scripts/new-spec.sh`、`scripts/summarize-failures.sh`、`scripts/maintenance-triage.sh`、`scripts/heartbeat-triage.sh`、`scripts/check-deploy-sql-order.sh`、`scripts/factor-lab-new.sh`、`scripts/factor-lab-promote.sh`、`scripts/factor-lab-reject.sh`、`scripts/factor-lab-check.sh`
@@ -53,7 +53,7 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:9284bdf4f0194493ad09d47ed2d524ce65efe3dcec95374a75c5d43d5bdb4a1d`).
+- Proof: `proven` (`sha256:aeeb27187b7f2597fd246e477017f3ff33258308e97484bb957f543daf785c12`).
 - Semantic nodes: `25`; declared relations: `8`.
 
 ### 1.2 模組職責表
@@ -187,7 +187,7 @@ flowchart LR
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:9284bdf4f0194493ad09d47ed2d524ce65efe3dcec95374a75c5d43d5bdb4a1d`); selectors `2/2`.
+> **Proof**: `proven` (`sha256:aeeb27187b7f2597fd246e477017f3ff33258308e97484bb957f543daf785c12`); selectors `2/2`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%
@@ -198,9 +198,12 @@ sequenceDiagram
   participant p2_primitives_8dae000d as Execution Primitives
   p2_capability_4262990f->>p2_helpers_21137951: Resolve a helper id that the workflow contract lists
   alt The helper exits zero inside its timeout class
-  p2_helpers_21137951->>p2_primitives_8dae000d: Run the helper as a bounded child with a protected environment
+  p2_helpers_21137951->>p2_primitives_8dae000d: Bound the child#59; protect env only for protected invocations
     Note over p2_capability_4262990f: Return the helper exit status
-  else The helper is not listed or fails or times out
+  else The helper is not listed or its visibility is refused
+  p2_capability_4262990f->>p2_helpers_21137951: Reject the helper before starting a child
+    Note over p2_capability_4262990f: Return exit code 2 before starting a child
+  else The child fails or times out
   p2_helpers_21137951->>p2_primitives_8dae000d: Propagate the bounded child failure
     Note over p2_capability_4262990f: Exit non-zero with the redacted child error
   end

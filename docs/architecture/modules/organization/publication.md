@@ -1,6 +1,6 @@
 # organization/publication 架構文檔
 
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-organization-publication" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:f2bf881c9aa0c739e4e9526853025431c8258d04c4cdd9da70d2e9dd3f5c74a1" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-organization-publication" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:1d7f574fa34ff39cc81e6ac503b57af5e841b89ea13baf618145104748078659" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.organization.publication`(kind `capability`)
 > **Matched Prefixes**:`src/core/publication/**`、`src/effects/publication/**`、`src/cli/commands/publication.ts`
@@ -54,6 +54,7 @@ flowchart LR
 - `calls` → `capability.workflow-engine.contract-assets` — Read integration proof through the packaged worktree merge helper
 - `calls` → `external.github` — Read pull request readiness, post provider feedback and find or create Draft PRs through gh. Set the GitHub App hook config over the REST API with an App JWT.
 - `depends-on` → `capability.verification.acceptance-review` — Run the bounded gh command transport that the Draft PR operation uses.
+- `depends-on` → `capability.verification.evals-checks` — Read the TestBudget configuration, exception digest and stored result document through the rule's own parser at merge readiness.
 - `depends-on` → `capability.workflow-engine.execution-primitives` — Resolve the Git common directory for the feedback store, validate the shared task message claim in feedback records, and run Git through the shared runner in the new remote ref push operation
 - `calls` → `component.publication.primary` — Derive fenced PR readiness, collect provider integration evidence and share the digest helpers without task ownership mutation
 

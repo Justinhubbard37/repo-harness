@@ -1,5 +1,5 @@
 # runtime-harness/hook-adapters 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-hook-adapters" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:5ae9c3c07851c399800b32d9b18ab8e00be0dcdb81213e32c941fa120c17b9bb" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-hook-adapters" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:514029b2289f2bf7381395d10ddfe0f2b905bf26fdd6b02f02340c17b2197242" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.hook-adapters`(kind `capability`)
 > **Matched Prefixes**:`src/cli/hook/**`、`src/cli/installer/**`、`src/pi/**`、`src/effects/managed-tree.ts`、`src/cli/hook-entry.ts`、`src/effects/loop/**`、`src/effects/segmented-log.ts`、`src/effects/run-summary-retention.ts`、`src/cli/commands/install.ts`、`src/cli/commands/status.ts`、`src/cli/commands/security.ts`
@@ -68,7 +68,7 @@ flowchart LR
 
 ### 1.3 規模信號
 
-- 規模量級:`20–50` 個文件 / `5000–10000` 行
+- 規模量級:`50–100` 個文件 / `5000–10000` 行
 - 匹配前綴:`src/cli/hook/**`、`src/cli/installer/**`、`src/pi/**`、`src/effects/managed-tree.ts`、`src/cli/hook-entry.ts`、`src/effects/loop/**`、`src/effects/segmented-log.ts`、`src/effects/run-summary-retention.ts`、`src/cli/commands/install.ts`、`src/cli/commands/status.ts`、`src/cli/commands/security.ts`
 - 排除前綴:`src/cli/hook/agent-notice.ts`
 - 推導:掃描 `source.include` 減 `source.exclude`,跳過 `.git/` 與 `node_modules/`,再按 1–2–5 階梯分桶。精確計數不入本文檔:量級足以回答「這個能力有多大」,而逐行計數會讓覆蓋範圍內任何一次源碼改動都改寫本文檔。
@@ -147,10 +147,10 @@ flowchart LR
 
 | 組件 | 名稱 | 規模量級 | 宣告入口 |
 | --- | --- | --- | --- |
-| `component.hook-adapters.edit-guards` | Edit Guard Handlers | `5–10` 個文件 / `1000–2000` 行 | 未宣告 |
+| `component.hook-adapters.edit-guards` | Edit Guard Handlers | `2–5` 個文件 / `500–1000` 行 | 未宣告 |
 | `component.hook-adapters.hook-root` | Hook Composition Root | `1–2` 個文件 / `50–100` 行 | 未宣告 |
-| `component.hook-adapters.host-config` | Host Config Write Gate | 未宣告 `source.include` | 未宣告 |
-| `component.hook-adapters.host-config-effects` | Host Config Write Gate (effects) | 未宣告 `source.include` | 未宣告 |
+| `component.hook-adapters.host-config` | Host Config Write Gate | `2–5` 個文件 / `200–500` 行 | 未宣告 |
+| `component.hook-adapters.host-config-effects` | Host Config Write Gate (effects) | `2–5` 個文件 / `200–500` 行 | 未宣告 |
 | `component.hook-adapters.host-installer` | Host Adapter Installer | `20–50` 個文件 / `5000–10000` 行 | `entrypoint.hook-adapters.managed-entries`、`entrypoint.hook-adapters.pi-extension`、`entrypoint.hook-adapters.skill-projection` |
 | `component.hook-adapters.host-installer-effects` | Host Adapter Installer (effects) | `5–10` 個文件 / `200–500` 行 | 未宣告 |
 | `component.hook-adapters.primary` | Hook Route Runtime | `5–10` 個文件 / `1000–2000` 行 | `entrypoint.hook-adapters.handler-bindings` |
