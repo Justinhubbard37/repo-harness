@@ -66,9 +66,10 @@ export interface WriteTarget {
   /**
    * cp and ln write `<path>/<name>` for each source name when `path` is an existing directory; the directory itself is not
    * written. `names` is null when a source name is not known, and then every existing child can be the target. cp writes
-   * through an existing child link (`follow`); ln replaces the child entry. A recursive cp also writes below each child.
+   * through an existing child link (`follow`); ln replaces the child entry. A recursive cp also writes below each child. install
+   * replaces an existing destination entry with a regular file (`replacesWithFile`), so a link there is lost.
    */
-  readonly into?: { readonly names: readonly string[] | null; readonly follow: boolean; readonly recursive: boolean };
+  readonly into?: { readonly names: readonly string[] | null; readonly follow: boolean; readonly recursive: boolean; readonly replacesWithFile?: true };
   /**
    * An mv operand that can be the destination. When it resolves to an existing directory, mv moves the sources into that
    * directory, so a directory outside the roots is refused. With `intoRoot` (the last operand of the plain form), an allowed root
@@ -236,6 +237,13 @@ class TargetJudge {
       }
     }
     if (target.into && statSync(paths[0]!, { throwIfNoEntry: false })?.isDirectory()) return this.childDenial(target, target.into, paths[0]!);
+    if (target.into?.replacesWithFile) {
+      // The destination entry itself is replaced, so an existing entry outside the roots refuses, also a link into a root.
+      let leaf: string;
+      try { leaf = leafPath(target.path); } catch { return unknownTargetDenial(target, this.roots, this.userStep); }
+      const denial = this.existingDenial({ ...target, kind: 'destroy' }, leaf);
+      if (denial) return denial;
+    }
     for (const path of paths) {
       const denial = this.existingDenial(target, path);
       if (denial) return denial;
@@ -831,9 +839,9 @@ function targetValues(args: readonly Arg[], home: string): Arg[] | null {
  * order depends on the shell's locale), every operand is a possible write target, and also a possible directory that receives
  * every other operand's name.
  */
-function copyTargets(program: string, args: readonly Arg[], cwd: string | null, home: string): WriteTarget[] {
+function copyTargets(program: string, args: readonly Arg[], cwd: string | null, home: string, valued: ReadonlySet<string> = MOVE_VALUED): WriteTarget[] {
   const values = targetValues(args, home);
-  const operands = operandsOf(args, MOVE_VALUED);
+  const operands = operandsOf(args, valued);
   const last = operands.at(-1);
   const recursive = program === 'cp' && args.some(arg => isOption(arg) && /^-[a-zA-Z]*[rRa]|^--(?:rec|ar)/.test(text(arg)));
   // GNU -T copies a source's contents to the destination; so do a source ending in `.` or `..`, and for BSD cp -R a source with a
@@ -850,6 +858,55 @@ function copyTargets(program: string, args: readonly Arg[], cwd: string | null, 
     return all.flatMap(arg => [targetOf('overwrite', program, arg, cwd), targetOf('overwrite', program, arg, cwd, { into })]);
   }
   return [targetOf('overwrite', program, last!, cwd, { into: { names: namesOf(operands.slice(0, -1)), follow: program === 'cp', recursive } })];
+}
+
+/**
+ * The option readings of install: GNU coreutils and BSD. They differ at -D (GNU flag, BSD DESTDIR), -S (GNU suffix, BSD flag) and
+ * -T (GNU no target directory, BSD tags). After its first valued letter, a short word holds that option's value.
+ */
+const INSTALL_READINGS = [
+  { flags: 'bcCdDpsTvZ', valued: 'gmoSt', long: ['backup', 'compare', 'context', 'debug', 'directory', 'group', 'help', 'mode', 'no-target-directory',
+    'owner', 'preserve-context', 'preserve-timestamps', 'strip', 'strip-program', 'suffix', 'target-directory', 'verbose', 'version'] },
+  { flags: 'bcCdpsSUv', valued: 'BDfghlMmNoT', long: [] },
+] as const;
+const INSTALL_LONG_VALUED = ['--group', '--mode', '--owner', '--strip-program', '--suffix', '--target-directory'];
+
+/**
+ * The flags of an option word in one install reading: the letters before its first valued letter, or `--name` for a long option
+ * that the name abbreviates. Null when the reading does not know the word.
+ */
+function installFlags(word: string, reading: typeof INSTALL_READINGS[number]): string | null {
+  const long = /^--([^=]+)/.exec(word);
+  if (long) return reading.long.some(name => name.startsWith(long[1]!)) ? `--${long[1]}` : null;
+  let flags = '';
+  for (const letter of word.slice(1)) {
+    if (reading.valued.includes(letter)) return flags;
+    if (!reading.flags.includes(letter)) return null;
+    flags += letter;
+  }
+  return flags;
+}
+
+/**
+ * install replaces its destination entry, as cp names it (the last operand, or into a -t directory). Each reading is judged, so a
+ * destination that one reading reaches counts. A reading that creates directories (-d) overwrites nothing. An option word that no
+ * reading knows is an unknown target.
+ */
+function installTargets(args: readonly Arg[], cwd: string | null, home: string): WriteTarget[] {
+  const end = args.findIndex(arg => arg.value === '--');
+  const options = (end < 0 ? args : args.slice(0, end)).filter(isOption);
+  const unknown = options.filter(arg => INSTALL_READINGS.every(reading => installFlags(text(arg), reading) === null))
+    .map(arg => targetOf('destroy', 'install', { ...arg, value: null }, cwd));
+  return [...unknown, ...INSTALL_READINGS.flatMap(reading => {
+    // `--di` is the shortest abbreviation of --directory; `--d` also abbreviates --debug, and getopt refuses it.
+    const directories = options.some(arg => {
+      const flags = installFlags(text(arg), reading) ?? '';
+      return flags.startsWith('--') ? flags.length > 3 && 'directory'.startsWith(flags.slice(2)) : flags.includes('d');
+    });
+    if (directories) return [];
+    const valued = new Set([...reading.valued].map(letter => `-${letter}`).concat(reading.long.length ? INSTALL_LONG_VALUED : []));
+    return copyTargets('install', args, cwd, home, valued).map(target => target.into ? { ...target, into: { ...target.into, replacesWithFile: true as const } } : target);
+  })];
 }
 
 /**
@@ -1055,14 +1112,14 @@ const DOT: Word = { kind: 'word', value: '.', pattern: '.', expand: false, glob:
 const TRUNCATE_VALUED = new Set(['-s', '--size', '-r', '--reference']);
 const SHRED_VALUED = new Set(['-n', '--iterations', '-s', '--size', '--random-source']);
 const SED_VALUED = new Set(['-e', '--expression', '-f', '--file', '-l', '--line-length']);
-const WRITERS = new Set(['rm', 'unlink', 'shred', 'truncate', 'mv', 'cp', 'ln', 'tee', 'sed', 'dd', 'find']);
+const WRITERS = new Set(['rm', 'unlink', 'shred', 'truncate', 'mv', 'cp', 'ln', 'install', 'tee', 'sed', 'dd', 'find']);
 
 /**
  * A copy, link or move operand can be a destination that receives other files, so its words keep main's expansion: no sequence
  * shaping, and a word above an expansion limit keeps the unknown-target refusal. Only a word whose matches are themselves the
  * targets is shaped and judged by its directory.
  */
-const DESTINATION_ROLE = new Set(['cp', 'ln', 'mv']);
+const DESTINATION_ROLE = new Set(['cp', 'ln', 'mv', 'install']);
 const destinationRole = (target: WriteTarget): WriteTarget => ({ ...target, children: undefined });
 
 /**
@@ -1113,6 +1170,9 @@ function commandTargets(cmd: Command, cwd: string | null, home: string, template
       break;
     case 'cp':
       targets.push(...copyTargets(program, args, cwd, home).map(destinationRole));
+      break;
+    case 'install':
+      targets.push(...installTargets(args, cwd, home).map(destinationRole));
       break;
     case 'ln':
       // Without -f, ln refuses an existing destination.
