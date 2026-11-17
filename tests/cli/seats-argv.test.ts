@@ -366,7 +366,12 @@ describe("rh seats argv", () => {
   });
 
   test("Claude advisor flags follow the setting and disappear in saving mode", () => {
-    withHome(DEFAULT_SEATS_CONFIG, home => expect(launch(home, 'worker-important').argv).not.toContain('--advisor'));
+    // #3091: a null advisor_model outside saving mode keeps the user's own persistent Claude Code advisorModel setting.
+    withHome(DEFAULT_SEATS_CONFIG, home => {
+      const args = launch(home, 'worker-important').argv;
+      expect(args).not.toContain('--advisor');
+      expect(args).not.toContain('CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1');
+    });
     const seats = { ...DEFAULT_SEATS_CONFIG,
       'worker-important': { ...DEFAULT_SEATS_CONFIG['worker-important'], advisor_model: 'fable' },
       orchestrator: { ...DEFAULT_SEATS_CONFIG.orchestrator, advisor_model: 'fable' } };
@@ -378,7 +383,10 @@ describe("rh seats argv", () => {
         writeFileSync(join(home, '.repo-harness', 'quota', 'claude.json'), JSON.stringify({ observed_at: new Date().toISOString(), rate_limits: {
           seven_day: { used_percentage: used, resets_at: Math.floor(Date.now() / 1000) + 3600 },
         } }));
-        expect(launch(home, 'orchestrator').argv.includes('--advisor')).toBe(used === 80);
+        const orchestrator = launch(home, 'orchestrator').argv;
+        expect(orchestrator.includes('--advisor')).toBe(used === 80);
+        // #3091: saving mode also disables the advisor tool of a persistent Claude Code advisorModel setting.
+        expect(orchestrator.includes('CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1')).toBe(used === 81);
         const quota = seatAccountQuotas([classifyQuotaReading(readClaudeQuota({ HOME: home }), Date.now())], seats.routing);
         expect(effectiveSeatConfig('worker-important', seats, quota).advisor_model).toBe(used === 80 ? 'fable' : null);
       }

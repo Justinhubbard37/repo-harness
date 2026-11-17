@@ -41,6 +41,9 @@ export const CLAUDE_BUILTIN_AGENT_TYPES = ['claude', 'claude-code-guide', 'Explo
 /** pi-subagents reads this variable per process for extra role directories. */
 export const PI_EXTRA_AGENT_DIRS_ENV = 'PI_SUBAGENT_EXTRA_AGENT_DIRS';
 
+/** A Claude seat in saving mode disables the advisor tool, which overrides the user's persistent `advisorModel` setting (#3091). */
+const CLAUDE_DISABLE_ADVISOR_ENV = 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL';
+
 /** The triage queue of the orchestrator seat keeps its name when the seat restarts (#1510). */
 export const ORCHESTRATOR_TASK_LIST_ID = 'repo-harness-orchestrator';
 
@@ -175,7 +178,7 @@ function seatEnv(assignments: readonly string[]): string[] {
   return ['env', '-u', SEAT_ENV, '-u', SEAT_REPOSITORY_ENV, '-u', SEAT_MODEL_ENV, '-u', SEAT_EFFORT_ENV, '-u', PI_EXTRA_AGENT_DIRS_ENV, ...assignments];
 }
 
-function claudeLaunch(seat: LaunchSeatId, config: SeatConfigV1, agentTypes: readonly string[], name: string | undefined, repositoryId: string | undefined): Omit<SeatLaunchV1, 'protocol' | 'kind' | 'seat' | 'runtime' | 'source'> {
+function claudeLaunch(seat: LaunchSeatId, config: SeatConfigV1, agentTypes: readonly string[], name: string | undefined, repositoryId: string | undefined, claudeSaving: boolean): Omit<SeatLaunchV1, 'protocol' | 'kind' | 'seat' | 'runtime' | 'source'> {
   const on = (group: SeatTool) => config.tools.includes(group);
   // `--tools` cannot name agent types (`Agent(<type>)` there removes the Agent tool), so a fleet keeps the Agent
   // tool and denies every other known type by name.
@@ -196,6 +199,9 @@ function claudeLaunch(seat: LaunchSeatId, config: SeatConfigV1, agentTypes: read
   // The Stop hook resets only a session whose env names its seat and repository (#1972). The launch model lets a
   // tier-2 reset see a mode change (#2633).
   const env = [
+    // Saving mode must also stop the advisor that a persistent `advisorModel` setting turns on; the absent `--advisor`
+    // flag leaves that setting in effect (#3091).
+    ...(claudeSaving ? [`${CLAUDE_DISABLE_ADVISOR_ENV}=1`] : []),
     ...(seat === 'orchestrator' && on('tasks') ? [`CLAUDE_CODE_TASK_LIST_ID=${ORCHESTRATOR_TASK_LIST_ID}`] : []),
     ...(isResetSeat(seat) && repositoryId !== undefined ? [`${SEAT_ENV}=${seat}`, `${SEAT_REPOSITORY_ENV}=${repositoryId}`,
       ...(config.model === null ? [] : [`${SEAT_MODEL_ENV}=${config.model}`]), ...(config.effort === null ? [] : [`${SEAT_EFFORT_ENV}=${config.effort}`])] : []),
@@ -278,10 +284,12 @@ function piLaunch(seat: LaunchSeatId, config: SeatConfigV1, roleDirectory: strin
  * `paneName` (`seatPaneName`) becomes the Claude session name `-n`. `repositoryId` is the checked label value.
  * `piRoleDirectory` holds the role files of a Pi seat with a fleet; it goes on that seat's argv only.
  * `piHookExtension` is the installed rh Pi extension that a Pi review seat loads with `-e`; the page, which shows limits only, passes none.
+ * `claudeSaving` is the Claude quota mode `saving` that the caller already read; a Claude seat then also disables the
+ * advisor tool. Only `rh seats argv` reads the quota, so its other callers take the default.
  */
-export function buildSeatLaunch(seat: LaunchSeatId, config: SeatConfigV1, source: SeatLaunchSource, claudeAgentTypes: readonly string[], paneName?: string, repositoryId?: string, piRoleDirectory?: string, piHookExtension?: string): SeatLaunchV1 {
+export function buildSeatLaunch(seat: LaunchSeatId, config: SeatConfigV1, source: SeatLaunchSource, claudeAgentTypes: readonly string[], paneName?: string, repositoryId?: string, piRoleDirectory?: string, piHookExtension?: string, claudeSaving = false): SeatLaunchV1 {
   const launch = config.runtime === 'claude'
-    ? claudeLaunch(seat, config, claudeAgentTypes, paneName, repositoryId)
+    ? claudeLaunch(seat, config, claudeAgentTypes, paneName, repositoryId, claudeSaving)
     : config.runtime === 'codex' ? codexLaunch(seat, config) : piLaunch(seat, config, piRoleDirectory, piHookExtension);
   return { protocol: 1, kind: 'seat_launch', seat, runtime: config.runtime, source, ...launch };
 }

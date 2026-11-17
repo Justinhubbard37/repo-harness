@@ -156,6 +156,8 @@ function plannedGatekeeper(route: SeatRouteV1): SeatConfigV1 {
  */
 async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configured: SeatConfigV1, env: NodeJS.ProcessEnv, ownerException: string | undefined): Promise<{
   readonly seat: SeatConfigV1; readonly modeKnown: boolean;
+  /** The Claude mode that `effectiveSeatConfig` read for this launch (#3091). */
+  readonly claudeSaving: boolean;
 }> {
   const readings: QuotaReading[] = [];
   const done = new Set<QuotaAccount>();
@@ -200,7 +202,7 @@ async function quotaCheckedSeat(id: LaunchSeatId, seats: SeatsConfigV1, configur
   const seat = gatekeeper?.id === 'gatekeeper-fallback' ? gatekeeper.seat : effectiveSeatConfig(id, seats, quota)!;
   const unavailable = unavailablePiSeat(seat, seats.routing);
   if (unavailable !== null) throw new SeatsCommandError('seat_provider_unavailable', `The ${id} seat cannot launch: ${unavailable}. See the quota routes.`);
-  return { seat, modeKnown: account === null || quota[account].mode !== 'unknown' };
+  return { seat, modeKnown: account === null || quota[account].mode !== 'unknown', claudeSaving: quota.claude.mode === 'saving' };
 }
 
 type SeatLaunchResult = SeatLaunchV1 & {
@@ -252,7 +254,9 @@ async function effectiveSeatLaunch(seat: string, labels: SeatLabelInput, env: No
     if (planned !== undefined) throw new SeatsCommandError('owner_exception_invalid', 'A planned gatekeeper launch takes no owner exception.');
     checkOwnerException(labels.ownerException, cwd, env);
   }
-  const { seat: effective, modeKnown } = id === 'gatekeeper' && planned !== undefined ? { seat: plannedGatekeeper(planned), modeKnown: true }
+  // A planned gatekeeper route reserves no Claude seat while Claude is saving or exhausted, so its launch is never a
+  // Claude seat in saving mode.
+  const { seat: effective, modeKnown, claudeSaving } = id === 'gatekeeper' && planned !== undefined ? { seat: plannedGatekeeper(planned), modeKnown: true, claudeSaving: false }
     : await quotaCheckedSeat(id, seats, configured, env, labels.ownerException);
   if (effective.runtime === 'pi') await assertPiShell(env, cwd);
   const labelSet = seatLabels(id, labels);
@@ -267,7 +271,7 @@ async function effectiveSeatLaunch(seat: string, labels: SeatLabelInput, env: No
     : [];
   const piRoleDirectory = effective.runtime === 'pi' && effective.fleet.length > 0 ? writePiFleetRoles(effective.fleet, env) : undefined;
   const piHookExtension = effective.runtime === 'pi' && isReviewSeat(id) ? installedPiExtension(env) : undefined;
-  const launch = buildSeatLaunch(id, effective, config.seats === undefined ? 'defaults' : 'seats', agentTypes, name ?? undefined, labels.repositoryId, piRoleDirectory, piHookExtension);
+  const launch = buildSeatLaunch(id, effective, config.seats === undefined ? 'defaults' : 'seats', agentTypes, name ?? undefined, labels.repositoryId, piRoleDirectory, piHookExtension, claudeSaving);
   return { effective, modeKnown, launch: {
     ...launch,
     argv: labelSet === undefined ? launch.argv : selfLabelingArgv(id, labels, launch.argv),
