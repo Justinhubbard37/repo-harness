@@ -66,7 +66,7 @@ interface RetirementAction {
   readonly commands?: readonly string[];
   readonly sourcePaths?: Readonly<Record<string, string>>;
 }
-interface Contract { readonly installedCopyIncludes?: readonly string[]; readonly installedCopyExcludes?: readonly string[]; readonly helpers?: { readonly scripts?: readonly string[] }; readonly migrations?: { readonly upgrade?: { readonly actions?: readonly RetirementAction[] } } }
+interface Contract { readonly installedCopyIncludes?: readonly string[]; readonly installedCopyExcludes?: readonly string[]; readonly helpers?: { readonly scripts?: readonly string[]; readonly internal?: readonly string[] }; readonly migrations?: { readonly upgrade?: { readonly actions?: readonly RetirementAction[] } } }
 export interface ManifestSurface {
   readonly authority?: string;
   readonly removal?: string;
@@ -497,7 +497,7 @@ function rootRunTarget(args: string): string | null {
 }
 
 /**
- * `rh run` resolves only the helpers in the shipped registry, init deletes
+ * `rh run` resolves only the public helpers in the shipped registry, init deletes
  * generated script keys that other scripts may still run, and the
  * `repo-harness` command is retired. Each fails at run time. User scripts stay
  * as they are; the report lists each key and command. A managed key whose
@@ -510,9 +510,13 @@ function scanPackageScripts(root: string, add: AddItem): void {
   const value = readJson(path);
   if (!isRecord(value) || !isRecord(value.scripts)) return;
   const scripts = value.scripts;
-  const helpers = loadWorkflowContractAsset<Contract>().helpers?.scripts;
-  if (!helpers) throw new Error('package script inventory requires the helper registry');
-  const runnable = new Set(helpers.flatMap((name) => [name, name.replace(/\.[^.]+$/, '')]));
+  const helpers = loadWorkflowContractAsset<Contract>().helpers;
+  if (!helpers?.scripts) throw new Error('package script inventory requires the helper registry');
+  const internal = new Set(helpers.internal);
+  const runnable = new Set(helpers.scripts.flatMap((name) => {
+    const id = name.replace(/\.[^.]+$/, '');
+    return internal.has(id) ? [] : [name, id];
+  }));
   // `bun run` falls back to a file or a local binary; `npm run` runs only script keys.
   const resolves = (runner: string, target: string): boolean => Object.hasOwn(scripts, target)
     || (runner === 'bun' && (stat(join(root, target)) !== null || stat(join(root, 'node_modules/.bin', target)) !== null));
@@ -522,13 +526,16 @@ function scanPackageScripts(root: string, add: AddItem): void {
   const findings = Object.entries(scripts).flatMap(([key, command]) => {
     // init replaces a managed key whose value is current or released, so only an edited value is the user's.
     if (typeof command !== 'string' || MANAGED_PACKAGE_SCRIPTS[key] === command || isReleasedPackageScript(key, command)) return [];
-    const retired = [...command.matchAll(/(?<![\w./@-])(?:rh|repo-harness) run ([^\s;&|'"`)]+)/g)].some((match) => !runnable.has(match[1]!));
+    const retired = [...command.matchAll(/(?<![\w./@-])(?:rh|repo-harness) run ([^\s;&|'"`)]+)/g)]
+      .map((match) => match[1]!).filter((helper) => !runnable.has(helper));
+    const replacement = retired.some((helper) => ['contract-worktree', 'contract-worktree.sh'].includes(helper))
+      ? [' (contract-worktree is internal; use rh worktrees start to start a worktree)'] : [];
     const retiredCli = namesRetiredCli(command) ? [` (the ${RETIRED_CLI_NAME} command is now ${CLI_NAME})`] : [];
     const missing = [...command.matchAll(/\b(bun|npm) run(?=\s)/g)].flatMap((match) => {
       const target = rootRunTarget(command.slice(match.index + match[0].length));
       return target === null || resolves(match[1]!, target) ? [] : [` (missing script "${target}")`];
     });
-    return retired || missing.length > 0 || retiredCli.length > 0 ? [`${key}: ${command}${[...retiredCli, ...missing].join('')}`] : [];
+    return retired.length > 0 || missing.length > 0 || retiredCli.length > 0 ? [`${key}: ${command}${[...retiredCli, ...replacement, ...missing].join('')}`] : [];
   });
   const customizedNotice = customized.length === 0 ? ''
     : `Package scripts that init manages differ from every released value; init and upgrade keep them: ${customized.join('; ')}`;
@@ -539,7 +546,7 @@ function scanPackageScripts(root: string, add: AddItem): void {
     return;
   }
   add({ location: 'project', surface: 'file', path, retiredBy: 'retired-script-reference', ownership: 'unowned', proof: null, action: 'report',
-    reason: `Package scripts call a helper that this package does not ship, a script that package.json does not define, or the retired ${RETIRED_CLI_NAME} command; review them without automatic edits: ${findings.join('; ')}${customizedNotice && `. ${customizedNotice}`}` });
+    reason: `Package scripts call a helper that rh run does not expose, a script that package.json does not define, or the retired ${RETIRED_CLI_NAME} command; review them without automatic edits: ${findings.join('; ')}${customizedNotice && `. ${customizedNotice}`}` });
 }
 
 /**
