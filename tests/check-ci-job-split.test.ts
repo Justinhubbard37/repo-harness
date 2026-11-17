@@ -597,6 +597,10 @@ describe('single affected verification and daily fallback', () => {
     expect(jobs['state-boundaries'].needs).toBe('selection');
     expect(jobs['state-boundaries'].if).toBe("github.event_name != 'push' && needs.selection.outputs.mode != 'documentation'");
     expect(workflow.on.merge_group).toBeUndefined();
+    // A reopen re-runs the unchanged head. No edit event starts CI, so the job that
+    // every other job needs carries no event gate of its own.
+    expect(workflow.on.pull_request.types).toEqual(['opened', 'synchronize', 'reopened']);
+    expect(jobs.selection.if).toBeUndefined();
     expect(jobs.required.if).toBe("always() && github.event_name == 'pull_request'");
     const pushJobs = Object.entries(jobs).filter(([, job]: [string, any]) => !job.needs && job.if !== "github.event_name != 'push'").map(([id]) => id);
     expect(pushJobs).toEqual(['selection']);

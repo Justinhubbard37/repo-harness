@@ -157,6 +157,8 @@ describe('closeout runner guardrails', () => {
     const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
     expect(workflow).toContain('pull_request:');
     expect(workflow).not.toMatch(/push:[\s\S]*codex\/\*\*/);
+    // The lane stays per PR: a newer event for the same PR cancels the older candidate.
+    expect(workflow).toContain('group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}');
     expect(workflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
   });
 
