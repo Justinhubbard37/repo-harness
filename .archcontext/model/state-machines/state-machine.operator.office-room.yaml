@@ -47,7 +47,7 @@ regions:
   - id: "screen"
     label: "The screen of the room"
     initial: "loading"
-    source: { kind: "code", path: "src/operator-web/BoardPage.tsx", symbol: "OfficeRepository", confirmedDigest: "sha256:dd400f522c7e5918b89d30de102e279ffdafbc63b5db39479a16a11f9775a39c" }
+    source: { kind: "code", path: "src/operator-web/BoardPage.tsx", symbol: "OfficeRepository", confirmedDigest: "sha256:ccb3e1251ccce4f1a9dbb5dbe6e9cd88b9e2a5808704600688717fc276335528" }
     states:
       - { id: "loading", label: "Loading" }
       - { id: "checklist", label: "Setup checklist" }

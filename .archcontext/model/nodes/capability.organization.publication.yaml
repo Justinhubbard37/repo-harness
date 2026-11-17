@@ -19,6 +19,7 @@ source:
     - "src/core/publication/**"
     - "src/effects/publication/**"
     - "src/cli/commands/publication.ts"
+    - "scripts/release-owner-steps.sh"
   entrypoints:
     - id: "entrypoint.publication.command"
       path: "src/cli/commands/publication.ts"

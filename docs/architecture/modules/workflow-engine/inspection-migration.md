@@ -113,7 +113,7 @@ The installed-contract resolver statements in earlier dated closeouts are histor
 
 - **shell 与 TS 双语言实现**是能力边界的直接结果：判定与事务在 TS（inspector + adoption），脚手架与安装在 shell（`pi_*`）。合并成一种语言会把 adoption 能力的所有权拖进本能力，代价高于收益。
 - **`init-project.sh` 会联网装依赖**（`bun create vite`、`npx shadcn` 等）。这是脚手架命令的本分，但也意味着它不能在离线 CI 里当检查用——所以 CI 只跑 inspector。
-- **三级 JSON runtime 探测**换来的是在没有 node/bun 的机器上也能读契约。代价是 python3 分支与 node 分支是两份独立实现的 selector 解析逻辑（`scripts/lib/project-init-lib.sh:502-553`），语义漂移只能靠测试兜。
+- **三级 JSON runtime 探测**换来的是在没有 node/bun 的机器上也能读契约。代价是 python3 分支与 node 分支是两份独立实现的 selector 解析逻辑（`scripts/lib/project-init-lib.sh:152-203`），语义漂移只能靠测试兜。
 
 ### 3.3 10x 规模下先垮的点
 

@@ -169,7 +169,7 @@ sequenceDiagram
 
 ### 2026-10-11 归属扩展与 P3 复核
 
-- include 增加 `src/cli/repo-adoption/**` 和 `src/cli/commands/migrate.ts`。
+- include 增加 `src/cli/repo-adoption/**`。
 - P3 改为"必须保持的不变量 / 关键权衡"结构，并按当前源码更新行号（`standard-plan.ts` 850 行，`withTargetLock` 在 `fs-transaction.ts:226`）。
 
 ### 2026-10-25 事务原子化与目标锁迁移（#902）

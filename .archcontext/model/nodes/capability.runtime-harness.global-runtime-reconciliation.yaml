@@ -34,6 +34,7 @@ source:
     - scripts/check-npm-release.sh
     - scripts/check-release-published.sh
     - scripts/check-tarball-install-smoke.sh
+    - scripts/check-release-upgrade-rehearsal.sh
     - scripts/check-pi-package-smoke.ts
     - scripts/runtime-evidence-receipt.ts
     - install.sh
