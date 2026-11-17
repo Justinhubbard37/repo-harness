@@ -30,10 +30,12 @@ export interface SafetyScope {
 }
 
 /**
- * - `destroy` removes or replaces the entry itself (rm, an mv source, sed -i): the leaf link is not followed.
+ * - `destroy` removes or replaces the entry itself (rm, an mv operand, sed -i): the leaf link is not followed, except through a
+ *   trailing separator.
  * - `change` writes content into an existing file (truncate, shred): the kernel follows the leaf link to its referent.
  * - `overwrite` creates or replaces content (a redirect, cp, tee): it follows the leaf link too.
- * `destroy` and `change` act only on an existing file, so an unknown target denies; an unknown `overwrite` target passes.
+ * `destroy` and `change` act only on an existing file, so an unknown target denies; an unknown `overwrite` target passes unless
+ * its literal directory is an existing directory outside the roots, or its word is above an expansion limit.
  */
 export type TargetKind = 'destroy' | 'change' | 'overwrite';
 
@@ -43,14 +45,24 @@ export interface WriteTarget {
   readonly via: string;
   readonly spelled: string;
   readonly path: string | null;
-  /** The path is the literal directory before a glob or a parameter; the write lands below it. */
-  readonly glob?: true;
+  /** The working directory that a relative unknown target resolves from. */
+  readonly from?: string | null;
+  /** For an unknown target: the absolute literal directory before the first run-time character, when the word has one. */
+  readonly prefix?: string;
+  /** The word is above an expansion limit, so its targets are not known: it refuses for every kind. */
+  readonly unbounded?: true;
   /**
-   * cp, mv and ln write `<path>/<name>` for each source name when `path` is an existing directory; the directory itself is not
+   * cp and ln write `<path>/<name>` for each source name when `path` is an existing directory; the directory itself is not
    * written. `names` is null when a source name is not known, and then every existing child can be the target. cp writes
-   * through an existing child link (`follow`); mv and ln replace the child entry.
+   * through an existing child link (`follow`); ln replaces the child entry.
    */
   readonly into?: { readonly names: readonly string[] | null; readonly follow: boolean };
+  /**
+   * An mv operand that can be the destination. When it resolves to an existing directory, mv moves the sources into that
+   * directory, so a directory outside the roots is refused. With `intoRoot` (the last operand of the plain form), an allowed root
+   * itself or a directory below one passes when the destination entry is in a root too.
+   */
+  readonly destination?: { readonly intoRoot: boolean };
 }
 
 const inside = (rel: string) => !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
@@ -110,7 +122,10 @@ function underRoot(root: Root, path: string, orAt = false): boolean {
   return root.every((part, n) => part === '*' ? parts[n] !== '..' && parts[n] !== '' : parts[n] === part);
 }
 
-/** The path itself, with every directory above it resolved; the leaf link is not followed, as rm and mv do not follow it. */
+/** A path separator of this platform at the end; a backslash is a name character on POSIX. */
+const TRAILING_SEPARATOR = sep === '/' ? /\/$/ : /[\\/]$/;
+
+/** The entry that rm and mv act on, with every directory above it resolved and trailing separators removed; the leaf link is not followed. */
 function leafPath(path: string): string {
   const name = basename(path);
   return name === '' || name === '.' || name === '..' ? writeThroughPath(path) : join(writeThroughPath(dirname(path)), name);
@@ -155,20 +170,56 @@ class TargetJudge {
   constructor(private readonly scope: SafetyScope, private readonly userStep: string) {}
   private get roots(): Root[] { return this.rootsValue ??= allowedRoots(this.scope); }
 
+  /**
+   * The one decision for a literal target and for each glob match. A removal judges the leaf entry, and also the directory that
+   * the leaf link resolves to when the operand ends with a separator: the kernel follows the link through the separator, and GNU
+   * mv --strip-trailing-slashes removes the separator first. A content write judges the path it writes through.
+   */
   denial(target: WriteTarget): Denial | null {
     const needsTarget = target.kind !== 'overwrite';
-    if (target.path === null) return needsTarget ? unknownTargetDenial(target, this.roots, this.userStep) : null;
+    if (target.path === null) {
+      return needsTarget || target.unbounded ? unknownTargetDenial(target, this.roots, this.userStep) : this.prefixDenial(target);
+    }
     if (/^\/dev\//.test(target.path)) return null;
-    if (target.glob) return this.globDenial(target, target.path);
-    let path: string;
+    let paths: string[];
     try {
-      path = target.kind === 'destroy' ? leafPath(target.path) : writeThroughPath(target.path);
+      paths = target.kind !== 'destroy' ? [writeThroughPath(target.path)]
+        : [leafPath(target.path), ...(TRAILING_SEPARATOR.test(target.path) ? [writeThroughPath(target.path)] : [])];
     } catch {
       // A path that does not resolve (a link loop, an unreadable directory) cannot be checked.
       return needsTarget ? unknownTargetDenial(target, this.roots, this.userStep) : null;
     }
-    if (target.into && statSync(path, { throwIfNoEntry: false })?.isDirectory()) return this.childDenial(target, target.into, path);
-    return this.existingDenial(target, path);
+    const into = target.destination ? existingDirectory(target.path) : null;
+    if (into) {
+      const inRoot = (path: string) => this.roots.some(root => underRoot(root, path, true));
+      // The directory check only refuses: a ledger-created directory never excuses the entry checks below.
+      if (!inRoot(into)) {
+        const denial = this.existingDenial(target, into);
+        if (denial) return denial;
+      } else if (target.destination!.intoRoot && (TRAILING_SEPARATOR.test(target.path) || inRoot(paths[0]!))) {
+        // BSD mv -h renames over a destination link to a directory, so the entry itself must be in a root too. No option of the
+        // plain form removes a trailing separator, so the kernel follows that link and the directory is the entry.
+        return null;
+      }
+    }
+    if (target.into && statSync(paths[0]!, { throwIfNoEntry: false })?.isDirectory()) return this.childDenial(target, target.into, paths[0]!);
+    for (const path of paths) {
+      const denial = this.existingDenial(target, path);
+      if (denial) return denial;
+    }
+    return null;
+  }
+
+  /**
+   * An unknown overwrite target with a literal directory: an existing directory outside the roots refuses. The check only
+   * refuses; an unknown overwrite target passes otherwise, as a create passes everywhere.
+   */
+  private prefixDenial(target: WriteTarget): Denial | null {
+    if (target.prefix === undefined) return null;
+    let dir: string;
+    try { dir = writeThroughPath(target.prefix); } catch { return null; }
+    if (this.roots.some(root => underRoot(root, dir, true)) || !existsSync(dir) || ledgerCreated(dir, this.scope.env)) return null;
+    return outsideDenial(target, dir, this.roots, this.userStep);
   }
 
   /** A copy into a directory writes one child per source name; without the names, every existing child is a possible target. */
@@ -193,19 +244,14 @@ class TargetJudge {
     if (!exists || ledgerCreated(path, this.scope.env)) return null;
     return outsideDenial(target, path, this.roots, this.userStep);
   }
+}
 
-  /**
-   * A glob or a parameter decides its target at run time, below its literal directory, so the directory decides: inside an
-   * allowed root the call passes, and an existing directory outside them takes the outside rule.
-   */
-  private globDenial(target: WriteTarget, dir: string): Denial | null {
-    let path: string;
-    try { path = writeThroughPath(dir); } catch {
-      return target.kind === 'overwrite' ? null : unknownTargetDenial(target, this.roots, this.userStep);
-    }
-    if (this.roots.some(root => underRoot(root, path, true)) || !existsSync(path) || ledgerCreated(path, this.scope.env)) return null;
-    return outsideDenial(target, path, this.roots, this.userStep);
-  }
+/** The existing directory that the path resolves to through every link, or null. */
+function existingDirectory(path: string): string | null {
+  try {
+    const dir = writeThroughPath(path);
+    return statSync(dir, { throwIfNoEntry: false })?.isDirectory() ? dir : null;
+  } catch { return null; }
 }
 
 const rootList = (roots: readonly Root[]) => roots.map(root => root.join(sep)).join(', ');
@@ -223,8 +269,8 @@ function outsideDenial(target: WriteTarget, path: string, roots: readonly Root[]
 function unknownTargetDenial(target: WriteTarget, roots: readonly Root[], userStep: string): Denial {
   return {
     guard: 'UserFileGuard',
-    reason: `I2: the target ${target.spelled} of ${target.via} is not known before the command runs, and ${target.via} removes or changes `
-      + `an existing file. Allowed roots: ${rootList(roots)}.`,
+    reason: `I2: the target ${target.spelled} of ${target.via}${target.from ? ` from ${target.from}` : ''} is not known before the command runs, `
+      + `and ${target.via} removes or changes an existing file. Allowed roots: ${rootList(roots)}.`,
     fix: `Write the target as a literal path inside an allowed root from a known working directory, or ${userStep}.`,
     askable: true,
   };
@@ -232,9 +278,11 @@ function unknownTargetDenial(target: WriteTarget, roots: readonly Root[], userSt
 
 /** The first I2 denial among the targets. `userStep` says how the user does the call themselves. */
 export function writeTargetDenial(targets: readonly WriteTarget[], scope: SafetyScope, userStep: string | ((path: string) => string)): Denial | null {
+  // One glob can give many targets, so a fixed user step shares one judge and one root list.
+  const shared = typeof userStep === 'string' ? new TargetJudge(scope, userStep) : null;
   for (const target of targets) {
-    const step = typeof userStep === 'string' ? userStep : userStep(target.path ?? target.spelled);
-    const denial = new TargetJudge(scope, step).denial(target);
+    const judge = typeof userStep === 'string' ? shared! : new TargetJudge(scope, userStep(target.path ?? target.spelled));
+    const denial = judge.denial(target);
     if (denial) return denial;
   }
   return null;
@@ -454,110 +502,229 @@ function credentialFinding(cmd: Command, dirs: Dirs): Denial | null {
 // ---------------------------------------------------------------------------
 
 /**
- * The absolute paths that a word names from each directory of the set, after brace expansion. A word that keeps a glob or a
- * parameter names its literal directory before the first such character (`glob`); a leading `$HOME` and `~` are literal. Null
- * when the shell decides the directory at run time.
+ * One word that the program receives after the shell expands a command word. `value` is null when the shell decides it at run
+ * time. `pattern` is the word after brace and HOME expansion and before glob expansion, so the program grammar can still read an
+ * option or `of=` prefix and the literal directory of an unknown word. `matched` marks a glob match, and `word` is the index of
+ * the command word that produced it.
  */
-function wordTargets(word: Word, dirs: Dirs): Array<{ path: string; glob: boolean }> | null {
-  const result: Array<{ path: string; glob: boolean }> = [];
-  for (let pattern of expandBraces(word.pattern) ?? [word.pattern]) {
-    const home = /^(?:~|\$HOME|\$\\\{HOME\\\})(?=\/|$)/.exec(pattern);
-    if (home) pattern = escapePattern(homedir()) + pattern.slice(home[0].length);
-    // `~+` is the working directory; `~-` and `~user` are not known here.
-    else if (/^~\+(?:\/|$)/.test(pattern)) pattern = `.${pattern.slice(2)}`;
-    else if (pattern.startsWith('~')) return null;
-    const stop = expansionIndex(pattern, word.expand);
-    if (stop === 0 && pattern[0] === '$') return null;
-    const literal = unescapePattern(stop < 0 ? pattern : pattern.slice(0, pattern.lastIndexOf('/', stop) + 1)) || '.';
-    if (!isAbsolute(literal) && dirs === null) return null;
-    // The path keeps its `..` parts: the kernel follows each link before the `..` after it.
-    for (const base of isAbsolute(literal) ? [''] : dirs!) result.push({ path: base ? `${base}${sep}${literal}` : literal, glob: stop >= 0 });
-  }
-  return result;
+interface Arg {
+  readonly value: string | null;
+  readonly pattern: string;
+  readonly expand: boolean;
+  readonly spelled: string;
+  readonly word: number;
+  readonly matched: boolean;
+  /** The word is above the brace limit or a glob above the match limit. */
+  readonly unbounded?: true;
 }
 
-/** The first unescaped glob or brace character, or `$` in a word that expands at run time; -1 when the word is literal. */
-function expansionIndex(pattern: string, expand: boolean): number {
+/** The text that the grammar reads: the value, or the word as written when the shell decides it at run time. */
+const text = (arg: Arg) => arg.value ?? unescapePattern(arg.pattern);
+
+/** The first unescaped character of `chars` in a pattern, or -1. */
+function patternIndex(pattern: string, chars: string): number {
   for (let i = 0; i < pattern.length; i++) {
     if (pattern[i] === '\\') i++;
-    else if ('*?[{'.includes(pattern[i]!) || (expand && pattern[i] === '$')) return i;
+    else if (chars.includes(pattern[i]!)) return i;
   }
   return -1;
 }
 
-function targetsOf(kind: TargetKind, via: string, word: Word, dirs: Dirs, into?: WriteTarget['into']): WriteTarget[] {
-  const found = wordTargets(word, dirs);
-  if (found === null) return [{ kind, via, spelled: word.value, path: null }];
-  return found.map(({ path, glob }) => ({ kind, via, spelled: word.value, path, ...(glob ? { glob: true as const } : {}), ...(into ? { into } : {}) }));
+/** The literal directory before the first run-time character of a pattern, or null when the word has none. */
+function literalDirectory(pattern: string): string | null {
+  if (pattern.startsWith('~')) return null;
+  const stop = patternIndex(pattern, '$*?[{');
+  return unescapePattern(pattern.slice(0, pattern.lastIndexOf('/', stop < 0 ? pattern.length : stop) + 1)) || null;
 }
 
+/**
+ * One brace item before glob expansion: a leading `~`, `$HOME` or `${HOME}` is HOME and `~+` is the working directory. The
+ * item's own text decides whether it is known. In a word that changes at run time, an item with a `$` (a parameter or a
+ * substitution) is unknown, and so is an item with a backslash, because the reader keeps a `$'...'` escape undecoded. An item
+ * with `~user` is unknown too.
+ */
+function itemArg(pattern: string, expand: boolean, at: number, home: string): Arg {
+  const lead = /^(?:~|\$HOME|\$\\\{HOME\\\})(?=\/|$)/.exec(pattern);
+  if (lead) pattern = escapePattern(home) + pattern.slice(lead[0].length);
+  else if (/^~\+(?:\/|$)/.test(pattern)) pattern = `.${pattern.slice(2)}`;
+  const value = unescapePattern(pattern);
+  const known = !pattern.startsWith('~') && !(expand && (pattern.includes('$') || value.includes('\\')));
+  return { value: known ? value : null, pattern, expand, spelled: value, word: at, matched: false };
+}
+
+/** A word or item above an expansion limit: an unknown target set that refuses for every kind. */
+const unbounded = (arg: Arg): Arg => ({ ...arg, value: null, unbounded: true });
+
+/**
+ * The words that one command word gives the program, as the shell expands it without running anything: brace expansion, HOME,
+ * then glob expansion from `cwd`. Expansion never drops an operand: each brace item gives its own words, and an item that is not
+ * known gives one unknown word. Above the brace limit the items are not known, so the whole word is one unbounded word; a glob
+ * item above the match limit is one unbounded word too.
+ */
+function expandWord(word: Word, at: number, cwd: string | null, home: string): Arg[] {
+  const patterns = expandBraces(word.pattern);
+  if (patterns === null) return [unbounded(itemArg(word.pattern, word.expand, at, home))];
+  let budget = CHILD_LIMIT;
+  return patterns.flatMap(item => {
+    const arg = itemArg(item, word.expand, at, home);
+    if (arg.value === null || globIndex(arg.pattern) < 0) return [arg];
+    const matches = globMatches(arg.pattern, cwd, budget);
+    if (matches === null) return [unbounded(arg)];
+    budget -= matches.length;
+    // Without a match the shell passes the word itself.
+    return matches.length
+      ? matches.map(value => ({ value, pattern: escapePattern(value), expand: false, spelled: value, word: at, matched: true }))
+      : [arg];
+  });
+}
+
+/**
+ * The part of a word after a prefix of `length` characters (`of=`, `--target-directory=`, `-t`), resolved as its own brace item:
+ * HOME is substituted again, and an unknown rest keeps its literal directory. The shell globs the whole word, so the rest is not
+ * globbed again.
+ */
+function restArg(arg: Arg, length: number, home: string): Arg {
+  let at = 0;
+  for (let count = 0; count < length && at < arg.pattern.length; count++) at += arg.pattern[at] === '\\' ? 2 : 1;
+  const rest = itemArg(arg.pattern.slice(at), arg.expand, arg.word, home);
+  return arg.unbounded ? unbounded(rest) : rest;
+}
+
+/**
+ * The paths that a glob pattern matches from `cwd`, one segment at a time, in the spelling the shell passes (`..` and links
+ * stay for the judge). A leading `*`, `?` or `[` does not match a dot name. A trailing separator matches directories only and
+ * stays on each match. Null when the pattern cannot be expanded: a relative pattern without a known directory, a listing error
+ * other than a missing directory, or more matches than `limit`.
+ */
+function globMatches(pattern: string, cwd: string | null, limit: number): string[] | null {
+  if (!isAbsolute(pattern) && cwd === null) return null;
+  const absolute = (path: string) => isAbsolute(path) ? path : `${cwd}${sep}${path || '.'}`;
+  const parts = pattern.split('/');
+  let found = [''];
+  for (let n = 0; n < parts.length; n++) {
+    const part = parts[n]!;
+    const extend = (prefix: string, name: string) => n === 0 ? name : `${prefix}/${name}`;
+    if (globIndex(part) < 0) { found = found.map(prefix => extend(prefix, unescapePattern(part))); continue; }
+    const next: string[] = [];
+    for (const prefix of found) {
+      let names: string[];
+      try { names = readdirSync(absolute(n > 0 && prefix === '' ? '/' : prefix)); } catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+        return null;
+      }
+      for (const name of names.sort()) {
+        if ((part.startsWith('.') || !name.startsWith('.')) && segmentMatches(part, name)) next.push(extend(prefix, name));
+      }
+      if (next.length > limit) return null;
+    }
+    found = next;
+  }
+  const directoriesOnly = parts.length > 1 && parts.at(-1) === '';
+  return found.filter(path => {
+    try {
+      return directoriesOnly ? statSync(absolute(path), { throwIfNoEntry: false })?.isDirectory() === true
+        : lstatSync(absolute(path), { throwIfNoEntry: false }) !== undefined;
+    } catch { return true; }
+  });
+}
+
+/** The arguments after the program word, expanded from one working directory. */
+const expandArgs = (words: readonly Word[], cwd: string | null, home: string): Arg[] =>
+  words.flatMap((word, at) => expandWord(word, at, cwd, home));
+
+const literalArg = (value: string): Arg => ({ value, pattern: escapePattern(value), expand: false, spelled: value, word: -1, matched: false });
+
+function targetOf(kind: TargetKind, via: string, arg: Arg, cwd: string | null, extra: Pick<WriteTarget, 'into' | 'destination'> = {}): WriteTarget {
+  const resolveFrom = (value: string) => isAbsolute(value) ? value : cwd === null ? null : `${cwd}${sep}${value}`;
+  // The path keeps its `..` parts: the kernel follows each link before the `..` after it.
+  const path = arg.value === null ? null : resolveFrom(arg.value || '.');
+  const dir = arg.value === null ? literalDirectory(arg.pattern) : null;
+  const prefix = dir === null ? null : resolveFrom(dir);
+  return { kind, via, spelled: arg.spelled, path, from: cwd, ...(prefix === null ? {} : { prefix }), ...(arg.unbounded ? { unbounded: true as const } : {}), ...extra };
+}
+
+const isOption = (arg: Arg) => text(arg).startsWith('-') && text(arg) !== '-';
+
 /** Operands after options; `valued` options take the next word unless glued (`-tDIR`, `--suffix=x`). */
-function operandsOf(args: readonly Word[], valued: ReadonlySet<string>): { operands: Word[]; values: Map<string, Word> } {
-  const operands: Word[] = [];
-  const values = new Map<string, Word>();
+function operandsOf(args: readonly Arg[], valued: ReadonlySet<string>): Arg[] {
+  const operands: Arg[] = [];
   let only = false;
   for (let i = 0; i < args.length; i++) {
-    const word = args[i]!;
-    if (only || !word.value.startsWith('-') || word.value === '-') { operands.push(word); continue; }
-    if (word.value === '--') { only = true; continue; }
-    if (valued.has(word.value) && args[i + 1]) values.set(word.value, args[++i]!);
+    const arg = args[i]!;
+    if (only || !isOption(arg)) { operands.push(arg); continue; }
+    if (arg.value === '--') { only = true; continue; }
+    if (valued.has(text(arg))) i++;
   }
-  return { operands, values };
+  return operands;
 }
 
 const MOVE_VALUED = new Set(['-S', '--suffix']);
 
-/** The words that the shell passes after brace expansion. */
-const braceWords = (word: Word): Word[] => (expandBraces(word.pattern) ?? [word.pattern])
-  .map(pattern => pattern === word.pattern ? word : { ...word, pattern, value: unescapePattern(pattern) });
-
 /**
- * A target-directory option (`-t`, `-T`, `--target-directory`, `--no-target-directory`, also inside combined short options)
- * changes which operand is the destination. Its glued value (`-tDIR`, `--target-directory=DIR`) is an operand.
+ * A target-directory option (`-t`, `-T`, `--target-directory`, `--no-target-directory`, also inside combined short options, and
+ * any long prefix that GNU getopt accepts, such as `--target`) changes which operand is the destination. Its glued value
+ * (`-tDIR`, `--target-directory=DIR`) is an operand.
  */
-function targetOption(word: Word): Word[] | null {
-  const short = /^-(?!-)[a-zA-Z]*?([tT])(.*)$/.exec(word.value);
-  const long = /^--(?:no-)?target-directory(?:=(.*))?$/.exec(word.value);
-  if (!short && !long) return null;
-  const value = short ? (short[1] === 't' ? short[2]! : '') : long![1] ?? '';
-  return value ? [{ ...word, value, pattern: word.pattern.slice(word.pattern.length - escapePattern(value).length) }] : [];
+function targetOption(arg: Arg, home: string): Arg[] | null {
+  const short = /^-(?!-)[a-zA-Z]*?([tT])(.*)$/.exec(text(arg));
+  const long = /^--(?:no-)?([a-z-]+)(?:=(.*))?$/.exec(text(arg));
+  if (!short && !(long && 'target-directory'.startsWith(long[1]!))) return null;
+  const value = short ? (short[1] === 't' ? short[2]! : '') : long![2] ?? '';
+  return value ? [restArg(arg, text(arg).length - value.length, home)] : [];
 }
 
 /**
- * cp and ln, after brace expansion: the last operand is the destination, written into a directory as each source's name.
- * When the hook cannot classify the operands (a target-directory option, fewer than two operands), every operand is a possible
- * write target. mv removes or replaces each of its operands, so every operand, a glued target directory too, is a removal target.
+ * cp and ln: the last operand is the destination, written into a directory as each source's name. When the hook cannot place the
+ * destination (a target-directory option, fewer than two operands, or a last operand from a glob with several matches, whose
+ * order depends on the shell's locale), every operand is a possible write target.
  */
-function destinationTargets(program: string, args: readonly Word[], dirs: Dirs): WriteTarget[] {
-  const words = args.flatMap(braceWords);
-  const glued = words.map(targetOption);
-  if (program === 'mv') {
-    return [...operandsOf(words, new Set()).operands, ...glued.flatMap(found => found ?? [])].flatMap(word => targetsOf('destroy', 'mv', word, dirs));
-  }
-  const { operands } = operandsOf(words, MOVE_VALUED);
-  if (glued.some(found => found !== null) || operands.length < 2) {
-    return [...operands, ...glued.flatMap(found => found ?? [])].flatMap(word => targetsOf('overwrite', program, word, dirs));
+function copyTargets(program: string, args: readonly Arg[], cwd: string | null, home: string): WriteTarget[] {
+  const glued = args.map(arg => targetOption(arg, home));
+  const operands = operandsOf(args, MOVE_VALUED);
+  const last = operands.at(-1);
+  const unplaced = last !== undefined && last.matched && operands.filter(arg => arg.word === last.word).length > 1;
+  if (glued.some(found => found !== null) || operands.length < 2 || unplaced) {
+    return [...operands, ...glued.flatMap(found => found ?? [])].map(arg => targetOf('overwrite', program, arg, cwd));
   }
   const sources = operands.slice(0, -1);
-  const sourced = sources.map(word => sourceNames(word));
-  const names = sourced.some(list => list === null) ? null : sourced.flatMap(list => list!);
-  return targetsOf('overwrite', program, operands.at(-1)!, dirs, { names, follow: program === 'cp' });
+  const names = sources.some(arg => arg.value === null) ? null : sources.map(arg => basename(arg.value!));
+  return [targetOf('overwrite', program, last!, cwd, { into: { names, follow: program === 'cp' } })];
 }
 
-/** The names that a copy or move source gives its destination children after brace expansion; null when a glob or a parameter decides one. */
-function sourceNames(word: Word): string[] | null {
-  if (word.expand) return null;
-  const names: string[] = [];
-  for (const item of expandBraces(word.pattern) ?? [word.pattern]) {
-    const pattern = item.replace(/\/+$/, '');
-    if (globIndex(pattern) >= 0 || pattern.startsWith('~')) return null;
-    names.push(basename(unescapePattern(pattern)));
+/**
+ * mv removes or replaces each operand. BSD mv stops option parsing at the first operand, so each later word, a dash-prefixed one
+ * or `--` too, is an operand. Only the plain form `mv [short flags] src... dest`, without a dash-prefixed word after the first
+ * operand, without -t, -T or -S and without a glob, brace or unknown word, names the same destination for BSD and GNU mv: its
+ * last operand may move the sources into an allowed root. In every other form, each operand and each target-directory value, a
+ * separate dash-prefixed one too, can be the destination.
+ */
+function moveTargets(words: readonly Word[], args: readonly Arg[], cwd: string | null, home: string): WriteTarget[] {
+  const operands = moveOperands(args);
+  const first = args.findIndex(arg => !isOption(arg));
+  const plain = first >= 0 && args.length - first >= 2 && words.every(word => !word.glob) && args.every(arg => arg.value !== null)
+    && args.slice(0, first).every(arg => /^-[a-zA-Z]+$/.test(arg.value!) && !/[tTS]/.test(arg.value!))
+    && args.slice(first).every(arg => !isOption(arg));
+  if (plain) {
+    return operands.map((arg, n) => targetOf('destroy', 'mv', arg, cwd, n === operands.length - 1 ? { destination: { intoRoot: true } } : {}));
   }
-  return names;
+  const values = args.flatMap((arg, n) => {
+    const found = targetOption(arg, home);
+    return found === null ? [] : found.length > 0 ? found : args.slice(n + 1, n + 2);
+  });
+  return [...new Set([...operands, ...values])].map(arg => targetOf('destroy', 'mv', arg, cwd, { destination: { intoRoot: false } }));
 }
 
-/** Python and Node one-liners: literal file writes and removals in the script text. */
-function scriptTargets(program: string, source: string, dirs: Dirs): WriteTarget[] {
+/** The words from the first mv operand on: leading options and a leading `--` are skipped. */
+function moveOperands(args: readonly Arg[]): Arg[] {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i]!.value === '--') return args.slice(i + 1);
+    if (!isOption(args[i]!)) return args.slice(i);
+  }
+  return [];
+}
+
+/** Python and Node one-liners: literal file writes and removals in the script text. The interpreter expands no pattern. */
+function scriptTargets(program: string, source: string, cwd: string | null): WriteTarget[] {
   const found: Array<[TargetKind, string]> = [];
   const add = (kind: TargetKind, pattern: RegExp, group: number) => {
     for (const match of source.matchAll(pattern)) found.push([kind, match[group]!]);
@@ -571,27 +738,26 @@ function scriptTargets(program: string, source: string, dirs: Dirs): WriteTarget
     add('overwrite', /\bwriteFile(?:Sync)?\(\s*(['"])([^'"\n]+)\1/g, 2);
     add('destroy', /\b(?:unlink|rm)(?:Sync)?\(\s*(['"])([^'"\n]+)\1/g, 2);
   }
-  return found.flatMap(([kind, path]) => {
-    const word: Word = { kind: 'word', value: path, pattern: escapePattern(path), expand: false, glob: false, quoted: true, assign: false };
-    return targetsOf(kind, program, word, dirs);
-  });
+  return found.map(([kind, path]) => targetOf(kind, program, literalArg(path), cwd));
 }
 
 const FIND_RUNS = /^-(?:exec|execdir|ok|okdir)$/;
 const FIND_EXEC_READERS = new Set(['cat', 'head', 'tail', 'wc', 'grep', 'rg', 'ls', 'stat', 'file', 'du', 'diff', 'cmp', 'cut', 'tr', 'jq',
   'echo', 'printf', 'test', 'basename', 'dirname', 'realpath', 'readlink', 'sort']);
 
+type Valued = { readonly value: string | null };
+
 /** find writes when it deletes or runs a program that is not a reader. */
-function findWrites(args: readonly Word[]): boolean {
-  return args.some((word, n) => word.value === '-delete' || (FIND_RUNS.test(word.value) && !FIND_EXEC_READERS.has(args[n + 1]?.value ?? '')));
+function findWrites(args: readonly Valued[]): boolean {
+  return args.some((word, n) => word.value === '-delete' || (FIND_RUNS.test(word.value ?? '') && !FIND_EXEC_READERS.has(args[n + 1]?.value ?? '')));
 }
 
 /** The start paths of find, before the first expression word. */
-function findStarts(args: readonly Word[]): Word[] {
+function findStarts<T extends Valued>(args: readonly T[]): T[] {
   let i = 0;
-  const starts: Word[] = [];
-  for (; i < args.length && /^-[HLPEXdsx]$|^-O\d$|^-f$/.test(args[i]!.value); i++) if (args[i]!.value === '-f' && args[i + 1]) starts.push(args[++i]!);
-  for (; i < args.length && !/^[-(!)]/.test(args[i]!.value); i++) starts.push(args[i]!);
+  const starts: T[] = [];
+  for (; i < args.length && /^-[HLPEXdsx]$|^-O\d$|^-f$/.test(args[i]!.value ?? ''); i++) if (args[i]!.value === '-f' && args[i + 1]) starts.push(args[++i]!);
+  for (; i < args.length && !/^[-(!)]/.test(args[i]!.value ?? ''); i++) starts.push(args[i]!);
   return starts;
 }
 
@@ -599,9 +765,10 @@ const DOT: Word = { kind: 'word', value: '.', pattern: '.', expand: false, glob:
 const TRUNCATE_VALUED = new Set(['-s', '--size', '-r', '--reference']);
 const SHRED_VALUED = new Set(['-n', '--iterations', '-s', '--size', '--random-source']);
 const SED_VALUED = new Set(['-e', '--expression', '-f', '--file', '-l', '--line-length']);
+const WRITERS = new Set(['rm', 'unlink', 'shred', 'truncate', 'mv', 'cp', 'ln', 'tee', 'sed', 'dd', 'find']);
 
-/** The write targets of one simple command. */
-function commandTargets(cmd: Command, dirs: Dirs): WriteTarget[] {
+/** The write targets of one simple command, run from `cwd` (null when it is not known); every word is expanded first. */
+function commandTargets(cmd: Command, cwd: string | null, home: string): WriteTarget[] {
   const targets: WriteTarget[] = [];
   for (const redirect of cmd.redirects) {
     const op = redirect.op.replace(/^\d+/, '');
@@ -609,72 +776,71 @@ function commandTargets(cmd: Command, dirs: Dirs): WriteTarget[] {
     if (!target || !['>', '>|', '&>', '>&'].includes(op)) continue;
     // Descriptor duplication or closure, such as 2>&1, has no file.
     if (op === '>&' && /^(?:\d+|-)$/.test(target.value) && !target.quoted) continue;
-    targets.push(...targetsOf('overwrite', 'a redirect', target, dirs));
+    targets.push(...expandWord(target, 0, cwd, home).map(arg => targetOf('overwrite', 'a redirect', arg, cwd)));
   }
   const words = cmd.words;
   const at = programAt(words);
   if (at < 0 || words[at]!.quoted) return targets;
   const program = words[at]!.value;
-  const args = words.slice(at + 1);
-  const operands = (valued: ReadonlySet<string> = new Set()) => operandsOf(args, valued).operands;
+  const raw = words.slice(at + 1);
+  if (/^python(?:3(?:\.\d+)?)?$/.test(program) || program === 'node') {
+    const flag = raw.findIndex(word => ['-c', '-e', '--eval'].includes(word.value));
+    const heredoc = cmd.redirects.find(redirect => redirect.body !== undefined)?.body ?? '';
+    return [...targets, ...scriptTargets(program, flag >= 0 ? raw[flag + 1]?.value ?? '' : heredoc, cwd)];
+  }
+  // Only a writing program lists directories for its glob words.
+  if (!WRITERS.has(program)) return targets;
+  const args = expandArgs(raw, cwd, home);
+  const each = (kind: TargetKind, list: readonly Arg[]) => list.map(arg => targetOf(kind, program, arg, cwd));
   switch (program) {
     case 'rm': case 'unlink':
-      for (const word of operands()) targets.push(...targetsOf('destroy', program, word, dirs));
+      targets.push(...each('destroy', operandsOf(args, new Set())));
       break;
     case 'shred': {
-      const removes = args.some(word => /^-[a-zA-Z]*u/.test(word.value) || /^--remove(?:=|$)/.test(word.value));
-      for (const word of operands(SHRED_VALUED)) {
-        targets.push(...targetsOf('change', program, word, dirs));
-        if (removes) targets.push(...targetsOf('destroy', program, word, dirs));
-      }
+      const removes = args.some(arg => /^-[a-zA-Z]*u/.test(text(arg)) || /^--remove(?:=|$)/.test(text(arg)));
+      for (const arg of operandsOf(args, SHRED_VALUED)) targets.push(...each('change', [arg]), ...(removes ? each('destroy', [arg]) : []));
       break;
     }
     case 'truncate':
-      for (const word of operands(TRUNCATE_VALUED)) targets.push(...targetsOf('change', program, word, dirs));
+      targets.push(...each('change', operandsOf(args, TRUNCATE_VALUED)));
       break;
-    case 'mv': case 'cp':
-      targets.push(...destinationTargets(program, args, dirs));
+    case 'mv':
+      targets.push(...moveTargets(raw, args, cwd, home));
+      break;
+    case 'cp':
+      targets.push(...copyTargets(program, args, cwd, home));
       break;
     case 'ln':
       // Without -f, ln refuses an existing destination.
-      if (args.some(word => /^-[a-zA-Z]*f/.test(word.value) || word.value === '--force')) targets.push(...destinationTargets(program, args, dirs));
+      if (args.some(arg => /^-[a-zA-Z]*f/.test(text(arg)) || arg.value === '--force')) targets.push(...copyTargets(program, args, cwd, home));
       break;
     case 'tee':
-      if (!args.some(word => /^-[a-zA-Z]*a/.test(word.value) || word.value === '--append')) {
-        for (const word of operands()) targets.push(...targetsOf('overwrite', program, word, dirs));
-      }
+      if (!args.some(arg => /^-[a-zA-Z]*a/.test(text(arg)) || arg.value === '--append')) targets.push(...each('overwrite', operandsOf(args, new Set())));
       break;
     case 'sed': {
-      const inPlace = args.findIndex(word => /^-i/.test(word.value) || /^--in-place(?:=|$)/.test(word.value));
+      const inPlace = args.findIndex(arg => /^-i/.test(text(arg)) || /^--in-place(?:=|$)/.test(text(arg)));
       if (inPlace < 0) break;
       // BSD sed takes the backup suffix as the next word: `sed -i '' s/a/b/ file`.
-      const words = args.filter((word, n) => !(n === inPlace + 1 && args[inPlace]!.value === '-i' && word.value === ''));
-      let files = operandsOf(words, SED_VALUED).operands;
-      if (!words.some(word => SED_VALUED.has(word.value) || /^--(?:expression|file)=/.test(word.value))) files = files.slice(1);
-      for (const word of files) targets.push(...targetsOf('destroy', program, word, dirs));
+      const list = args.filter((arg, n) => !(n === inPlace + 1 && args[inPlace]!.value === '-i' && arg.value === ''));
+      let files = operandsOf(list, SED_VALUED);
+      if (!list.some(arg => SED_VALUED.has(text(arg)) || /^--(?:expression|file)=/.test(text(arg)))) files = files.slice(1);
+      targets.push(...each('destroy', files));
       break;
     }
     case 'dd':
-      for (const word of args.filter(arg => arg.value.startsWith('of='))) {
-        const file = { ...word, value: word.value.slice(3), pattern: word.pattern.slice(3) };
-        targets.push(...targetsOf('overwrite', program, file, dirs));
-      }
+      // dd reads `of=FILE` from the whole word, so an unknown output keeps its literal directory.
+      targets.push(...each('overwrite', args.filter(arg => text(arg).startsWith('of=')).map(arg => restArg(arg, 3, home))));
       break;
     case 'find':
       if (findWrites(args)) {
         const starts = findStarts(args);
-        for (const word of starts.length ? starts : [DOT]) targets.push(...targetsOf('destroy', 'find', word, dirs));
+        targets.push(...(starts.length ? starts : [literalArg('.')]).map(arg => targetOf('destroy', 'find', arg, cwd)));
       }
       break;
-    default:
-      if (/^python(?:3(?:\.\d+)?)?$/.test(program) || program === 'node') {
-        const flag = args.findIndex(word => ['-c', '-e', '--eval'].includes(word.value));
-        const heredoc = cmd.redirects.find(redirect => redirect.body !== undefined)?.body ?? '';
-        targets.push(...scriptTargets(program, flag >= 0 ? args[flag + 1]?.value ?? '' : heredoc, dirs));
-      }
   }
   return targets;
 }
+
 
 // ---------------------------------------------------------------------------
 // Recursive delete
@@ -786,5 +952,8 @@ export function bashSafetyDenial(command: string, cwd: string | null, scope: Saf
     const denial = credentialFinding(cmd, dirs);
     if (denial) return denial;
   }
-  return writeTargetDenial(parsed.flatMap(({ command: cmd, dirs }) => commandTargets(cmd, dirs)), scope, bashUserStep(command));
+  // HOME comes from the scope, the same source as the allowed roots.
+  const home = scope.env.HOME ?? homedir();
+  const targets = parsed.flatMap(({ command: cmd, dirs }) => (dirs ?? [null]).flatMap(dir => commandTargets(cmd, dir, home)));
+  return writeTargetDenial(targets, scope, bashUserStep(command));
 }

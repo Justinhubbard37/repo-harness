@@ -2,10 +2,10 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { recordInstallOwnership, seedGlobalPackageFixture } from './helpers/install-ownership';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { execFileSync, spawnSync } from 'child_process';
 import { runMutationGuard } from '../src/cli/hook/mutation-guard';
-import { ledgerCreated, registerInstallLedger } from '../src/cli/hook/safety-hook';
+import { bashSafetyDenial, ledgerCreated, registerInstallLedger } from '../src/cli/hook/safety-hook';
 import { readInstallState } from '../src/cli/installer/install-profile';
 import { getRoute } from '../src/cli/hook/route-registry';
 import { buildHookCommand } from '../src/cli/installer/managed-entries';
@@ -117,7 +117,7 @@ describe('safety hook: Bash host route', () => {
       for (const dir of ['src', 'stage/d', 'Project Files', 'build']) mkdirSync(join(cwd, dir), { recursive: true });
       mkdirSync(join(home, 'stage'));
       for (const file of [join(out, 'notes.txt'), join(out, 'notes.txt.bak'), join(out, 'app.json'), join(cwd, 'stage/app.json'), join(cwd, 'stage/b.json'), join(cwd, '.env.local'),
-        join(cwd, 'Project Files/.env'), join(home, '.ssh/id_ed25519'), join(home, 'stage/app.json'), join(cwd, 'stage/d/notes.txt')]) writeFileSync(file, 'TOKEN=fixture-only\n');
+        join(cwd, 'Project Files/.env'), join(home, '.ssh/id_ed25519'), join(home, 'stage/app.json'), join(cwd, 'stage/d/notes.txt'), join(home, 'notes.txt')]) writeFileSync(file, 'TOKEN=fixture-only\n');
       symlinkSync(join(out, 'sub'), join(cwd, 'linked'));
       symlinkSync(join(out, 'app.json'), join(cwd, 'app.json'));
       symlinkSync(join(out, 'notes.txt'), join(cwd, 'notes.txt'));
@@ -172,6 +172,109 @@ describe('safety hook: Bash host route', () => {
       expect(hasUnredactedSecret(readFileSync(join(cwd, '.ai/harness/failures/latest.jsonl'), 'utf8'))).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 60_000);
+
+  // The I2 regression corpus (#3019): every command from the findings of #2926 r1-r6 and #3013 r1-r5. A new finding adds a row.
+  posixOnly('I2 corpus: each glob and brace match and each literal operand gets one judge', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'bash-safety-corpus-')));
+    const [repo, out, home] = ['repo', 'outside', 'home'].map(dir => join(root, dir)) as [string, string, string];
+    const skill = join(home, '.claude/skills/repo-harness-cross-review');
+    const savedTmp = process.env.TMPDIR;
+    try {
+      for (const dir of ['repo/build/sub', 'repo/src', 'repo/stage/d', 'repo/stage/1', 'repo/big', 'repo/w/stage', 'repo/inner', 'outside/sub', 'outside/-archive', 'repo/links', 'tmp', 'managed', 'home/links', 'home/stage']) {
+        mkdirSync(join(root, dir), { recursive: true });
+      }
+      mkdirSync(skill, { recursive: true });
+      for (const file of ['repo/source.txt', 'repo/a.txt', 'repo/stage/b.json', 'repo/stage/app.json', 'outside/source.txt', 'outside/a.txt',
+        'outside/victim.txt', 'repo/stage/1/victim.txt', 'outside/move.txt', 'outside/notes.txt', 'outside/notes.txt.bak', 'outside/x.txt', 'outside/-f', 'outside/--', 'notes.txt',
+        'home/notes.txt', 'home/stage/x.txt']) writeFileSync(join(root, file), 'x');
+      writeFileSync(join(skill, 'SKILL.md'), 'skill');
+      writeFileSync(join(repo, 'credentials .json'), 'x');
+      // More entries than the glob match limit (1000).
+      for (let n = 0; n <= 1000; n++) writeFileSync(join(repo, `big/${n}`), 'x');
+      for (const link of ['linked', 'stage/linked', 'w/stage/linked']) symlinkSync(out, join(repo, link));
+      symlinkSync(join(repo, 'inner'), join(out, 'link'));
+      symlinkSync(repo, join(out, 'repo-link'));
+      symlinkSync(join(repo, 'build'), join(out, 'build-link'));
+      symlinkSync(repo, join(out, 'work\\'));
+      // Worktree links to outside files, and an outside link to a worktree file.
+      symlinkSync(join(out, 'x.txt'), join(repo, 'links/x.txt'));
+      symlinkSync(out, join(repo, 'stage/ backup'));
+      symlinkSync(join(out, 'notes.txt'), join(repo, 'notes.txt'));
+      symlinkSync(join(repo, 'source.txt'), join(out, 'file-link'));
+      // An unrecorded user link outside the roots to a ledger-owned directory.
+      symlinkSync(skill, join(home, 'links/user-link'));
+      const env: NodeJS.ProcessEnv = { HOME: home, REPO_HARNESS_WORKTREE_ROOT: join(root, 'managed') };
+      recordInstallOwnership([skill], env);
+      registerInstallLedger(ledgerEnv => readInstallState(ledgerEnv)?.ownership_manifest ?? []);
+      process.env.TMPDIR = join(root, 'tmp');
+      const refuse = 'UserFileGuard';
+      const rows: Array<[string | null, string, string?]> = [
+        // #3013 r4 and this issue: glob matches through an in-worktree link to an outside directory.
+        [refuse, `mv --strip-trailing-slashes ${out}/link/ build`], [refuse, 'mv -f source.txt link*'], [refuse, 'rm -rf stage/*/victim.txt'],
+        [refuse, 'mv -f stage/*/victim.txt ..', 'w'], [refuse, 'mv -t link* source.txt'], [refuse, 'mv a.txt stage/*'], [refuse, 'mv -t stage/* a.txt'],
+        [refuse, 'mv a.txt stage/* -f'], [refuse, 'rm -f stage/*/victim.txt'], [refuse, 'mv stage/*/move.txt build'],
+        [refuse, 'cp a.txt stage/*'], [refuse, 'tee stage/*/victim.txt'], [refuse, 'truncate -s 0 stage/*/victim.txt'], [refuse, 'mv stage/b.json {build,linked}'],
+        // #3013 r3: a trailing separator follows the leaf link.
+        [refuse, 'rm -rf stage/linked/'], [refuse, 'rm -rf stage/*/'], [refuse, 'rm -rf linked/'], [refuse, 'mv linked/ .'], [refuse, 'mv -f linked// .'],
+        [refuse, "mv 'linked/' ."], [refuse, 'mv stage/*/ .'], [refuse, 'mv stage/linked/ stage/moved'],
+        // #3013 r0-r2: the plain mv form, BSD late dashes, a literal backslash, GNU destinations and target-directory values.
+        [refuse, 'mv . build'], [refuse, 'mv stage/b.json linked'], [refuse, `mv stage/b.json ${out}/repo-link`], [refuse, `mv -h stage/b.json '${out}/work\\'`],
+        [refuse, `mv ${repo}/stage/b.json -f ${repo}`, out], [refuse, `mv ${repo}/stage/b.json -- ${repo}`, out],
+        [refuse, 'mv stage/b.json linked -f'], [refuse, 'mv stage/b.json linked --'], [refuse, 'mv stage/b.json linked --suffix=.bak'],
+        [refuse, 'mv -t linked stage/b.json'], [refuse, 'mv -tlinked stage/b.json'], [refuse, 'mv --target-directory=linked stage/b.json'],
+        [refuse, `mv -t -archive ${repo}/stage/b.json`, out], [refuse, `mv --target-directory -archive ${repo}/stage/b.json`, out],
+        [refuse, `mv --strip-trailing-slashes ${out}/build-link/ build`], [refuse, 'cd src && mv -f ../stage/*/notes.txt ..'],
+        // #3013 r5: ledger ownership of the resolved directory never excuses the unrecorded link entry.
+        [refuse, 'mv -- ~/links/user-link build'], [refuse, 'mv -h source.txt ~/links/user-link'], [refuse, 'mv -t build ~/links/user-link'],
+        [refuse, 'mv --strip-trailing-slashes ~/links/user-link/ build'],
+        // #2926 r1-r2: control words, a failed cd, `..` after a link, copy children through a link, content writes through a leaf link.
+        [refuse, `if test -f ${out}/victim.txt; then rm ${out}/victim.txt; fi`], [refuse, `for f in a; do rm ${out}/victim.txt; done`],
+        [refuse, `cd ${out} && cd ${repo}/missing; rm victim.txt`], [refuse, 'rm linked/../notes.txt'], [refuse, `cp ${out}/notes.txt ${repo}/`],
+        ['RecursiveDeleteGuard', 'if true; then rm -rf .; fi'], [refuse, 'truncate -s 0 notes.txt'], [refuse, 'shred notes.txt'],
+        [refuse, 'cp "$HOME/stage/x.txt" links/'], [refuse, 'cp stage/*/*.txt .'], [null, 'rm notes.txt'],
+        // #2926 r3: glob matches that are links to outside files, and HOME with globs and braces.
+        [refuse, 'truncate -s 0 links/*.txt'], [refuse, 'shred links/*.txt'], [refuse, 'tee links/*.txt'], [refuse, 'cp source.txt links/*.txt'],
+        [refuse, `tee ${out}/*.txt`], [null, 'rm links/*.txt'], [refuse, 'rm "$HOME"/*.txt'], [refuse, 'rm $HOME/{notes,other}.txt'],
+        [refuse, 'truncate -s 0 "$HOME"/*.txt'], [refuse, ': > "$HOME"/*.txt'], [refuse, 'cp "$HOME"/stage/*.txt links/'],
+        // mv replaces an outside link entry; `ln -sf` over it passes, the accepted #2926 r4 P3 residual.
+        [refuse, `mv source.txt ${out}/file-link`], [null, `ln -sf source.txt ${out}/file-link`],
+        // #2926 r4-r5: braces before the operand count, in shell order; -T; an unknown mv source with a target directory.
+        [refuse, `cp ${out}/notes.txt{,.bak}`], [refuse, `mv ${out}/notes.txt{,.bak}`], [refuse, `ln -f ${out}/notes.txt{,.bak}`],
+        [refuse, `cp -rT src ${out}`], [refuse, `cp -r --no-target-directory src ${out}`], [refuse, 'cp {.,..}/notes.txt'], [refuse, 'ln -f {.,..}/notes.txt'],
+        [refuse, 'mv -t build "$SOURCE"'], [refuse, 'mv --target-directory=build "$SOURCE"'], [refuse, 'mv -T "$SOURCE" build/x'],
+        // #3025 r1: an unknown output after `of=` or a glued target directory keeps its literal directory; POSIX classes match as the shell does.
+        [refuse, `dd if=source.txt of=${out}/$X`], [refuse, `dd if=source.txt of=${out}/$(printf notes.txt)`], [refuse, 'dd if=source.txt of=$HOME/notes.txt'],
+        [refuse, 'dd if=source.txt of=${HOME}/notes.txt'], [null, 'dd if=source.txt of=build/$X'], [refuse, 'cp --target-directory="$HOME" source.txt'],
+        [refuse, `cp --target-directory=${out}/$X source.txt`], [refuse, `tee ${out}/$X`], [refuse, 'echo x > ${HOME}/$X'],
+        [refuse, 'rm -f stage/[[:alpha:]]*/victim.txt'], [refuse, 'truncate -s 0 stage/[![:graph:]]*/victim.txt'], ['CredentialGuard', 'cat credentials[![:graph:]].json'],
+        // #3025 r2: expansion never drops an operand; each brace item is its own target, and an unknown item keeps its literal directory.
+        [refuse, `tee {build/$X,${out}/victim.txt}`], [refuse, `cp source.txt {build/$X,${out}}`], [refuse, 'tee {build/$X,links/x.txt}'],
+        [refuse, `tee {build/$(printf x),${out}/victim.txt}`], [refuse, `tee {build/$'x',${out}/victim.txt}`], [refuse, `tee {~nouser/x,${out}/victim.txt}`],
+        [refuse, `tee {big/*,${out}/victim.txt}`], [null, 'tee {build/$X,build/new.txt}'],
+        // #3025 r3: a write operand above an expansion limit refuses as an unknown target set, whatever siblings it has.
+        [refuse, `tee {build/{1..1025},${out}/victim.txt}`], [refuse, `tee {${out}/victim.txt,build/{1..1025}}`],
+        [refuse, `cp source.txt {build/{1..1025},${out}}`], [refuse, 'tee {build/{1..1025},links/x.txt}'],
+        // GNU getopt accepts a long option prefix.
+        [refuse, 'mv --target=linked stage/b.json'], [refuse, 'cp --target=linked a.txt'],
+        // An unknown removal refuses; an unknown overwrite refuses only when its literal directory is outside the roots.
+        [refuse, 'rm -rf build/$X'], [refuse, `echo x > ${out}/$X`], [null, 'echo x > "$TARGET"'], [null, 'echo x > build/$X'],
+        [null, 'rm -rf build/*'], [null, 'rm -rf build/*/'], [null, 'rm stage/*.json'], [null, 'mv stage/*.json build/'], [null, 'cp stage/*.json build/'],
+        [null, 'mv stage/b.json .'], [null, 'mv stage/app.json ./build/'], [null, `mv stage/b.json ${out}/repo-link/`], [null, 'mv -t build stage/b.json'],
+        [null, 'mv linked build'], [null, 'rm -rf linked'], [null, 'rm -rf stage/linked'],
+      ];
+      // Every row runs, so one failure lists each wrong verdict.
+      const wrong = rows.flatMap(([guard, command, from = '']) => {
+        const actual = bashSafetyDenial(command, isAbsolute(from) ? from : join(repo, from), { repoRoot: repo, env, host: 'claude' })?.guard ?? null;
+        return actual === guard ? [] : [{ command: command.replaceAll(root, '$ROOT'), expected: guard, actual }];
+      });
+      expect(wrong).toEqual([]);
+      // The refusal names the resolved outside path, so the local user can authorize it.
+      expect(bashSafetyDenial('mv a.txt stage/*', repo, { repoRoot: repo, env, host: 'claude' })?.reason).toContain(`would remove or change ${out},`);
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   posixOnly('the host agent may change its own memory and plans; the rest of its home directory stays protected', () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'bash-safety-agent-output-')));
