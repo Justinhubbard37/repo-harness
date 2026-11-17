@@ -269,3 +269,18 @@ test('user links are followed: the real file is written and the link stays', () 
   expect(destinations).toEqual([join(f.home, 'dotfiles', 'y.conf')]);
   expect(() => f.gate().apply([f.change(real, 'a'), f.change(join(f.home, '.linked', 'x.conf'), 'b')])).toThrow(expect.objectContaining({ code: 'host_config_invalid_state' }));
 });
+
+test('a refresh with no recorded fragment is an override, adopt records an old write once, and a dry-run revert writes nothing', () => {
+  const f = fixture();
+  expect(f.gate().apply([f.change(f.a, 'x', { selector: 'keep', kind: 'refresh' })]).skipped.map((entry) => entry.code)).toEqual(['host_config_override_skipped']);
+  expect(readFileSync(f.a, 'utf8')).toBe('keep=1\n');
+
+  writeFileSync(f.a, 'keep=1\nrh=old\n');
+  const adoption = { backup: Buffer.from('keep=1\n'), fragments: [{ owner: 'o1', selector: 'rh', kind: 'add' as const, inserted: 'rh=old\n' }], externalChange: false };
+  expect([f.gate().adopt(f.a, adoption), f.gate().adopt(f.a, { ...adoption, backup: null })]).toEqual(['adopted', 'recorded']);
+  expect(f.ledger().files[f.a]).toMatchObject({ kind: 'text_block', baseline: { state: 'unknown' }, external_change: false });
+  expect(f.gate().revert([f.a], { dryRun: true })).toEqual([{ path: f.a, action: 'text_removed' }]);
+  expect({ text: readFileSync(f.a, 'utf8'), recorded: Object.keys(f.ledger().files) }).toEqual({ text: 'keep=1\nrh=old\n', recorded: [f.a] });
+  expect(f.gate().revert([f.a]).map((entry) => entry.action)).toEqual(['text_removed']);
+  expect(readFileSync(f.a, 'utf8')).toBe('keep=1\n');
+});

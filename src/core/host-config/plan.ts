@@ -108,6 +108,11 @@ export function planFile(
     // An edit whose text is already in place still claims its fragment, so the ledger records the owner.
     checkEdit(file, content, request, edit);
     const previous = active.find((record) => record.owner === request.owner && record.selector === request.selector) ?? null;
+    // A refresh of text that rh never recorded would overwrite a user's value: it is an override.
+    if (request.kind === 'refresh' && !previous && request.selected !== true) {
+      skipped.push({ code: 'host_config_override_skipped', file, owner: request.owner, selector: request.selector });
+      continue;
+    }
     // The text at a recorded selector is no longer rh's: the user's value stays unless the plan input selects the edit.
     if (previous && edit.removed !== previous.inserted && request.selected !== true) {
       skipped.push({ code: 'host_config_user_value_kept', file, owner: request.owner, selector: request.selector });

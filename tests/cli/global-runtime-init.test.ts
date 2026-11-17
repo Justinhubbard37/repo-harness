@@ -351,13 +351,10 @@ function writeFakeCodegraph(fakeBin: string, logFile: string): void {
       '  "--version") echo "0.9.6" ;;',
       '  "status") echo "CodeGraph Status"; echo "Index is up to date" ;;',
       '  "install")',
-      '    if [[ " $* " == *" --target codex "* ]]; then',
-      '      mkdir -p "$HOME/.codex"',
-      '      cat > "$HOME/.codex/config.toml" <<\'TOML\'',
-      '[mcp_servers.codegraph]',
-      'command = "codegraph"',
-      'args = ["serve", "--mcp"]',
-      'TOML',
+      // codegraph 1.6.2 prints this snippet for `install --print-config codex` and writes nothing.
+      '    if [[ "$*" == "install --print-config codex" ]]; then',
+      '      printf \'%s\\n\' "# Add to $HOME/.codex/config.toml" "" \'[mcp_servers.codegraph]\' \'command = "codegraph"\' \'args = ["serve", "--mcp"]\'',
+      '      exit 0',
       '    fi',
       '    echo "installed" ;;',
       '  *) exit 1 ;;',
@@ -875,7 +872,8 @@ describe('install command global runtime bootstrap', () => {
       expect(readFileSync(bunxLog, 'utf-8')).not.toContain('feature-dev');
       // rh stores no vault configuration: the seats migration writes the file, and it carries no brainRoot.
       expect(JSON.parse(readFileSync(join(home, '.repo-harness', 'config.json'), 'utf-8'))).not.toHaveProperty('brainRoot');
-      expect(readFileSync(codegraphLog, 'utf-8')).toContain('codegraph install --target codex --location global --yes');
+      expect(readFileSync(codegraphLog, 'utf-8')).toContain('codegraph install --print-config codex');
+      expect(readFileSync(join(home, '.codex', 'config.toml'), 'utf-8')).toContain('[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp", "--path", "."]\n');
       // Regression guard: the Waza status probe inside check-agent-tooling.sh
       // resolves the `skills` binary from PATH and never re-routes through
       // bunx, whose package resolution made the probe budget report a false

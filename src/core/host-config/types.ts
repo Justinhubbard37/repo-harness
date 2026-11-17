@@ -130,7 +130,7 @@ export interface FragmentRequest<V = unknown> {
   readonly kind: FragmentKind;
   readonly strategy: HostConfigStrategy<V>;
   readonly value: V;
-  /** An override, or a refresh over a user's change, applies only with this explicit selection. */
+  /** An override, a refresh over a user's change, or a refresh with no recorded fragment applies only with this explicit selection. */
   readonly selected?: boolean;
 }
 

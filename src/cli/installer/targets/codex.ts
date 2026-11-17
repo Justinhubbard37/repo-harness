@@ -1,4 +1,8 @@
-import { assertConfigurationPath, hostConfigurationRoot, readConfigurationFragment, replaceConfigurationFragment, writeOwnedConfiguration } from '../configuration-ownership';
+import { assertConfigurationPath, hostConfigurationRoot } from '../configuration-ownership';
+import { migrateCodexConfigRecords } from '../codex-config-migration';
+import { CODEX_CONFIG_FRAGMENTS, codexConfigValue, tomlFragment } from '../../../core/host-config/toml-fragment';
+import type { FragmentRequest } from '../../../core/host-config/types';
+import { openHostConfigGate } from '../../../effects/host-config/gate';
 /**
  * Codex CLI hook-runtime target.
  *
@@ -55,18 +59,36 @@ function globalTomlConfigPath(): string {
   return path.join(process.env.HOME ?? os.homedir(), '.codex', 'config.toml');
 }
 
+const REQUEST_USER_INPUT = 'default_mode_request_user_input';
+const REQUEST_USER_INPUT_LINE = `${REQUEST_USER_INPUT} = true\n`;
+
+/**
+ * The request for the root key: none when it is already `true`, `add` when it
+ * is absent, and otherwise a `refresh` that the gate applies only to rh's own
+ * recorded text, or an `override` with the user's explicit selection (R4).
+ */
+export function requestUserInputFragment(content: string, selected = false): FragmentRequest<string> | null {
+  const value = codexConfigValue(content, REQUEST_USER_INPUT);
+  if (value === true) return null;
+  const kind = value === undefined ? 'add' : selected ? 'override' : 'refresh';
+  return { owner: CODEX_CONFIG_FRAGMENTS[REQUEST_USER_INPUT], selector: REQUEST_USER_INPUT, kind, strategy: tomlFragment, value: REQUEST_USER_INPUT_LINE, selected };
+}
+
+function keptLine(value: unknown): string {
+  const setting = value === undefined ? `${REQUEST_USER_INPUT} is not set` : `${REQUEST_USER_INPUT} = ${typeof value === 'string' ? JSON.stringify(value) : String(value)}`;
+  return `${setting} (your value). repo-harness skills ask plain-text numbered questions instead of request_user_input.`;
+}
+
 function ensureRequestUserInputToml(): WriteResult['files'][number] {
   const filePath = globalTomlConfigPath();
-  assertConfigurationPath(filePath, hostConfigurationRoot());
+  migrateCodexConfigRecords(process.env);
   const created = !fs.existsSync(filePath);
   const current = created ? '' : fs.readFileSync(filePath, 'utf-8');
-  const selector = 'default_mode_request_user_input';
-  const fragment = readConfigurationFragment(filePath, current, selector);
-  if (fragment !== null && (Bun.TOML.parse(fragment) as Record<string, unknown>)[selector] === true) {
-    return { path: filePath, action: 'unchanged' };
-  }
-  const next = replaceConfigurationFragment(filePath, current, selector, `${selector} = true\n`);
-  writeOwnedConfiguration(filePath, next, hostConfigurationRoot());
+  const request = requestUserInputFragment(current);
+  if (!request) return { path: filePath, action: 'unchanged' };
+  const result = openHostConfigGate({ env: process.env }).apply([{ path: filePath, fragments: [request] }]);
+  if (result.skipped.length) return { path: filePath, action: 'kept', detail: keptLine(codexConfigValue(current, REQUEST_USER_INPUT)) };
+  if (!result.written.length) return { path: filePath, action: 'unchanged' };
   return { path: filePath, action: created ? 'created' : 'updated' };
 }
 

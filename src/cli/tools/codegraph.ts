@@ -1,6 +1,9 @@
 import { configurationPaths, hostConfigurationRoot, withConfigurationMutation } from '../installer/configuration-ownership';
+import { migrateCodexConfigRecords } from '../installer/codex-config-migration';
+import { CODEX_CONFIG_FRAGMENTS, codexConfigFragment, codexConfigValue, tomlFragment } from '../../core/host-config/toml-fragment';
+import { openHostConfigGate } from '../../effects/host-config/gate';
 import { resolveRepoRoot } from '../hook/runtime';
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
@@ -278,83 +281,62 @@ function codegraphArgsAreScoped(args: unknown): boolean {
     args.every((arg, index) => arg === CODEGRAPH_SCOPED_MCP_ARGS[index]);
 }
 
-function configureCodexProjectPath(actions: CodegraphAction[], env?: NodeJS.ProcessEnv): void {
-  const path = codexConfigPath(env);
-  const command = ["codex-config", "scope-codegraph-mcp", path ?? "<HOME>/.codex/config.toml"];
+const CODEX_MCP_SELECTOR = "mcp_servers.codegraph";
 
-  if (!path) {
-    actions.push({
-      action: "codex-project-path",
-      status: "skipped",
-      command,
-      stderr: "HOME environment variable not set; cannot locate ~/.codex/config.toml.",
-    });
-    return;
+/** CodeGraph's own Codex table, with its args scoped to the working directory. */
+function scopedCodexSection(snippet: string): string {
+  const printed = codexConfigFragment(snippet, CODEX_MCP_SELECTOR);
+  const server = codexConfigValue(snippet, CODEX_MCP_SELECTOR) as Record<string, unknown> | undefined;
+  if (printed === null || typeof server?.command !== "string") {
+    throw new Error("codegraph install --print-config codex printed no [mcp_servers.codegraph] table with a command");
   }
-
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (_error) {
-    actions.push({
-      action: "codex-project-path",
-      status: "skipped",
-      command,
-      stderr: `${path} not found; CodeGraph did not create a Codex MCP config.`,
-    });
-    return;
-  }
-
-  const sectionMatch = raw.match(/(^\[mcp_servers\.codegraph\]\n)([\s\S]*?)(?=^\[|(?![\s\S]))/m);
-  if (!sectionMatch) {
-    actions.push({
-      action: "codex-project-path",
-      status: "skipped",
-      command,
-      stderr: "Codex CodeGraph MCP server entry was not found; run codegraph install first.",
-    });
-    return;
-  }
-
-  const [section, header, body] = sectionMatch;
+  const section = `${printed.trimEnd()}\n`;
+  const headerEnd = section.indexOf("\n") + 1;
+  const header = section.slice(0, headerEnd);
+  const body = section.slice(headerEnd);
   const desiredArgsLine = `args = ${CODEGRAPH_SCOPED_MCP_TOML_ARGS}`;
-  const argsLine = body.match(/^args\s*=\s*(.+)$/m)?.[1]?.trim();
-  if (argsLine === CODEGRAPH_SCOPED_MCP_TOML_ARGS) {
-    actions.push({
-      action: "codex-project-path",
-      status: "unchanged",
-      command,
-    });
+  const nextBody = /^args\s*=/m.test(body)
+    ? body.replace(/^args\s*=.*$/m, desiredArgsLine)
+    : body.replace(/^(command\s*=.*)$/m, `$1\n${desiredArgsLine}`);
+  const scoped = `${header}${nextBody}`;
+  const args = (codexConfigValue(scoped, CODEX_MCP_SELECTOR) as Record<string, unknown> | undefined)?.args;
+  if (!codegraphArgsAreScoped(args)) throw new Error("codegraph install --print-config codex printed args that rh cannot scope");
+  return scoped;
+}
+
+/**
+ * rh writes the Codex CodeGraph table itself, through the host-config gate,
+ * from the snippet that `codegraph install --print-config codex` prints
+ * without writing. A table that rh did not record is the user's: it is kept.
+ */
+function configureCodexMcp(actions: CodegraphAction[], binPath: string, repoRoot: string, env?: NodeJS.ProcessEnv): void {
+  const command = [binPath, "install", "--print-config", "codex"];
+  const path = codexConfigPath(env);
+  if (!path) {
+    actions.push({ action: "configure-codex", status: "skipped", command, stderr: "HOME environment variable not set; cannot locate ~/.codex/config.toml." });
     return;
   }
-
-  let nextBody: string;
-  if (/^args\s*=/m.test(body)) {
-    nextBody = body.replace(/^args\s*=.*$/m, desiredArgsLine);
-  } else if (/^command\s*=/m.test(body)) {
-    nextBody = body.replace(/^(command\s*=.*)$/m, `$1\n${desiredArgsLine}`);
-  } else {
-    nextBody = `${desiredArgsLine}\n${body}`;
+  const printed = run(binPath, command.slice(1), repoRoot, env);
+  if (!printed.ok) {
+    actions.push({ action: "configure-codex", status: "failed", command, stderr: trimOutput(printed.stderr || printed.error) });
+    return;
   }
-
-  const next = raw.replace(section, `${header}${nextBody}`);
   try {
-    writeFileSync(path, next);
+    const section = scopedCodexSection(printed.stdout);
+    const content = existsSync(path) ? readFileSync(path, "utf8") : "";
+    const kind = codexConfigFragment(content, CODEX_MCP_SELECTOR) === null ? "add" : "refresh";
+    const result = openHostConfigGate({ env: { ...process.env, ...env } }).apply([{
+      path,
+      fragments: [{ owner: CODEX_CONFIG_FRAGMENTS[CODEX_MCP_SELECTOR], selector: CODEX_MCP_SELECTOR, kind, strategy: tomlFragment, value: section }],
+    }]);
+    if (result.skipped.length) {
+      actions.push({ action: "configure-codex", status: "skipped", command, stderr: `kept: [${CODEX_MCP_SELECTOR}] in ${path} is your configuration; rh did not change it.` });
+    } else {
+      actions.push({ action: "configure-codex", status: result.written.length ? "changed" : "unchanged", command });
+    }
   } catch (error) {
-    actions.push({
-      action: "codex-project-path",
-      status: "failed",
-      command,
-      stderr: `Failed to write ${path}: ${String((error as Error).message ?? error)}`,
-    });
-    return;
+    actions.push({ action: "configure-codex", status: "failed", command, stderr: String((error as Error).message ?? error) });
   }
-
-  actions.push({
-    action: "codex-project-path",
-    status: "changed",
-    command,
-  });
 }
 
 function configureClaudeProjectPath(
@@ -674,21 +656,20 @@ function configureCodegraphRuntime(opts: CodegraphConfigureOptions): CodegraphCo
       continue;
     }
 
-    if (target === "claude" && opts.location === "global" && isMcpHostConfigured(initial.raw, target)) {
+    if (target === "codex") {
+      configureCodexMcp(actions, binPath, opts.repoRoot, opts.env);
+      continue;
+    }
+
+    if (opts.location === "global" && isMcpHostConfigured(initial.raw, target)) {
       appendSkippedAction(actions, actionName, command, "Claude CodeGraph MCP is already configured.");
     } else {
       appendAction(actions, actionName, command, run(binPath, command.slice(1), opts.repoRoot, opts.env));
     }
 
-    if (target === "codex") {
-      configureCodexProjectPath(actions, opts.env);
-    }
-
-    if (target === "claude") {
-      configureClaudeProjectPath(actions, opts.repoRoot, opts.location, opts.env);
-      configureClaudeAlwaysLoad(actions, opts.repoRoot, opts.location, opts.env);
-      configureClaudeAllowedTools(actions, opts.env);
-    }
+    configureClaudeProjectPath(actions, opts.repoRoot, opts.location, opts.env);
+    configureClaudeAlwaysLoad(actions, opts.repoRoot, opts.location, opts.env);
+    configureClaudeAllowedTools(actions, opts.env);
   }
 
   let refreshed = initial;
@@ -713,8 +694,11 @@ function configureCodegraphRuntime(opts: CodegraphConfigureOptions): CodegraphCo
 /** Keep restoration provenance for both standalone tools setup and runtime bootstrap. */
 export function configureCodegraph(opts: CodegraphConfigureOptions): CodegraphConfigureResult {
   if (opts.location !== 'global') return configureCodegraphRuntime(opts);
-  const root = hostConfigurationRoot({ ...process.env, ...opts.env });
-  const paths = configurationPaths(root).filter((path) => opts.target === 'both' || (opts.target === 'codex' ? path.endsWith('.toml') : !path.endsWith('.toml')));
+  const env = { ...process.env, ...opts.env };
+  const root = hostConfigurationRoot(env);
+  // The receipt holds only the Claude files; the Codex table is in the host-config ledger.
+  migrateCodexConfigRecords(env);
+  const paths = opts.target === 'codex' ? [] : configurationPaths(root);
   return withConfigurationMutation(paths, root, () => configureCodegraphRuntime(opts));
 }
 

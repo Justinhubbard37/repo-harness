@@ -6,7 +6,9 @@ import { spawnSync } from 'child_process';
 import { runInstall, runUninstall } from '../../src/cli/commands/install';
 import { CLAUDE_STATUS_LINE_PIPE, claudeTarget } from '../../src/cli/installer/targets/claude';
 import type { Location } from '../../src/cli/installer/types';
-import { readConfigurationReceipt, withConfigurationMutation } from '../../src/cli/installer/configuration-ownership';
+import { withConfigurationMutation } from '../../src/cli/installer/configuration-ownership';
+import { requestUserInputFragment } from '../../src/cli/installer/targets/codex';
+import { openHostConfigGate } from '../../src/effects/host-config/gate';
 import { isRepoHarnessManagedHookCommand } from '../../src/core/adoption/managed-hook-config';
 import { buildManagedHooks, compareManagedHookProjection } from '../../src/cli/installer/managed-entries';
 
@@ -14,39 +16,48 @@ const ROOT = path.join(import.meta.dir, '..', '..');
 const CLI = path.join(ROOT, 'src/cli/index.ts');
 
 describe('issue 698 host configuration ownership', () => {
-  for (const topLevel of ['', 'default_mode_request_user_input = false\n']) {
-    test(`issue 698 installs and restores only the top-level TOML key (${topLevel ? 'replace' : 'add'})`, () => {
-      withTempHome('repo-harness-install', (home) => {
-        const filePath = path.join(home, '.codex/config.toml');
-        const original = `${topLevel}model = "user"\n[profiles.work]\ndefault_mode_request_user_input = false\n`;
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, original);
+  test('issue 698 installs and restores only the top-level TOML key', () => {
+    withTempHome('repo-harness-install', (home) => {
+      const filePath = path.join(home, '.codex/config.toml');
+      const original = 'model = "user"\n[profiles.work]\ndefault_mode_request_user_input = false\n';
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, original);
 
-        const install = runInstall({ target: 'codex', location: 'global' });
-        expect(install.exitCode).toBe(0);
-        const installed = fs.readFileSync(filePath, 'utf8');
-        const parsed = Bun.TOML.parse(installed) as any;
-        expect(parsed.default_mode_request_user_input).toBe(true);
-        expect(parsed.profiles.work.default_mode_request_user_input).toBe(false);
-        expect(installed).toContain('[profiles.work]\ndefault_mode_request_user_input = false\n');
-        const receipt = readConfigurationReceipt(home);
-        expect(receipt.pending).toBeUndefined();
-        expect(receipt.changes).toEqual([{
-          path: filePath,
-          selector: 'default_mode_request_user_input',
-          before: topLevel || null,
-          installed: 'default_mode_request_user_input = true\n',
-          active: true,
-        }]);
-        expect(runInstall({ target: 'codex', location: 'global' }).exitCode).toBe(0);
-        expect(fs.readFileSync(filePath, 'utf8')).toBe(installed);
-        expect(readConfigurationReceipt(home)).toEqual(receipt);
+      const install = runInstall({ target: 'codex', location: 'global' });
+      expect(install.exitCode).toBe(0);
+      const installed = fs.readFileSync(filePath, 'utf8');
+      expect(installed).toBe(`default_mode_request_user_input = true\n${original}`);
+      expect(fs.existsSync(path.join(home, '.repo-harness/configuration-restore.json'))).toBe(false);
+      const ledger = () => JSON.parse(fs.readFileSync(path.join(home, '.repo-harness/config/ledger.json'), 'utf8'));
+      expect(ledger().fragments).toEqual([{ file: fs.realpathSync(filePath), owner: 'core', selector: 'default_mode_request_user_input', kind: 'add', inserted: 'default_mode_request_user_input = true\n' }]);
+      const recorded = ledger();
+      expect(runInstall({ target: 'codex', location: 'global' }).exitCode).toBe(0);
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(installed);
+      expect(ledger()).toEqual(recorded);
 
-        expect(runUninstall({ target: 'codex', location: 'global' }).exitCode).toBe(0);
-        expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
-      });
+      expect(runUninstall({ target: 'codex', location: 'global' }).exitCode).toBe(0);
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
     });
-  }
+  });
+
+  test('A10: install keeps an explicit user value and prints it; only the override selection replaces it, and a revert restores it', () => {
+    withTempHome('repo-harness-install', (home) => {
+      const filePath = path.join(home, '.codex/config.toml');
+      const original = 'default_mode_request_user_input = false   # I prefer no prompts\n[profiles.work]\nmodel = "x"\n';
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, original);
+      const install = runInstall({ target: 'codex', location: 'global' });
+      expect(install.exitCode).toBe(0);
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
+      expect(install.lines).toContain('[codex] kept: default_mode_request_user_input = false (your value). repo-harness skills ask plain-text numbered questions instead of request_user_input.');
+
+      const gate = openHostConfigGate({ env: process.env });
+      gate.apply([{ path: filePath, fragments: [requestUserInputFragment(original, true)!] }]);
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(original.replace('false   # I prefer no prompts', 'true'));
+      expect(gate.revert([filePath]).map((entry) => entry.action)).toEqual(['text_removed']);
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
+    });
+  });
 
   test('issue 698 leaves a true top-level TOML key and false profile key unchanged', () => {
     withTempHome('repo-harness-install', (home) => {
@@ -56,7 +67,7 @@ describe('issue 698 host configuration ownership', () => {
       fs.writeFileSync(filePath, original);
       expect(runInstall({ target: 'codex', location: 'global' }).exitCode).toBe(0);
       expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
-      expect(readConfigurationReceipt(home).changes).toEqual([]);
+      expect(fs.existsSync(path.join(home, '.repo-harness/config/ledger.json'))).toBe(false);
     });
   });
 
@@ -438,31 +449,6 @@ describe('install command (Phase 1B)', () => {
       const second = runInstall({ target: 'codex', location: 'global' });
       expect(second.exitCode).toBe(0);
       expect(second.lines.some((l) => l.includes('unchanged'))).toBe(true);
-    });
-  });
-
-  test('codex install updates existing config.toml to enable request-user-input popups', () => {
-    withTempHome('repo-harness-install', (home) => {
-      const tomlPath = path.join(home, '.codex/config.toml');
-      fs.mkdirSync(path.dirname(tomlPath), { recursive: true });
-      fs.writeFileSync(
-        tomlPath,
-        [
-          'model = "gpt-5"',
-          'default_mode_request_user_input = false',
-          '',
-          '[features]',
-          'hooks = true',
-          '',
-        ].join('\n'),
-      );
-
-      const result = runInstall({ target: 'codex', location: 'global' });
-      expect(result.exitCode).toBe(0);
-      const config = fs.readFileSync(tomlPath, 'utf-8');
-      expect(config).toContain('default_mode_request_user_input = true');
-      expect(config).not.toContain('default_mode_request_user_input = false');
-      expect(config).toContain('[features]');
     });
   });
 

@@ -1212,7 +1212,8 @@ describe('install selection', () => {
       const owners = new Set(all.state.ownership_manifest.map(({ owner }) => owner));
       for (const owner of ['core', ...HOST_FILE_PLUGINS]) expect(owners.has(owner as PluginId), owner).toBe(true);
       const sections = all.state.ownership_manifest.filter(({ managed_marker }) => managed_marker === 'codegraph-config-projection').map(({ path }) => path);
-      expect(sections.sort(), name).toEqual(userSections ? [] : [claudeJson, claudeSettings, codexConfig].sort());
+      // `~/.codex/config.toml` is in the host-config ledger, not in the manifest.
+      expect(sections.sort(), name).toEqual(userSections ? [] : [claudeJson, claudeSettings].sort());
 
       const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
       const removed = prepareInstallSelectionSwitch(keep, env);
@@ -1235,8 +1236,9 @@ describe('install selection', () => {
       }
       for (const { path } of all.state.ownership_manifest.filter(({ owner }) => ownerEnabled(owner, keep))) expect(existsSync(path), `${name}: ${path}`).toBe(true);
       // An owned section goes with architecture; a user's section stays.
-      for (const path of [claudeJson, claudeSettings, codexConfig]) expect(codegraphProjection(path) !== null, `${name}: ${path}`).toBe(keep.includes('architecture') || userSections === true);
-      expect(readFileSync(codexConfig, 'utf-8'), name).toContain('default_mode_request_user_input = true');
+      for (const path of [claudeJson, claudeSettings]) expect(codegraphProjection(path) !== null, `${name}: ${path}`).toBe(keep.includes('architecture') || userSections === true);
+      // A switch keeps the Codex table until an owner-scoped removal exists: a revert acts on the whole file.
+      expect(readFileSync(codexConfig, 'utf-8'), name).toContain('default_mode_request_user_input = true\n\n[mcp_servers.codegraph]');
       expect(readFileSync(codexConfig, 'utf-8'), name).toContain('[profiles.user]\nmodel = "user-model"');
       expect(JSON.parse(readFileSync(claudeJson, 'utf-8')), name).toMatchObject({ userSetting: true, mcpServers: { 'user-server': { command: 'user-mcp' } } });
       const settings = JSON.parse(readFileSync(claudeSettings, 'utf-8'));
@@ -1284,8 +1286,8 @@ describe('install selection', () => {
   test('reinstall refreshes ownership for an already-owned CodeGraph projection', () => withHome((env) => {
     const first = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
     writeManagedHostSurfaces(env, ALL_PLUGINS);
-    const config = join(env.HOME!, '.codex', 'config.toml');
-    writePath(config, '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve"]\n');
+    const config = join(env.HOME!, '.claude.json');
+    writePath(config, JSON.stringify({ mcpServers: { codegraph: { command: 'codegraph', args: ['serve'] } } }));
     const initial = applyInstallSelection('all', ALL_PLUGINS, env, new Date('2026-01-01T00:00:00Z'), first);
     commitInstallHostTransaction(first);
     const original = initial.state.ownership_manifest.find(({ managed_marker }) => (
@@ -1294,7 +1296,7 @@ describe('install selection', () => {
     expect(original?.owner).toBe('architecture');
 
     const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
-    writeFileSync(config, '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp"]\n');
+    writeFileSync(config, JSON.stringify({ mcpServers: { codegraph: { command: 'codegraph', args: ['serve', '--mcp'] } } }));
     const refreshed = applyInstallSelection('all', ALL_PLUGINS, env, new Date('2026-01-02T00:00:00Z'), second);
     commitInstallHostTransaction(second);
     const next = refreshed.state.ownership_manifest.find(({ managed_marker }) => (

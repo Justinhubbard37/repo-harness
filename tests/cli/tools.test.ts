@@ -33,13 +33,10 @@ function writeFakeCodeGraph(fakeBin: string, logFile: string) {
       "  \"--version\") echo '0.9.6' ;;",
       "  \"status\") echo 'CodeGraph Status'; echo 'Index is up to date' ;;",
       "  \"install\")",
-      "    if [[ \" $* \" == *\" --target codex \"* ]]; then",
-      "      mkdir -p \"$HOME/.codex\"",
-      "      cat > \"$HOME/.codex/config.toml\" <<'TOML'",
-      "[mcp_servers.codegraph]",
-      "command = \"codegraph\"",
-      "args = [\"serve\", \"--mcp\"]",
-      "TOML",
+      // codegraph 1.6.2 prints this snippet for `install --print-config codex` and writes nothing.
+      "    if [[ \"$*\" == \"install --print-config codex\" ]]; then",
+      "      printf '%s\\n' \"# Add to $HOME/.codex/config.toml\" '' '[mcp_servers.codegraph]' 'command = \"codegraph\"' 'args = [\"serve\", \"--mcp\"]'",
+      "      exit 0",
       "    fi",
       "    if [[ \" $* \" == *\" --target claude \"* && ! -f \"$HOME/.claude.json\" ]]; then",
       "      cat > \"$HOME/.claude.json\" <<'JSON'",
@@ -150,12 +147,10 @@ describe("arch codegraph configure", () => {
     const result = JSON.parse(res.stdout);
     expect(result.target).toBe("codex");
     expect(result.location).toBe("global");
-    expect(result.actions.map((entry: { action: string }) => entry.action)).toEqual([
-      "configure-codex",
-      "codex-project-path",
-    ]);
-    expect(log).toContain("codegraph install --target codex --location global --yes");
-    expect(codexConfigAfter).toContain('args = ["serve", "--mcp", "--path", "."]');
+    expect(result.actions.map((entry: { action: string }) => entry.action)).toEqual(["configure-codex"]);
+    expect(log).toContain("codegraph install --print-config codex");
+    expect(log).not.toContain("--target codex");
+    expect(codexConfigAfter).toBe('# no codegraph yet\n[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp", "--path", "."]\n');
   }, 15000);
 
   test("configures Claude and registers codegraph for eager schema load", () => {
@@ -242,13 +237,12 @@ describe("arch codegraph configure", () => {
     expect(result.target).toBe("both");
     expect(result.actions.map((entry: { action: string }) => entry.action)).toEqual([
       "configure-codex",
-      "codex-project-path",
       "configure-claude",
       "claude-project-path",
       "claude-always-load",
       "claude-allowed-tools",
     ]);
-    expect(log).toContain("codegraph install --target codex --location global --yes");
+    expect(log).toContain("codegraph install --print-config codex");
     expect(log).toContain("codegraph install --target claude --location global --yes");
     // CLI output may carry the host-agnostic wildcard mcp__codegraph__* as a
     // configuration value (it is the actual Claude allowedTools entry). What it

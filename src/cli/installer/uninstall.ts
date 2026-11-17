@@ -14,7 +14,9 @@ import { removeRuntimeStateIgnoreBlock } from '../../effects/adoption/gitignore-
 import { readRepositoryExcludes, repositoryCommonDirectory, repositoryExcludesLedgerPath, repositoryExcludeTarget, serializeRepositoryExcludes, type RepositoryExclude } from './repository-excludes';
 import { managedInstallSurfaceIsCurrent, readInstallState, type ManagedInstallSurface } from './install-profile';
 import { installProfileStatePath } from './install-state';
-import { assertConfigurationPath, configurationPaths, configurationReceiptPath, hostConfigurationRoot, readConfigurationFragment, readConfigurationReceipt, replaceConfigurationFragment, writePrivateConfiguration } from './configuration-ownership';
+import { assertConfigurationPath, configurationPaths, configurationReceiptPath, hostConfigurationRoot, readConfigurationFragment, readConfigurationReceipt, replaceConfigurationFragment, validConfigurationReceipt, writePrivateConfiguration } from './configuration-ownership';
+import { migrateCodexConfigRecords, planCodexConfigMigration, previewAdoptedRevert } from './codex-config-migration';
+import { openHostConfigGate, type HostConfigRevertEntry } from '../../effects/host-config/gate';
 
 export interface UninstallOptions { target: 'codex' | 'claude' | 'both'; dryRun?: boolean; recoverInterrupted?: boolean; env?: NodeJS.ProcessEnv; runtimeLock?: RuntimeTransactionContext }
 export interface UninstallItem { path: string; action: 'remove' | 'restore' | 'preserve' | 'unresolved' | 'note'; reason: string }
@@ -61,10 +63,23 @@ function readUninstallState(opts: UninstallOptions) {
   const home = hostConfigurationRoot(env);
   assertConfigurationPath(installProfileStatePath(env), home);
   const lock = providerSkillLock(home, env);
-  const state = readInstallState(env);
-  const receipt = readConfigurationReceipt(home);
+  // Before the Codex migration has run (a dry run, or the check before the lock), plan it in memory.
+  const migration = planCodexConfigMigration(env);
+  const state = migration?.state ?? readInstallState(env);
+  const receipt = migration?.receipt ? validConfigurationReceipt(migration.receipt, home) : readConfigurationReceipt(home);
   if (receipt.pending && !opts.recoverInterrupted) throw new Error('interrupted configuration transaction; preview recovery with uninstall --recover-interrupted --dry-run, then apply --recover-interrupted to restore recorded fragments');
-  return { state, receipt, lock };
+  return { state, receipt, lock, migration };
+}
+
+const REVERT_ITEMS: Readonly<Record<Exclude<HostConfigRevertEntry['action'], 'released'>, Pick<UninstallItem, 'action' | 'reason'>>> = {
+  removed: { action: 'remove', reason: 'host-config ledger: rh created this file' },
+  restored: { action: 'restore', reason: 'host-config ledger: the file before rh' },
+  text_removed: { action: 'restore', reason: 'host-config ledger: the file before rh' },
+  kept_edited: { action: 'unresolved', reason: 'changed since rh wrote it; preserved' },
+};
+
+function sameRevert(left: readonly HostConfigRevertEntry[], right: readonly HostConfigRevertEntry[]): boolean {
+  return left.map((entry) => entry.action).join() === right.map((entry) => entry.action).join();
 }
 
 function uninstallResult(items: UninstallItem[], dryRun: boolean): UninstallResult {
@@ -95,8 +110,10 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   const unresolved = (path: string, reason: string): void => { items.push({ path, action: 'unresolved', reason }); };
   let state: ReturnType<typeof readInstallState> = null;
   let receipt: ReturnType<typeof readConfigurationReceipt>;
+  let migration: ReturnType<typeof planCodexConfigMigration>;
   try {
-    ({ state, receipt, lock } = readUninstallState(opts));
+    if (!opts.dryRun) migrateCodexConfigRecords(env);
+    ({ state, receipt, lock, migration } = readUninstallState(opts));
   } catch (error) { unresolved(configurationReceiptPath(home), String((error as Error).message)); return result(); }
   let recovered = false;
   if (receipt.pending) {
@@ -126,6 +143,21 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       change(entry.path, next.trim() ? next : null, `restore installation change: ${entry.selector}`, entry.before === null ? 'remove' : 'restore');
       remaining.splice(remaining.indexOf(entry), 1);
     } catch (error) { unresolved(entry.path, String((error as Error).message)); }
+  }
+
+  const codexConfig = join(home, '.codex/config.toml');
+  const gate = openHostConfigGate({ env });
+  let codexRevert: readonly HostConfigRevertEntry[] = [];
+  if (selected(codexConfig, opts.target, home)) {
+    try {
+      codexRevert = migration?.adoption ? previewAdoptedRevert(migration) : gate.revert([codexConfig], { dryRun: true });
+      for (const entry of codexRevert) if (entry.action !== 'released') items.push({ path: entry.path, ...REVERT_ITEMS[entry.action] });
+      if (existsSync(codexConfig)) {
+        const parsed = Bun.TOML.parse(readFileSync(codexConfig, 'utf8')) as Record<string, any>;
+        // Codex writes these after the user trusts the hooks; they never block completion.
+        if (parsed.hooks?.state && Object.keys(parsed.hooks.state).length) items.push({ path: codexConfig, action: 'note', reason: 'Codex keeps its hook trust entries in [hooks.state]; rh does not remove them.' });
+      }
+    } catch (error) { unresolved(codexConfig, String((error as Error).message)); }
   }
 
   for (const host of ['codex', 'claude'] as const) {
@@ -179,8 +211,8 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
     }
     if (configurationPaths(home).includes(surface.path)) {
       // A restoration receipt owns these fragments; never also delete the projection.
-      if (receipt.changes.some((entry) => entry.active && entry.path === surface.path && entry.selector !== 'default_mode_request_user_input')) {
-        if (!remaining.some((entry) => entry.active && entry.path === surface.path && entry.selector !== 'default_mode_request_user_input')) removedSurfaces.add(surface);
+      if (receipt.changes.some((entry) => entry.active && entry.path === surface.path)) {
+        if (!remaining.some((entry) => entry.active && entry.path === surface.path)) removedSurfaces.add(surface);
         continue;
       }
     }
@@ -197,7 +229,7 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       if (surface.managed_marker === 'codegraph-config-projection') {
         assertConfigurationPath(surface.path, home);
         let next = read(surface.path);
-        for (const selector of surface.path.endsWith('.toml') ? ['mcp_servers.codegraph'] : ['mcpServers.codegraph', 'allowedTools.codegraph']) {
+        for (const selector of ['mcpServers.codegraph', 'allowedTools.codegraph']) {
           next = replaceConfigurationFragment(surface.path, next, selector, null);
         }
         change(surface.path, next.trim() && next.trim() !== '{}' ? next : null, 'transaction-owned CodeGraph projection');
@@ -215,18 +247,12 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       assertConfigurationPath(path, home);
       if (!existsSync(path)) continue;
       const raw = read(path);
-      const selectors = path.endsWith('.toml') ? ['default_mode_request_user_input', 'mcp_servers.codegraph'] : ['mcpServers.codegraph', 'allowedTools.codegraph'];
-      for (const selector of selectors) {
+      for (const selector of ['mcpServers.codegraph', 'allowedTools.codegraph']) {
         const previous = receipt.changes.find((entry) => entry.path === path && entry.selector === selector);
         if (previous?.active) continue;
         if (previous && readConfigurationFragment(path, raw, selector) === previous.before) continue;
-        if ([...removedSurfaces].some((entry) => entry.path === path && entry.managed_marker === 'codegraph-config-projection') && selector !== 'default_mode_request_user_input') continue;
+        if ([...removedSurfaces].some((entry) => entry.path === path && entry.managed_marker === 'codegraph-config-projection')) continue;
         if (readConfigurationFragment(path, raw, selector) !== null) unresolved(path, `no installation provenance for ${selector}; preserved`);
-      }
-      if (path.endsWith('.toml')) {
-        const parsed = Bun.TOML.parse(raw) as Record<string, any>;
-        // Codex writes these after the user trusts the hooks; they never block completion.
-        if (parsed.hooks?.state && Object.keys(parsed.hooks.state).length) items.push({ path, action: 'note', reason: 'Codex keeps its hook trust entries in [hooks.state]; rh does not remove them.' });
       }
     } catch (error) { unresolved(path, String((error as Error).message)); }
   }
@@ -324,6 +350,7 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
         else if (repositoryExcludes.has(path)) writeFileSync(path, content, 'latin1');
         else writePrivateConfiguration(path, content, surfaceRoot(path));
       }
+      if (codexRevert.length && !sameRevert(gate.revert([codexConfig]), codexRevert)) throw new Error(`configuration changed after preview: ${codexConfig}`);
       for (const path of [...originals.keys()]) {
         const parent = dirname(path);
         // Never remove a host root or history tree; only now-empty managed leaf containers.

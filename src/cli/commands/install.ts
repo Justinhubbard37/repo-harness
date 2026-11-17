@@ -58,7 +58,7 @@ export function runInstall(opts: InstallCommandOptions): InstallCommandResult {
     try {
       const result = target.install(opts.location, {});
       for (const file of result.files) {
-        lines.push(`[${target.id}] ${file.action}: ${file.path}`);
+        lines.push(`[${target.id}] ${file.action}: ${file.detail ?? file.path}`);
       }
       for (const note of result.notes ?? []) {
         lines.push(`[${target.id}] note: ${note}`);

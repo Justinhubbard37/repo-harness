@@ -38,6 +38,8 @@ export interface WriteResult {
   files: Array<{
     path: string;
     action: 'created' | 'updated' | 'unchanged' | 'removed' | 'not-found' | 'kept';
+    /** Printed in place of the path, e.g. the user's value that a `kept` file keeps. */
+    detail?: string;
   }>;
   /**
    * Optional short one-liner notes the orchestrator surfaces verbatim

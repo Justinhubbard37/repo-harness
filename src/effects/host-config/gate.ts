@@ -60,6 +60,30 @@ export interface HostConfigRevertEntry {
   readonly action: 'removed' | 'restored' | 'text_removed' | 'released' | 'kept_edited';
 }
 
+/** A fragment that an earlier rh version wrote, as its old record names it. */
+export interface AdoptedFragment {
+  readonly owner: string;
+  readonly selector: string;
+  readonly kind: FragmentRecord['kind'];
+  readonly inserted: string;
+}
+
+/**
+ * One-shot migration of a file that an earlier rh version wrote before the
+ * ledger existed. `backup` is the file before rh, rebuilt from the old record;
+ * null when rh created the file.
+ */
+export interface HostConfigAdoption {
+  readonly backup: Buffer | null;
+  readonly fragments: readonly AdoptedFragment[];
+  readonly externalChange: boolean;
+}
+
+export interface HostConfigRevertOptions {
+  /** Report what the revert would do and write nothing. */
+  readonly dryRun?: boolean;
+}
+
 export interface HostConfigGateOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
@@ -73,7 +97,13 @@ export interface HostConfigGate {
    */
   delegate(declaredPaths: readonly string[], run: (destinations: readonly string[]) => void): HostConfigDelegateResult;
   /** Undo rh's recorded writes, for the named paths or for all; a path without a record is not touched. */
-  revert(paths?: readonly string[]): readonly HostConfigRevertEntry[];
+  revert(paths?: readonly string[], options?: HostConfigRevertOptions): readonly HostConfigRevertEntry[];
+  /**
+   * Record a file that has no record, with `baseline.state: unknown` and
+   * `committed` set to the current file. It writes no host file. A path that
+   * already has a record keeps it (`recorded`), so a migration can run again.
+   */
+  adopt(path: string, adoption: HostConfigAdoption): 'adopted' | 'recorded';
 }
 
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -246,7 +276,7 @@ function delegateWrite(paths: HostConfigPaths, declaredPaths: readonly string[],
  * with its records. Created directories go after all files; a directory that
  * still holds content keeps its record for a later revert.
  */
-function revertFiles(paths: HostConfigPaths, only: readonly string[] | undefined): HostConfigRevertEntry[] {
+function revertFiles(paths: HostConfigPaths, only: readonly string[] | undefined, dryRun: boolean): HostConfigRevertEntry[] {
   const ledger = readLedger(paths);
   const files = { ...ledger.files };
   let fragments = ledger.fragments;
@@ -263,13 +293,13 @@ function revertFiles(paths: HostConfigPaths, only: readonly string[] | undefined
     }
     let action: HostConfigRevertEntry['action'];
     if (record.kind === 'created') {
-      if (current.existed) removeTarget(path, current);
+      if (current.existed && !dryRun) removeTarget(path, current);
       action = 'removed';
     } else {
       const backup = readVault(paths, record.backup!);
       if (bytes !== null && backup.equals(bytes)) action = 'released';
       else {
-        replaceTarget(path, backup, current);
+        if (!dryRun) replaceTarget(path, backup, current);
         action = record.kind === 'replaced' ? 'restored' : 'text_removed';
       }
     }
@@ -277,6 +307,7 @@ function revertFiles(paths: HostConfigPaths, only: readonly string[] | undefined
     fragments = fragments.filter((entry) => entry.file !== path);
     report.push({ path, action });
   }
+  if (dryRun) return report;
   const attempted = only ? ledger.directories.filter((directory) => targets.some((path) => isPathInside(directory, path))) : ledger.directories;
   const kept = removeCreatedDirectories(attempted);
   const directories = ledger.directories.filter((directory) => !attempted.includes(directory) || kept.includes(directory));
@@ -284,11 +315,29 @@ function revertFiles(paths: HostConfigPaths, only: readonly string[] | undefined
   return report;
 }
 
+function adoptFile(paths: HostConfigPaths, target: string, adoption: HostConfigAdoption): 'adopted' | 'recorded' {
+  const [path] = admitPaths(paths, [target]) as [HostPath];
+  const ledger = readLedger(paths);
+  if (ledger.files[path]) return 'recorded';
+  const current = expectedOf(observeFile(path).observation, path);
+  const record: FileRecord = {
+    kind: adoption.backup === null ? 'created' : 'text_block',
+    baseline: { state: 'unknown' },
+    committed: committedOf(current),
+    backup: adoption.backup === null ? null : putVault(paths, adoption.backup),
+    external_change: adoption.externalChange,
+  };
+  const fragments = adoption.fragments.map((fragment) => ({ file: path, ...fragment }));
+  writeLedger(paths, { ...ledger, files: { ...ledger.files, [path]: record }, fragments: [...ledger.fragments, ...fragments] });
+  return 'adopted';
+}
+
 export function openHostConfigGate(options: HostConfigGateOptions = {}): HostConfigGate {
   const paths = hostConfigPaths(options.env ?? process.env);
   return {
     apply: (changes) => applyChanges(paths, changes),
     delegate: (declaredPaths, run) => delegateWrite(paths, declaredPaths, run),
-    revert: (only) => revertFiles(paths, only),
+    revert: (only, revertOptions) => revertFiles(paths, only, revertOptions?.dryRun === true),
+    adopt: (path, adoption) => adoptFile(paths, path, adoption),
   };
 }

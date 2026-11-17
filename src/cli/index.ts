@@ -3,6 +3,7 @@ import { buildStrategyCommand } from './commands/strategy';
 import { CLI_NAME } from '../core/skill-surface/cli-name';
 import { globalRuntimeScope, parentRuntimeTransactionContext, withRuntimeTransactionLock } from '../effects/locking/runtime-transaction-lock';
 import { captureConfigurationRestores, hostConfigurationRoot } from './installer/configuration-ownership';
+import { migrateCodexConfigRecords } from './installer/codex-config-migration';
 /**
  * repo-harness CLI entry.
  *
@@ -305,6 +306,7 @@ function runTransactionalSelectionProjection(
       return { result: owned, state: null };
     }
     try {
+      migrateCodexConfigRecords(transactionEnv);
       const state = requireInstallState(transactionEnv);
       captureConfigurationRestores(transaction, hostConfigurationRoot(transactionEnv));
       commitInstallHostTransaction(transaction);
@@ -579,6 +581,7 @@ export function runTransactionalRuntimeRefresh(
           result = { ...result, lines: [...selectionLines(resolved), ...commandPluginRepairLines(state.selection), ...result.lines] };
         }
         if ((options.target ?? 'both') === 'both') recordPiInstallOwnership(newPiSurfaces(result), transactionEnv, transaction);
+        migrateCodexConfigRecords(transactionEnv);
       }
       captureConfigurationRestores(transaction, hostConfigurationRoot(transactionEnv));
       commitInstallHostTransaction(transaction);

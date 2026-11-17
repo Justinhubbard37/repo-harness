@@ -3,7 +3,6 @@ import { retryWindowsSharingRace } from '../../effects/atomic-append';
 import { homedir } from 'os';
 import { dirname, join, relative, resolve, sep } from 'path';
 import { randomUUID } from 'crypto';
-import { deepEqual } from './shared';
 
 export interface ConfigurationRestore {
   path: string;
@@ -26,9 +25,9 @@ export const hostConfigurationRoot = (env: NodeJS.ProcessEnv = process.env): str
 export const configurationReceiptPath = (root: string): string =>
   join(root, '.repo-harness', 'configuration-restore.json');
 
-/** Only these shared configuration fragments can be restored by an install receipt. */
+/** Only these shared configuration fragments can be restored by an install receipt. `~/.codex/config.toml` is in the host-config ledger. */
 export function configurationPaths(root: string): string[] {
-  return [join(root, '.codex/config.toml'), join(root, '.claude.json'), join(root, '.claude/settings.json')];
+  return [join(root, '.claude.json'), join(root, '.claude/settings.json')];
 }
 
 export function assertConfigurationPath(path: string, root: string): void {
@@ -63,48 +62,15 @@ function jsonObject(raw: string): Record<string, any> {
   return value;
 }
 
-/** Accept only the Codex input-mode and CodeGraph configuration selectors. */
-function validSelector(path: string, selector: string): boolean {
-  if (path.endsWith('.toml')) return selector === 'default_mode_request_user_input' || selector === 'mcp_servers.codegraph';
-  return selector === 'mcpServers.codegraph' || selector === 'allowedTools.codegraph';
-}
+const RECORDED_SELECTORS = ['mcpServers.codegraph', 'allowedTools.codegraph'];
 
-function recordedSelectors(path: string): string[] {
-  return path.endsWith('.toml') ? ['default_mode_request_user_input', 'mcp_servers.codegraph'] : ['mcpServers.codegraph', 'allowedTools.codegraph'];
-}
-
-function tomlValue(raw: string, selector: string): unknown {
-  const parsed = Bun.TOML.parse(raw) as Record<string, any>;
-  return selector === 'default_mode_request_user_input' ? parsed[selector] : parsed.mcp_servers?.[selector.slice(12)];
-}
-
-function tomlSpan(raw: string, selector: string): { start: number; end: number } | null {
-  if (tomlValue(raw, selector) === undefined) return null;
-  const pattern = selector === 'default_mode_request_user_input'
-    ? /^default_mode_request_user_input\s*=.*(?:\r?\n|$)/gm
-    : new RegExp(`^\\[mcp_servers\\.${selector.slice(12)}\\][^\\S\\r\\n]*(?:\\r?\\n|$)[\\s\\S]*?(?=^\\s*\\[|(?![\\s\\S]))`, 'gm');
-  // This selector belongs to the root table. A profile may use the same key.
-  // The parsed equality check below rejects misleading text in strings or arrays.
-  const tableStart = selector === 'default_mode_request_user_input' ? raw.search(/^[ \t]*\[/m) : -1;
-  const source = tableStart === -1 ? raw : raw.slice(0, tableStart);
-  const matches = [...source.matchAll(pattern)];
-  if (matches.length !== 1) throw new Error(`unsupported TOML spelling for ${selector}; preserving configuration`);
-  const match = matches[0]!;
-  const span = { start: match.index!, end: match.index! + match[0].length };
-  const without = raw.slice(0, span.start) + raw.slice(span.end);
-  const expected = Bun.TOML.parse(raw) as Record<string, any>;
-  if (selector === 'default_mode_request_user_input') delete expected[selector];
-  else { delete expected.mcp_servers[selector.slice(12)]; if (Object.keys(expected.mcp_servers).length === 0) delete expected.mcp_servers; }
-  if (!deepEqual(Bun.TOML.parse(without), expected)) throw new Error(`ambiguous TOML fragment ${selector}; preserving configuration`);
-  return span;
+/** Accept only the CodeGraph configuration selectors. */
+function validSelector(selector: string): boolean {
+  return RECORDED_SELECTORS.includes(selector);
 }
 
 export function readConfigurationFragment(path: string, raw: string, selector: string): string | null {
-  if (!validSelector(path, selector)) throw new Error(`invalid configuration selector: ${selector}`);
-  if (path.endsWith('.toml')) {
-    const span = tomlSpan(raw, selector);
-    return span ? raw.slice(span.start, span.end) : null;
-  }
+  if (!validSelector(selector)) throw new Error(`invalid configuration selector: ${selector}`);
   const value = jsonObject(raw);
   if (selector === 'mcpServers.codegraph') return value.mcpServers?.codegraph === undefined ? null : JSON.stringify(value.mcpServers.codegraph);
   if (value.allowedTools !== undefined && !Array.isArray(value.allowedTools)) throw new Error('allowedTools must be an array');
@@ -112,14 +78,7 @@ export function readConfigurationFragment(path: string, raw: string, selector: s
 }
 
 export function replaceConfigurationFragment(path: string, raw: string, selector: string, value: string | null): string {
-  if (!validSelector(path, selector)) throw new Error(`invalid configuration selector: ${selector}`);
-  if (path.endsWith('.toml')) {
-    const span = tomlSpan(raw, selector);
-    const next = span ? raw.slice(0, span.start) + (value ?? '') + raw.slice(span.end)
-      : selector === 'default_mode_request_user_input' ? (value ?? '') + raw : raw + (raw.endsWith('\n') || !raw ? '' : '\n') + (value ?? '');
-    Bun.TOML.parse(next);
-    return next;
-  }
+  if (!validSelector(selector)) throw new Error(`invalid configuration selector: ${selector}`);
   const parsed = jsonObject(raw);
   if (selector === 'mcpServers.codegraph') {
     if (value === null) { if (parsed.mcpServers) { delete parsed.mcpServers.codegraph; if (!Object.keys(parsed.mcpServers).length) delete parsed.mcpServers; } }
@@ -134,37 +93,36 @@ export function replaceConfigurationFragment(path: string, raw: string, selector
   return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
-export function readConfigurationReceipt(root: string): ConfigurationReceipt {
+/** The receipt file as JSON, unvalidated; null when it does not exist. */
+export function readRawConfigurationReceipt(root: string): unknown {
   const path = configurationReceiptPath(root);
   assertConfigurationPath(path, root);
-  if (!existsSync(path)) return { protocol: 1, changes: [] };
-  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
+}
+
+export function readConfigurationReceipt(root: string): ConfigurationReceipt {
+  return validConfigurationReceipt(readRawConfigurationReceipt(root), root);
+}
+
+export function validConfigurationReceipt(raw: any, root: string): ConfigurationReceipt {
+  if (raw === null) return { protocol: 1, changes: [] };
+  const path = configurationReceiptPath(root);
   const paths = configurationPaths(root);
   const keys = new Set<string>();
   if (raw?.protocol !== 1 || !Array.isArray(raw.changes)) throw new Error(`invalid configuration receipt: ${path}`);
   for (const change of raw.changes) {
-    if (!change || !paths.includes(change.path) || typeof change.selector !== 'string' || !validSelector(change.path, change.selector)
+    if (!change || !paths.includes(change.path) || typeof change.selector !== 'string' || !validSelector(change.selector)
       || typeof change.active !== 'boolean'
       || !(change.before === null || typeof change.before === 'string') || !(change.installed === null || typeof change.installed === 'string')) throw new Error(`invalid configuration receipt entry: ${path}`);
     const key = `${change.path}\0${change.selector}`;
     if (keys.has(key)) throw new Error(`duplicate configuration receipt entry: ${path}`);
     keys.add(key);
-    for (const value of [change.before, change.installed]) {
-      if (value === null) continue;
-      if (change.path.endsWith('.toml')) {
-        if (readConfigurationFragment(change.path, value, change.selector) !== value) throw new Error('invalid TOML receipt fragment');
-      } else JSON.parse(value);
-    }
+    for (const value of [change.before, change.installed]) if (value !== null) JSON.parse(value);
   }
   if (raw.pending !== undefined) {
     if (!raw.pending || typeof raw.pending.id !== 'string' || !Array.isArray(raw.pending.before)
-      || raw.pending.before.some((entry: any) => !entry || !paths.includes(entry.path) || typeof entry.selector !== 'string' || !validSelector(entry.path, entry.selector) || !(entry.value === null || typeof entry.value === 'string'))) throw new Error(`invalid pending configuration receipt: ${path}`);
-    for (const entry of raw.pending.before) {
-      if (entry.value === null) continue;
-      if (entry.path.endsWith('.toml')) {
-        if (readConfigurationFragment(entry.path, entry.value, entry.selector) !== entry.value) throw new Error('invalid pending TOML fragment');
-      } else JSON.parse(entry.value);
-    }
+      || raw.pending.before.some((entry: any) => !entry || !paths.includes(entry.path) || typeof entry.selector !== 'string' || !validSelector(entry.selector) || !(entry.value === null || typeof entry.value === 'string'))) throw new Error(`invalid pending configuration receipt: ${path}`);
+    for (const entry of raw.pending.before) if (entry.value !== null) JSON.parse(entry.value);
   }
   return raw;
 }
@@ -180,8 +138,7 @@ export function recordConfigurationChange(path: string, before: string, after: s
   assertConfigurationPath(path, root);
   const receipt = readConfigurationReceipt(root);
   if (receipt.pending && receipt.pending.id !== pendingId) throw new Error(`interrupted configuration transaction; preimage retained at ${configurationReceiptPath(root)}`);
-  const selectors = recordedSelectors(path);
-  for (const selector of selectors) {
+  for (const selector of RECORDED_SELECTORS) {
     const previous = readConfigurationFragment(path, before, selector);
     const installed = readConfigurationFragment(path, after, selector);
     if (previous === installed) continue;
@@ -194,10 +151,6 @@ export function recordConfigurationChange(path: string, before: string, after: s
     } else receipt.changes.push({ path, selector, before: previous, installed, active: true });
   }
   saveConfigurationReceipt(receipt, root);
-}
-
-export function writeOwnedConfiguration(path: string, content: string, root: string): void {
-  withConfigurationMutation([path], root, () => writePrivateConfiguration(path, content, root));
 }
 
 export function captureConfigurationRestores(transaction: { snapshots: readonly { path: string; existed: boolean; backup_path: string | null }[] }, root: string): void {
@@ -231,7 +184,7 @@ export function withConfigurationMutation<T>(paths: readonly string[], root: str
     return { path, raw: existsSync(path) ? readFileSync(path, 'utf8') : '' };
   });
   const id = randomUUID();
-  receipt.pending = { id, before: before.flatMap(({ path, raw }) => recordedSelectors(path)
+  receipt.pending = { id, before: before.flatMap(({ path, raw }) => RECORDED_SELECTORS
     .map((selector) => ({ path, selector, value: readConfigurationFragment(path, raw, selector) }))) };
   saveConfigurationReceipt(receipt, root);
   const result = mutate();

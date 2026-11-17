@@ -3,6 +3,7 @@ import { retryWindowsSharingRace } from '../../effects/atomic-append';
 import wazaRules from "../../core/skill-surface/waza-shared-rules.json";
 import { bunGlobalPackageRoot, expectedSkillProjections, skillLinkMatches } from './skill-projection';
 import { configurationReceiptPath } from './configuration-ownership';
+import { hostConfigPaths } from '../../effects/host-config/store';
 import { globalContextBackupEligible, globalContextPath } from './global-context';
 import { acquireRuntimeTransactionLock, assertRuntimeTransactionContext, globalRuntimeScope, runtimeTransactionRoot, type RuntimeTransactionContext, type RuntimeTransactionLock } from '../../effects/locking/runtime-transaction-lock';
 import { randomUUID } from 'crypto';
@@ -195,7 +196,7 @@ export interface InstallPlan {
   readonly state_path: string;
 }
 
-const CODEGRAPH_CONFIG_MARKER = 'codegraph-config-projection';
+export const CODEGRAPH_CONFIG_MARKER = 'codegraph-config-projection';
 /** Markers of records that own one fragment of a shared host configuration file. */
 const SECTION_MARKERS: ReadonlySet<string> = new Set([MANAGED_TAG, CODEGRAPH_CONFIG_MARKER]);
 
@@ -215,14 +216,6 @@ function managedAdapterHash(path: string): string | null {
 export function codegraphProjection(configPath: string, readPath = configPath): string | null {
   try {
     const raw = readFileSync(readPath, 'utf-8');
-    if (configPath.endsWith('.toml')) {
-      const lines = raw.split(/\r?\n/);
-      const start = lines.findIndex((line) => line.trim() === '[mcp_servers.codegraph]');
-      if (start < 0) return null;
-      let end = start + 1;
-      while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1;
-      return sha256Prefixed(lines.slice(start, end).join('\n').trim());
-    }
     const parsed = JSON.parse(raw) as {
       mcpServers?: Record<string, unknown>;
       allowedTools?: unknown[];
@@ -240,28 +233,17 @@ export function codegraphProjection(configPath: string, readPath = configPath): 
 
 function removeCodegraphProjection(path: string): void {
   const raw = readFileSync(path, 'utf-8');
-  let next: string;
-  if (path.endsWith('.toml')) {
-    const lines = raw.split(/\r?\n/);
-    const start = lines.findIndex((line) => line.trim() === '[mcp_servers.codegraph]');
-    if (start < 0) return;
-    let end = start + 1;
-    while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1;
-    lines.splice(start, end - start);
-    next = lines.join('\n').replace(/^\s+/, '');
-  } else {
-    const parsed = JSON.parse(raw) as {
-      mcpServers?: Record<string, unknown>;
-      allowedTools?: unknown[];
-    };
-    if (parsed.mcpServers) delete parsed.mcpServers.codegraph;
-    if (Array.isArray(parsed.allowedTools)) {
-      parsed.allowedTools = parsed.allowedTools.filter((entry) => (
-        typeof entry !== 'string' || !entry.toLowerCase().includes('codegraph')
-      ));
-    }
-    next = `${JSON.stringify(parsed, null, 2)}${raw.endsWith('\n') ? '\n' : ''}`;
+  const parsed = JSON.parse(raw) as {
+    mcpServers?: Record<string, unknown>;
+    allowedTools?: unknown[];
+  };
+  if (parsed.mcpServers) delete parsed.mcpServers.codegraph;
+  if (Array.isArray(parsed.allowedTools)) {
+    parsed.allowedTools = parsed.allowedTools.filter((entry) => (
+      typeof entry !== 'string' || !entry.toLowerCase().includes('codegraph')
+    ));
   }
+  const next = `${JSON.stringify(parsed, null, 2)}${raw.endsWith('\n') ? '\n' : ''}`;
   const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(temp, next, { mode: 0o600 });
   retryWindowsSharingRace(() => renameSync(temp, path));
@@ -784,6 +766,8 @@ export function installProfileHostMutationPaths(env: NodeJS.ProcessEnv = process
     join(home, '.repo-harness', 'config.json'),
     installProfileStatePath(env),
     configurationReceiptPath(home),
+    // A rollback that restores `~/.codex/config.toml` restores its ledger records with it.
+    hostConfigPaths(env).ledger,
     providerSkillLock(home, env).path,
   ];
   for (const root of hostSkillRoots(home, env)) {
@@ -996,11 +980,7 @@ function transactionOwnedSurfaces(
       return surface ? [surface] : [];
     }
     const normalized = snapshot.path.replaceAll('\\', '/');
-    if (
-      normalized.endsWith('/.codex/config.toml')
-      || normalized.endsWith('/.claude.json')
-      || normalized.endsWith('/.claude/settings.json')
-    ) {
+    if (normalized.endsWith('/.claude.json') || normalized.endsWith('/.claude/settings.json')) {
       const before = snapshot.existed && snapshot.backup_path
         ? codegraphProjection(snapshot.path, snapshot.backup_path)
         : null;
@@ -1431,7 +1411,7 @@ export function planInstallSelection(
   };
 }
 
-function writeState(state: InstallState, env: NodeJS.ProcessEnv): void {
+export function writeState(state: InstallState, env: NodeJS.ProcessEnv): void {
   const target = installProfileStatePath(env);
   mkdirSync(dirname(target), { recursive: true });
   const temp = `${target}.tmp-${process.pid}-${Date.now()}`;
