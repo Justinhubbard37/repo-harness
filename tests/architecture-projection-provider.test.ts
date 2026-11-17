@@ -60,7 +60,7 @@ const expectedSnapshot: ProjectionExpectedSnapshotV1 = {
   repositoryId: 'repo.0123456789abcdef', workspaceId: 'workspace.0123456789abcdef', headSha: 'a'.repeat(40), worktreeDigest: digest('1'),
 };
 
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'repo-harness-archctx-provider-'));
