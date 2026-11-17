@@ -27,7 +27,7 @@ outcomes:
       - id: run-child
         from: helpers
         to: primitives
-        label: "Run the helper as a bounded child with a protected environment"
+        label: "Bound the child; protect env only for protected invocations"
         evidence:
           entrypointId: entrypoint.contract-assets.helper-runner
           sourceSymbol: "executeHelper"
@@ -35,9 +35,24 @@ outcomes:
     terminal:
       participant: capability
       label: "Return the helper exit status"
+  - id: rejected
+    kind: error
+    label: "The helper is not listed or its visibility is refused"
+    steps:
+      - id: reject-helper
+        from: capability
+        to: helpers
+        label: "Reject the helper before starting a child"
+        evidence:
+          entrypointId: entrypoint.contract-assets.run-command
+          sourceSymbol: "buildRunCommand"
+          sinkId: sink.contract-assets.helper-runner
+    terminal:
+      participant: capability
+      label: "Return exit code 2 before starting a child"
   - id: error
     kind: error
-    label: "The helper is not listed or fails or times out"
+    label: "The child fails or times out"
     steps:
       - id: run-child-failed
         from: helpers
