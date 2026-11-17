@@ -276,7 +276,7 @@ describe('architecture module page', () => {
     expect(document.querySelector('.review-prompt__digest')?.textContent).toBe(prompt.digest);
     expect(document.querySelector('.review-prompt')?.textContent).toContain(`Total ${prompt.budget.used_bytes} bytes · 2048 bytes per shard`);
     const command = document.querySelector('[data-bot-command]')?.textContent;
-    expect(command).toBe(`rh module review-prompt ${CENTER} --shard 1`);
+    expect(command).toBe(`rh arch module review-prompt ${CENTER} --shard 1`);
     const copy = document.querySelector<HTMLButtonElement>('.review-prompt__command button')!;
     await act(async () => copy.click());
     expect(copied).toEqual([command!]);
@@ -287,13 +287,13 @@ describe('architecture module page', () => {
     await act(async () => { select.value = '2'; select.dispatchEvent(new window.Event('change', { bubbles: true }) as unknown as Event); });
     await settle();
     expect(calls.at(-1)?.path).toBe(`/api/v1/repositories/${REPO}/architecture/modules/${CENTER}/review-prompt?shard=2`);
-    expect(document.querySelector('[data-bot-command]')?.textContent).toBe(`rh module review-prompt ${CENTER} --shard 2`);
+    expect(document.querySelector('[data-bot-command]')?.textContent).toBe(`rh arch module review-prompt ${CENTER} --shard 2`);
     expect(document.querySelector('.review-prompt__text pre')?.textContent).toBe(promptFor(detailFor(), 2).prompt);
   });
 
   test('a diff prompt names both revisions in the Bot command', () => {
     expect(reviewPromptCommand({ capability_id: CENTER, shard: { index: 2, count: 3, bytes: 1 }, mode: 'diff', base: 'a'.repeat(40), head: 'b'.repeat(40) }))
-      .toBe(`rh module review-prompt ${CENTER} --shard 2 --base ${'a'.repeat(40)} --head ${'b'.repeat(40)}`);
+      .toBe(`rh arch module review-prompt ${CENTER} --shard 2 --base ${'a'.repeat(40)} --head ${'b'.repeat(40)}`);
   });
 
   test('section 3 pending is stated, not left blank', async () => {

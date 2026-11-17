@@ -199,12 +199,12 @@ readback is a separate release check, never a task AcceptanceReceipt field.
   `code-change`) that determines which verification and delegation rules
   apply to that task.
 - **Refactor recommendations**: Evidence on demand. No hook scans for them.
-  The Bot reads `rh refactor recommendations --json` and decides
+  The Bot reads `rh arch refactor recommendations --json` and decides
   whether to schedule work or ask the user.
-  `rh refactor recommendations` shows each open suggestion with the
+  `rh arch refactor recommendations` shows each open suggestion with the
   metrics and bounded evidence of its observation and the statistics of the
   affected modules. Open suggestions are the ArchContext `open` records plus
-  unrecorded scan candidates. `rh refactor decide` records the
+  unrecorded scan candidates. `rh arch refactor decide` records the
   user's accept, defer or reject decision in one ArchContext call.
   `--import-node-limit` applies to both commands. `--timeout-ms <ms>` (default
   120000, range 1000..600000) also applies to both commands. repo-harness never

@@ -39,7 +39,7 @@ describe("rh commands", () => {
 
   test("plugin is the recorded id, else the nearest ancestor's, else core", async () => {
     const plugins = new Map((await manifest()).commands.map(entry => [entry.path.join(" "), entry.plugin]));
-    expect(plugins.get("module list")).toBe("architecture");
+    expect(plugins.get("arch module list")).toBe("architecture");
     expect(plugins.get("review round")).toBe("peer-runtime");
     expect(plugins.get("review publish")).toBe("core");
     expect(plugins.get("mcp serve")).toBe("mcp");
@@ -62,7 +62,7 @@ describe("rh commands", () => {
   test("the gate accepts Commander's implicit help command where the CLI prints help", () => {
     const root = buildProgram();
     expect(checkSpan(root, "rh review help")).toEqual([]);
-    expect(checkSpan(root, "rh tools ensure help")).toEqual([]);
+    expect(checkSpan(root, "rh arch codegraph help")).toEqual([]);
     expect(checkSpan(root, "rh help")).toEqual([]);
     expect(checkSpan(root, "rh review help round")).toEqual([]);
     expect(checkSpan(root, "rh help review")).toEqual([]);
@@ -74,9 +74,19 @@ describe("rh commands", () => {
     const root = buildProgram();
     expect(checkSpan(root, "rh help nosuch")).toContainEqual('unknown command "rh help nosuch"');
     expect(checkSpan(root, "rh review help nosuch")).toContainEqual('unknown command "rh review help nosuch"');
-    // `rh module` registers no subcommand, so `help projection` is a target it cannot resolve.
-    expect(checkSpan(root, "rh module help projection")).toContainEqual('unknown command "rh module help projection"');
+    // `rh arch module` registers no `projection` subcommand, so `help projection` is a target it cannot resolve.
+    expect(checkSpan(root, "rh arch module help projection")).toContainEqual('unknown command "rh arch module help projection"');
     // An unknown flag stops the operand list before the target, so the CLI sees no target and exits 0.
     expect(checkSpan(root, "rh review help --json nosuch")).toEqual([]);
+  });
+
+  test("an `rh arch` token that no subcommand registers must be a pass entry of the disposition table", () => {
+    const root = buildProgram();
+    expect(checkSpan(root, "rh arch nosuch")).toEqual(['arch_command_unknown: nosuch in "rh arch nosuch"']);
+    expect(checkSpan(root, "rh arch projection run --request-json x")).toEqual(['arch_command_owned: projection run. Use: rh arch projection check|plan|apply in "rh arch projection run"']);
+    expect(checkSpan(root, "rh arch validate --format json")).toEqual([]);
+    expect(checkSpan(root, "rh arch projection verify-pr --base origin/main --json")).toEqual([]);
+    // A registered subcommand under the pass-through keeps its option check.
+    expect(checkSpan(root, "rh arch projection status --bogus")).toEqual(['unknown option "--bogus" for "rh arch projection status"']);
   });
 });

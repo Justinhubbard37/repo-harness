@@ -196,8 +196,8 @@ sequenceDiagram
 | List open parent issues | `rh board parents --json` |
 | Open the local console (needs the `operator` plugin: `rh install --plugins <your plugins>,operator`) | `rh operator serve` |
 | Clean up finished worktrees (needs the `operator` plugin) | `rh worktrees list` → `rh worktrees clean --ids … --expected-digest …` |
-| Architecture facts / review prompt | `rh module list --json` · `rh module review-prompt <capability> --json` |
-| Refactor suggestions | `rh refactor recommendations` · `rh refactor decide <id> accept\|defer\|reject --reason "…"` |
+| Architecture facts / review prompt | `rh arch module list --json` · `rh arch module review-prompt <capability> --json` |
+| Refactor suggestions | `rh arch refactor recommendations` · `rh arch refactor decide <id> accept\|defer\|reject --reason "…"` |
 | Acceptance review | `rh review round\|status\|close …` ([details](docs/usage.md#persistent-acceptance-review)) |
 | Merge an accepted PR | `rh publication merge` ([policy](docs/control-bot-boundary.md#bot-modes-and-merge)) |
 | MCP sidecar (needs the `mcp` plugin: `rh install --plugins <your plugins>,mcp`) | `rh mcp serve --repo . --profile planner` · `rh mcp doctor --repo .` |

@@ -17,7 +17,7 @@ test('one global configuration controls two repos without repository projection 
   writeFileSync(join(home, '.repo-harness/config.json'), JSON.stringify({ architecture: {
     projection_provider: 'archctx', projection_apply: 'manual',
   } }));
-  // architecture-projection is a guarded command of the architecture plugin.
+  // `rh arch projection` is a guarded command of the architecture plugin.
   recordPluginSelection({ HOME: home });
   for (const name of ['first', 'second']) {
     const repo = join(root, name);
@@ -26,7 +26,7 @@ test('one global configuration controls two repos without repository projection 
     writeFileSync(join(repo, '.ai/harness/policy.json'), JSON.stringify({ context: { capability_source: 'registry' },
       ...(name === 'second' ? { architecture: { projection_provider: 'disabled', projection_apply: 'disabled' } } : {}),
     }));
-    const result = spawnSync(process.execPath, [cli, 'architecture-projection', 'status', '--json'], {
+    const result = spawnSync(process.execPath, [cli, 'arch', 'projection', 'status', '--json'], {
       cwd: repo, env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 30000,
     });
     expect(result.status).toBe(0);

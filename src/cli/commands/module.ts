@@ -27,7 +27,7 @@ const loadModelReader = async () => (await import('../../effects/architecture/mo
 export function buildModuleCommand(): Command {
   const command = new Command('module').description('Read committed architecture facts and export a review prompt.');
   command.command('list').option('--json', 'Output JSON')
-    .option('--projection-check <file>', 'Saved `architecture-projection check --json` output for HEAD; sets generated_summary')
+    .option('--projection-check <file>', 'Saved `rh arch projection check --json` output for HEAD; sets generated_summary')
     .action(async (options: { json?: boolean; projectionCheck?: string }) => {
       const ArchitectureModelReader = await loadModelReader();
       output(options.json === true, () => {
@@ -38,8 +38,8 @@ export function buildModuleCommand(): Command {
     });
   command.command('review-prompt').argument('<capability-id>').option('--json', 'Output JSON')
     .option('--shard <n>', 'Select one input shard', '1').option('--base <rev>', 'Diff base commit or ref').option('--head <rev>', 'Diff head commit or ref')
-    .option('--projection-check <file>', 'Saved `architecture-projection check --json` output for HEAD; sets generated_summary')
-    .option('--anchors <file>', 'Saved `architecture-projection anchors --json` output; adds a STALE CITATIONS section')
+    .option('--projection-check <file>', 'Saved `rh arch projection check --json` output for HEAD; sets generated_summary')
+    .option('--anchors <file>', 'Saved `rh arch projection anchors --json` output; adds a STALE CITATIONS section')
     .action(async (id: string, options: { json?: boolean; shard: string; base?: string; head?: string; projectionCheck?: string; anchors?: string }) => {
       const ArchitectureModelReader = await loadModelReader();
       output(options.json === true, () => {

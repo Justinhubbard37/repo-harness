@@ -144,7 +144,7 @@ export class ArchctxClient {
       if (args[0] === 'checkpoint') {
         throw new ArchctxClientError({ code: 'RH_ARCHCTX_TIMEOUT', action: 'inspect-diagnostics', message: 'architecture checkpoint did not finish in the notice time budget' });
       }
-      throw new ArchctxClientError({ code: 'RH_ARCHCTX_TIMEOUT', action: 'check-and-retry-same-request', message: `${label} timed out; outcome unknown. Run rh architecture-projection check --json, then retry with the same request id.` });
+      throw new ArchctxClientError({ code: 'RH_ARCHCTX_TIMEOUT', action: 'check-and-retry-same-request', message: `${label} timed out; outcome unknown. Run rh arch projection check --json, then retry with the same request id.` });
     }
     if (Buffer.byteLength(result.stdout, 'utf8') > ARCHCTX_MAX_OUTPUT_BYTES || Buffer.byteLength(result.stderr, 'utf8') > ARCHCTX_MAX_OUTPUT_BYTES) throw new Error(`${label} output exceeded maxBuffer`);
     // Process errors can contain argv, including request-json. Do not print them.
@@ -421,7 +421,7 @@ export interface ArchitectureProjectionRequestOptions {
 /** One immutable input identity for the whole call, including observed acceptance. */
 export function architectureProjectionRequest(mode: ProjectionMode, repoRoot: string, options: ArchitectureProjectionRequestOptions & ArchctxProviderOptions = {}): ProjectionRequestV1 {
   const expected = readArchitectureProjectionSnapshot(repoRoot, options);
-  if (options.expectedWorktreeDigest !== undefined && options.expectedWorktreeDigest !== expected.worktreeDigest) throw new ArchctxClientError({ code: 'RH_ARCHCTX_PLAN_MISMATCH', action: 'rebuild-plan', message: 'worktree differs from the reviewed plan; run architecture-projection plan --json' });
+  if (options.expectedWorktreeDigest !== undefined && options.expectedWorktreeDigest !== expected.worktreeDigest) throw new ArchctxClientError({ code: 'RH_ARCHCTX_PLAN_MISMATCH', action: 'rebuild-plan', message: 'worktree differs from the reviewed plan; run rh arch projection plan --json' });
   const body: Omit<ProjectionRequestV1, 'requestId'> = {
     schemaVersion: PROJECTION_REQUEST_SCHEMA_VERSION,
     profile: 'repo-harness/v1', mode, targets: ['architecture-docs'],

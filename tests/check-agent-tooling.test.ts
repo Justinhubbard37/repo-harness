@@ -1866,7 +1866,7 @@ describe("check-agent-tooling", () => {
         version: packaged.version,
         required_version: JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8")).dependencies.archctx,
         node_range: packaged.engines.node,
-        command_source: "rh architecture-projection status --json",
+        command_source: "rh arch projection status --json",
       });
       expect(archctx.path_copy).toMatchObject({ bin_path: join(envRoot.fakeBin, "archctx"), real_path: join(packageRoot, 'bin', 'archctx'), version: "0.5.13", relation: "unrelated" });
       expect(archctx.warnings).toHaveLength(1);

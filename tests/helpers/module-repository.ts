@@ -67,7 +67,7 @@ export function writeStateMachine(root: string, confirmedDigest?: string): void 
   }));
 }
 
-/** A schema-valid `architecture-projection check` result for one commit; each stale path is one stale target. */
+/** A schema-valid `rh arch projection check` result for one commit; each stale path is one stale target. */
 export function projectionCheckResult(commit: string, stalePaths: string[],
   reasonCodes: ProjectionFreshnessReasonCode[] = stalePaths.length ? ['projection-output-changed'] : []): ProjectionResultV3 {
   const digest = (value: string) => `sha256:${value.repeat(64)}` as const;

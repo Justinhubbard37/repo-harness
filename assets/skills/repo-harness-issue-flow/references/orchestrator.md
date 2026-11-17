@@ -26,13 +26,13 @@ issue (§4.1 Release set, §4.2 Intake) · §5 Gap review · §6 Publish ·
    an existing parent issue. Note the requirement and scenario IDs. Issues
    cite them, so that acceptance can be traced.
 2. Check the architecture authority. Run
-   `rh architecture-projection status --json`. Split only when
+   `rh arch projection status --json`. Split only when
    `modelAuthority.source` is `archcontext` and `modelAuthority.ready` is
    `true`. Otherwise stop splitting and follow `next` until the
    repository is adopted: `repo-harness-architecture`, section
    "Adopt ArchContext in a repository". A split made against an unadopted
    model writes boundaries that the capability documents do not have.
-   The result of `rh architecture-projection check --json` does
+   The result of `rh arch projection check --json` does
    not carry `modelAuthority` or `next`. Do not use it as this gate.
 3. Read the module map. Prefer `docs/architecture/archimap.html`. If the
    map is missing or older than the architecture model, refresh it first

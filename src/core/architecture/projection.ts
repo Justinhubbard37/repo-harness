@@ -243,7 +243,7 @@ export function assertProjectionApplyReadbackResult(value: unknown, request: Pro
 }
 
 /**
- * Generated-summary freshness from one `architecture-projection check` result.
+ * Generated-summary freshness from one `rh arch projection check` result.
  * `stalePaths` holds the paths of targets whose render differs from the committed manifest row.
  * `complete` is false when the check failed for a reason that is not per target.
  */
@@ -257,14 +257,14 @@ export interface GeneratedSummaryFreshness {
 const PER_TARGET_FRESHNESS_REASONS: ReadonlySet<ProjectionFreshnessReasonCode> = new Set(['projection-output-changed', 'projection-manifest-changed']);
 
 /**
- * Reads generated-summary freshness from a saved `architecture-projection check`
+ * Reads generated-summary freshness from a saved `rh arch projection check`
  * result. Only a check result carries `freshness`; any other result is refused.
  */
 export function decodeProjectionCheckFreshness(value: unknown): GeneratedSummaryFreshness {
   const result = decode(projectionResultSchema, value, 'projection check result') as unknown as ProjectionResultV3;
   const issues = projectionResultInvariantIssues(result);
   if (issues.length > 0) throw new Error(`projection check result invalid: ${issues.join('; ')}`);
-  if (!result.freshness) throw new Error('projection result has no freshness; save the output of architecture-projection check');
+  if (!result.freshness) throw new Error('projection result has no freshness; save the output of rh arch projection check');
   return {
     commit: result.inputSnapshot.baseHeadSha,
     stalePaths: new Set(result.freshness.staleTargets.map((target) => target.path)),
@@ -316,11 +316,11 @@ export function decodeRefImpact(value: unknown, source: RefImpactSource): RefImp
   return report;
 }
 
-export const ARCHITECTURE_DEBT_COMMAND = 'rh architecture-debt --json';
+export const ARCHITECTURE_DEBT_COMMAND = 'rh arch debt --json';
 // archctx names its own CLI in item actions, but a global install has no archctx
 // on PATH. Name the repo-harness command that runs the same report. An archctx
 // action without one points to the full debt report instead.
-export const MANAGED_ARCHCTX_ACTIONS: ReadonlyMap<string, string> = new Map([['archctx docs anchors --json', 'rh architecture-projection anchors --json']]);
+export const MANAGED_ARCHCTX_ACTIONS: ReadonlyMap<string, string> = new Map([['archctx docs anchors --json', 'rh arch projection anchors --json']]);
 
 export function managedArchctxAction(raw: string): string {
   const action = raw.replace(/[\r\n\t]+/g, ' ').trim();
@@ -357,10 +357,10 @@ const held = (): ArchctxCommandDisposition => ({ disposition: 'held', use: 'wait
  */
 export const ARCHCTX_COMMAND_DISPOSITIONS: Readonly<Record<string, ArchctxCommandDisposition>> = {
   ...Object.fromEntries(passCommands.map(name => [name, { disposition: 'pass' } as ArchctxCommandDisposition])),
-  projection: owned('rh architecture-projection'),
-  debt: owned('rh architecture-debt'),
-  refactor: owned('rh refactor'),
-  recommendations: owned('rh refactor'),
+  projection: owned('rh arch projection'),
+  debt: owned('rh arch debt'),
+  refactor: owned('rh arch refactor'),
+  recommendations: owned('rh arch refactor'),
   install: refused('rh install'),
   uninstall: refused('rh uninstall'),
   update: refused('rh update'),
@@ -374,14 +374,30 @@ export const ARCHCTX_COMMAND_DISPOSITIONS: Readonly<Record<string, ArchctxComman
   hook: held(),
 };
 
-/** `projection verify-pr` is read-only and the rolling-writer acceptance runs it; the rest of `projection` stays owned. */
-const PASS_PROJECTION_SUBCOMMAND = 'verify-pr';
+/**
+ * The archctx `projection` subcommands that `rh arch projection` does not
+ * register. The read-only ones pass; the provider runs stay owned by the
+ * registered check, plan and apply.
+ */
+const ARCHCTX_PROJECTION_SUBCOMMAND_DISPOSITIONS: Readonly<Record<string, ArchctxCommandDisposition>> = {
+  snapshot: { disposition: 'pass' },
+  freshness: { disposition: 'pass' },
+  'publish-status': { disposition: 'pass' },
+  'verify-pr': { disposition: 'pass' },
+  run: owned('rh arch projection check|plan|apply'),
+  recover: owned('rh arch projection check|plan|apply'),
+  readback: owned('rh arch projection check|plan|apply'),
+};
 
 /** The refusal text for a command that `rh arch` does not start, or null when it starts. */
 export function archctxRefusal(args: readonly string[]): string | null {
-  const [command = ''] = args;
-  const entry = Object.hasOwn(ARCHCTX_COMMAND_DISPOSITIONS, command) ? ARCHCTX_COMMAND_DISPOSITIONS[command] : undefined;
-  if (!entry) return `arch_command_unknown: ${command}`;
-  if (entry.disposition === 'pass' || (command === 'projection' && args[1] === PASS_PROJECTION_SUBCOMMAND)) return null;
-  return `arch_command_${entry.disposition}: ${command}. Use: ${entry.use}`;
+  const [command = '', sub = ''] = args;
+  const nested = command === 'projection';
+  const table = nested ? ARCHCTX_PROJECTION_SUBCOMMAND_DISPOSITIONS : ARCHCTX_COMMAND_DISPOSITIONS;
+  const key = nested ? sub : command;
+  const name = nested ? `${command} ${sub}` : command;
+  const entry = Object.hasOwn(table, key) ? table[key] : undefined;
+  if (!entry) return `arch_command_unknown: ${name}`;
+  if (entry.disposition === 'pass') return null;
+  return `arch_command_${entry.disposition}: ${name}. Use: ${entry.use}`;
 }

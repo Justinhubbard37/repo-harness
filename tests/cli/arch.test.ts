@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ARCHCTX_COMMAND_DISPOSITIONS, ARCHCTX_REQUIRED_VERSION, archctxRefusal } from '../../src/core/architecture/projection';
 import { resolveCompatibleNodeRuntime, resolvePackageLocalArchctx, runArchctxPassThrough } from '../../src/effects/architecture/archctx-provider';
-import { pluginSelectionEnv } from '../helpers/install-ownership';
+import { pluginSelectionEnv, recordPluginSelection } from '../helpers/install-ownership';
 
 const ROOT = join(import.meta.dir, '..', '..');
 const CLI = join(ROOT, 'src', 'cli', 'index.ts');
@@ -43,12 +43,14 @@ describe('rh arch', () => {
     expect(Object.keys(ARCHCTX_COMMAND_DISPOSITIONS).sort()).toEqual([...help.data.commands, 'docs'].sort());
   });
 
-  test('refuses an unknown, owned, refused or held command and lets verify-pr through', () => {
+  test('refuses an unknown, owned, refused or held command and lets the read-only projection subcommands through', () => {
     expect(archctxRefusal(['nosuch'])).toBe('arch_command_unknown: nosuch');
     expect(archctxRefusal(['install', '--host', 'codex'])).toBe('arch_command_refused: install. Use: rh install');
     expect(archctxRefusal(['audit', 'run'])).toStartWith('arch_command_held: audit.');
-    expect(archctxRefusal(['projection', 'run'])).toBe('arch_command_owned: projection. Use: rh architecture-projection');
-    expect(archctxRefusal(['projection', 'verify-pr', '--base', 'origin/main', '--json'])).toBeNull();
+    expect(archctxRefusal(['recommendations'])).toBe('arch_command_owned: recommendations. Use: rh arch refactor');
+    expect(archctxRefusal(['projection', 'run'])).toBe('arch_command_owned: projection run. Use: rh arch projection check|plan|apply');
+    expect(archctxRefusal(['projection', 'nosuch'])).toBe('arch_command_unknown: projection nosuch');
+    for (const sub of ['snapshot', 'freshness', 'publish-status', 'verify-pr']) expect(archctxRefusal(['projection', sub, '--json'])).toBeNull();
     expect(archctxRefusal(['validate', '--format', 'json'])).toBeNull();
   });
 
@@ -70,4 +72,21 @@ describe('rh arch', () => {
     expect(without.status).not.toBe(0);
     expect(without.stderr).toContain('install_plugin_unavailable');
   });
+
+  test('the architecture commands run under rh arch, and their old top-level names are unknown', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-arch-cli-'));
+    roots.push(root);
+    const home = join(root, 'home');
+    mkdirSync(join(home, '.repo-harness'), { recursive: true });
+    writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ architecture: { projection_provider: 'archctx', projection_apply: 'manual' } }));
+    recordPluginSelection({ HOME: home });
+    const run = (...args: string[]) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 30_000 });
+    // archctx answers verify-pr itself; outside a Git worktree it reports its own error.
+    const verify = run('arch', 'projection', 'verify-pr', '--base', 'origin/main', '--json');
+    expect(JSON.parse(verify.stdout)).toMatchObject({ schemaVersion: 'archcontext.envelope/v1', requestId: 'projection.verify-pr' });
+    expect(run('arch', 'projection', 'run', '--request-json', '{}')).toMatchObject({ status: 2, stderr: 'arch_command_owned: projection run. Use: rh arch projection check|plan|apply\n' });
+    for (const args of [['architecture-projection', 'status', '--json'], ['architecture-debt'], ['module', 'list'], ['refactor', 'recommendations'], ['tools', 'ensure', 'codegraph']]) {
+      expect(run(...args)).toMatchObject({ status: 1, stderr: `error: unknown command '${args[0]}'\n` });
+    }
+  }, 60_000);
 });

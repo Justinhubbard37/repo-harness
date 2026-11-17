@@ -14,7 +14,7 @@ function repo(): string { const root = moduleRepository(); roots.push(root); ret
 const SELECTED_HOME = pluginSelectionEnv().HOME;
 afterAll(() => rmSync(SELECTED_HOME!, { recursive: true, force: true }));
 function run(root: string, args: string[], env: NodeJS.ProcessEnv = process.env) {
-  return spawnSync(process.execPath, [cli, 'module', ...args], { cwd: root, env: { ...env, HOME: SELECTED_HOME }, encoding: 'utf8', timeout: 20_000 });
+  return spawnSync(process.execPath, [cli, 'arch', 'module', ...args], { cwd: root, env: { ...env, HOME: SELECTED_HOME }, encoding: 'utf8', timeout: 20_000 });
 }
 function snapshot(root: string, path = ''): Record<string, string> {
   const result: Record<string, string> = {};

@@ -351,7 +351,7 @@ Known limits:
 The text starts with `[ArchitectureDebt] N new in <capability>`. Each item names
 the capability, model field and command. At most three items fit within 800
 UTF-8 bytes. An overflow line gives the remaining count and
-`rh architecture-debt --json`. A line that cannot fit stays in that
+`rh arch debt --json`. A line that cannot fit stays in that
 count; commands are never cut. No debt means no model text.
 
 The marker `.ai/harness/state/agent-notice` must be Git-ignored. Its key is
@@ -411,7 +411,7 @@ permits `hookSpecificOutput.additionalContext` at UserPromptSubmit.
 CI and operators use the full debt comparison:
 
 ```bash
-rh architecture-debt --json --base origin/main
+rh arch debt --json --base origin/main
 ```
 
 The command measures the debt at HEAD and at the base, and reports the items

@@ -249,7 +249,7 @@ describe("repo-harness action command skills", () => {
     const architecture = readFileSync(join(COMMAND_ROOT, "repo-harness-architecture/references/worker.md"), "utf-8");
     const handoff = readFileSync(join(ROOT, "references", "handoff.md"), "utf-8");
 
-    expect(architecture).toContain("rh architecture-projection check --json");
+    expect(architecture).toContain("rh arch projection check --json");
     expect(architecture).not.toContain("archive-architecture-request");
     expect(architecture).toContain("mermaid");
     expect(architecture).toContain("archctx-generated Markdown Mermaid");
@@ -271,8 +271,8 @@ describe("repo-harness action command skills", () => {
 
     expect(architecture).toContain("`rh arch flows check --json`");
     expect(architecture).not.toContain("ARCHCTX");
-    expect(architecture).toContain("`rh architecture-projection anchors --json`");
-    expect(architecture).toContain("rh architecture-projection publish once");
+    expect(architecture).toContain("`rh arch projection anchors --json`");
+    expect(architecture).toContain("rh arch projection publish once");
     // projection-apply derives the accepted request id; a per-apply id rule is obsolete.
     expect(architecture).toContain("Do not pass `--request-id`");
     expect(architecture.match(/--request-id/g)).toHaveLength(1);
@@ -281,7 +281,7 @@ describe("repo-harness action command skills", () => {
       "rh run capability-resolver export --format archcontext-nodes-v2",
       "rh arch init --name <product name>",
       "rh arch docs adopt --profile repo-harness/v1",
-      "rh architecture-projection adopt --json --adoption-plan-id <adoptionPlanId>",
+      "rh arch projection adopt --json --adoption-plan-id <adoptionPlanId>",
     ]) expect(architecture).toContain(step);
   });
 
@@ -453,10 +453,10 @@ describe("repo-harness action command skills", () => {
     expect(templates).toMatch(/[Nn]ever commit a generated region/);
   });
 
-  test("issue-flow orchestrator gates splitting on architecture-projection status --json", () => {
+  test("issue-flow orchestrator gates splitting on rh arch projection status --json", () => {
     const orchestrator = readReference("repo-harness-issue-flow", "orchestrator.md");
 
-    expect(orchestrator).toContain("rh architecture-projection status --json");
+    expect(orchestrator).toContain("rh arch projection status --json");
     expect(orchestrator).toContain("modelAuthority.source");
     expect(orchestrator).toContain("modelAuthority.ready");
     expect(orchestrator).toContain("archcontext");
@@ -470,7 +470,7 @@ describe("repo-harness action command skills", () => {
     const worker = readReference("repo-harness-issue-flow", "worker.md");
 
     expect(worker).toContain("### 6.1 Architecture slice");
-    expect(worker).toContain("rh architecture-projection plan --json --changed-path");
+    expect(worker).toContain("rh arch projection plan --json --changed-path");
     expect(worker).toContain("preview.format");
     expect(worker).toContain("unified-diff");
     expect(worker).toContain("preview.content");

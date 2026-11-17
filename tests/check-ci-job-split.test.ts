@@ -1092,10 +1092,10 @@ describe('architecture lanes', () => {
       writeFileSync(join(bin, 'bun'), [
         '#!/bin/bash',
         'if [[ "$1" == install ]]; then exit 0; fi',
-        `if [[ "$1" == src/cli/index.ts && "$2" == architecture-debt ]]; then echo "$*" > ${JSON.stringify(join(root, 'debt-args'))}; cat ${JSON.stringify(join(root, 'debt.json'))}; if [[ ${fixture.debtExit ?? 0} -ne 0 ]]; then echo "$5 does not resolve to a commit" >&2; fi; exit ${fixture.debtExit ?? 0}; fi`,
+        `if [[ "$1" == src/cli/index.ts && "$2" == arch && "$3" == debt ]]; then echo "$*" > ${JSON.stringify(join(root, 'debt-args'))}; cat ${JSON.stringify(join(root, 'debt.json'))}; if [[ ${fixture.debtExit ?? 0} -ne 0 ]]; then echo "$6 does not resolve to a commit" >&2; fi; exit ${fixture.debtExit ?? 0}; fi`,
         // The fixture has no architecture model; the clock rule is covered by the provider test.
         ...(fixture.clockStart === undefined ? [] : [`if [[ "$1" == -e && "$2" == *readRenderClockStart* ]]; then git rev-list --first-parent --reverse HEAD | sed -n ${fixture.clockStart + 1}p; exit 0; fi`]),
-        `if [[ "$1" == src/cli/index.ts && "$2" == architecture-projection ]]; then touch ${JSON.stringify(join(root, 'checked'))}; cat ${JSON.stringify(join(root, 'check.json'))}; exit ${fixture.checkExit ?? 1}; fi`,
+        `if [[ "$1" == src/cli/index.ts && "$2" == arch && "$3" == projection ]]; then touch ${JSON.stringify(join(root, 'checked'))}; cat ${JSON.stringify(join(root, 'check.json'))}; exit ${fixture.checkExit ?? 1}; fi`,
         `exec ${JSON.stringify(process.execPath)} "$@"`,
       ].join('\n'), { mode: 0o755 });
       // archctx exits 0 for every report, as 0.11.2 does for violated and undetermined.
@@ -1151,12 +1151,12 @@ describe('architecture lanes', () => {
   test('new PR debt warns once per item with its subjects and action, then hand-edited generated output warns, and the lane exits 0', () => {
     const result = runLane(['architecture-advisory', '--base', 'abc123'], { debt: debt([debtItem(1), debtItem(2, [])]), check: planned, checkExit: 0 });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.debtArgs).toBe('src/cli/index.ts architecture-debt --json --base abc123');
+    expect(result.debtArgs).toBe('src/cli/index.ts arch debt --json --base abc123');
     expect(result.checked).toBe(true);
     expect(result.stdout).toContain('[ci] Architecture debt: head coverage complete. Introduced 2. Resolved 1.');
     expect(warnings(result.stdout)).toEqual([
-      '::warning title=Architecture debt introduced::flow-proof-failed (no-direct-call) in capability.module-1. Action: rh architecture-debt --json',
-      '::warning title=Architecture debt introduced::flow-proof-failed (no-direct-call) in src/module-2.ts. Action: rh architecture-debt --json',
+      '::warning title=Architecture debt introduced::flow-proof-failed (no-direct-call) in capability.module-1. Action: rh arch debt --json',
+      '::warning title=Architecture debt introduced::flow-proof-failed (no-direct-call) in src/module-2.ts. Action: rh arch debt --json',
       '::warning title=Architecture generated output hand edited::docs/architecture/a.md: projection-generated-region-manually-edited. Keep model and human prose changes in this PR; the archctx rolling writer owns generated output.',
     ]);
   });
@@ -1166,7 +1166,7 @@ describe('architecture lanes', () => {
     const result = runLane(['architecture-advisory', '--base', 'abc123'], { debt: debt([staleAnchor]), check: noop, checkExit: 0 });
     expect(result.status, result.stderr).toBe(0);
     expect(warnings(result.stdout)).toEqual([
-      '::warning title=Architecture debt introduced::stale-anchor (missing-path) in capability.module-1. Action: rh architecture-projection anchors --json',
+      '::warning title=Architecture debt introduced::stale-anchor (missing-path) in capability.module-1. Action: rh arch projection anchors --json',
     ]);
   });
 
@@ -1185,7 +1185,7 @@ describe('architecture lanes', () => {
     const debtWarnings = warnings(result.stdout).filter(line => line.startsWith('::warning title=Architecture debt introduced::'));
     expect(debtWarnings).toHaveLength(21);
     expect(debtWarnings[19]).toContain('capability.module-19.');
-    expect(debtWarnings[20]).toBe('::warning title=Architecture debt introduced::3 more new debt items have no annotation. Run rh architecture-debt --json --base abc123 to list them.');
+    expect(debtWarnings[20]).toBe('::warning title=Architecture debt introduced::3 more new debt items have no annotation. Run rh arch debt --json --base abc123 to list them.');
   });
 
   test('a coverage gap prints its reason codes and never claims that the PR has no debt', () => {
@@ -1204,7 +1204,7 @@ describe('architecture lanes', () => {
     const failed = runLane(['architecture-advisory', '--base', 'missing'], { debtExit: 1 });
     expect(failed.status, failed.stderr).toBe(0);
     expect(failed.checked).toBe(true);
-    expect(warnings(failed.stdout)[0]).toStartWith('::warning title=Architecture debt check failed::rh architecture-debt --json --base missing failed: ');
+    expect(warnings(failed.stdout)[0]).toStartWith('::warning title=Architecture debt check failed::rh arch debt --json --base missing failed: ');
     expect(warnings(failed.stdout)[0]).toContain('missing does not resolve to a commit');
     expect(warnings(failed.stdout)[1]).toStartWith('::warning title=Architecture check failed::');
 

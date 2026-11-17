@@ -11,7 +11,7 @@ export interface ProjectionCommandOptions {
 const actions = () => import('./architecture-projection-actions');
 
 export function buildArchitectureProjectionCommand(): Command {
-  const command = new Command('architecture-projection').description('Run the configured deterministic architecture projection provider');
+  const command = new Command('projection').description('Run the configured deterministic architecture projection provider');
   command.command('policy').requiredOption('--json', 'Output the global execution policy without invoking the provider').action(async () => (await actions()).policy());
   command.command('status').requiredOption('--json', 'Output readiness JSON').action(async () => (await actions()).status());
   for (const name of ['check', 'plan', 'apply'] as const) {
@@ -38,5 +38,13 @@ export function buildArchitectureProjectionCommand(): Command {
   command.command('publish').argument('<mode>', 'status, once or follow')
     .description('Run the archctx rolling writer for this repository: remote origin, base main, branch archctx/projection, publisher gh')
     .action(async (mode: string) => (await actions()).publish(mode));
+  // Set after the subcommands so that they keep strict option parsing. A registered subcommand wins;
+  // another archctx projection subcommand goes through the `rh arch` disposition check.
+  command.argument('[subcommand]', 'archctx projection subcommand').argument('[args...]', 'arguments passed to archctx unchanged')
+    .allowUnknownOption()
+    .action(async (subcommand: string | undefined) => {
+      if (subcommand === undefined) command.help({ error: true });
+      (await import('./arch-actions')).runArch(process.argv.slice(process.argv.indexOf('arch') + 1));
+    });
   return command;
 }

@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import { buildStrategyCommand } from './commands/strategy';
-import { buildModuleCommand } from './commands/module';
 import { CLI_NAME } from '../core/skill-surface/cli-name';
 import { globalRuntimeScope, parentRuntimeTransactionContext, withRuntimeTransactionLock } from '../effects/locking/runtime-transaction-lock';
 import { captureConfigurationRestores, hostConfigurationRoot } from './installer/configuration-ownership';
@@ -29,7 +28,6 @@ import { formatDoctor, runDoctor, type DoctorPorts } from './commands/doctor';
 import { buildSetupCommand } from './commands/setup-check';
 import { buildReviewCommand } from './commands/review';
 import { buildUpgradeCommand } from './commands/upgrade';
-import { buildToolsCommand } from './commands/tools';
 import { registerArchitecturePorts } from '../core/architecture/contracts';
 import { assertPluginCommandSelected, declareArchitectureSelection, pluginSelected, readRecordedSelection, recordedPlugins } from './installer/architecture-selection';
 import { buildHerdrCommand } from './commands/herdr';
@@ -47,7 +45,6 @@ import { githubRemoteRepository } from '../core/board/source';
 import { attentionHostPorts, boardHostPorts } from '../effects/terminal/herdr-core';
 import { buildFleetCommand } from './commands/fleet';
 import { buildBotsCommand } from './commands/bots';
-import { buildRefactorCommand } from './commands/refactor';
 import { buildOperatorCommand } from './commands/operator';
 import { buildWorktreesCommand } from './commands/worktrees';
 import { buildSeatsCommand } from './commands/seats';
@@ -57,6 +54,9 @@ import { buildRulesCommand } from './commands/rules';
 import { buildArchCommand } from './commands/arch';
 import { buildArchitectureDebtCommand } from './commands/architecture-debt';
 import { buildArchitectureProjectionCommand } from './commands/architecture-projection';
+import { buildModuleCommand } from './commands/module';
+import { buildRefactorCommand } from './commands/refactor';
+import { buildCodegraphCommand } from './commands/tools';
 import { buildRetentionCommand, type RetentionPorts } from './commands/retention';
 import { MCP_AUDIT_LOG_RELATIVE_PATH } from '../core/public-projections/mcp-audit-log';
 import { TASK_INBOX_V2_RELATIVE_PATH } from '../core/fleet/task-inbox-layout';
@@ -962,7 +962,6 @@ export function buildProgram(): Command {
     pluginCommand(command, 'peer-runtime', `review ${name}`);
   }
   program.addCommand(review);
-  program.addCommand(pluginCommand(buildModuleCommand(), 'architecture'));
   program.addCommand(buildSetupCommand(CLI_PORTS.doctor));
   program.addCommand(buildUpgradeCommand());
 
@@ -981,13 +980,6 @@ export function buildProgram(): Command {
       process.exit(rawOpts.strict === true && strictFailure ? 1 : 0);
     });
 
-  const tools = buildToolsCommand();
-  for (const group of ['ensure', 'configure']) {
-    const codegraph = tools.commands.find(command => command.name() === group)?.commands.find(command => command.name() === 'codegraph');
-    if (!codegraph) throw new Error(`tools ${group} codegraph is not defined`);
-    pluginCommand(codegraph, 'architecture', `tools ${group} codegraph`);
-  }
-  program.addCommand(tools);
   program.addCommand(pluginCommand(buildHerdrCommand(), 'peer-runtime'));
   program.addCommand(pluginCommand(buildEventsCommand(), 'peer-runtime'));
   program.addCommand(buildCapabilityContextCommand());
@@ -1020,10 +1012,10 @@ export function buildProgram(): Command {
   program.addCommand(pluginCommand(buildCatchUpCommand(), 'operator'));
   program.addCommand(buildQuotaCommand());
   program.addCommand(buildRulesCommand(boardHostPorts()));
-  program.addCommand(pluginCommand(buildRefactorCommand(), 'architecture'));
-  program.addCommand(pluginCommand(buildArchCommand(), 'architecture'));
-  program.addCommand(pluginCommand(buildArchitectureProjectionCommand(), 'architecture'));
-  program.addCommand(pluginCommand(buildArchitectureDebtCommand(), 'architecture'));
+  const arch = buildArchCommand();
+  // addCommand, not command(): a child made by command() copies the settings of `rh arch` and would lose its help and strict options.
+  for (const child of [buildArchitectureProjectionCommand(), buildArchitectureDebtCommand(), buildModuleCommand(), buildRefactorCommand(), buildCodegraphCommand()]) arch.addCommand(child);
+  program.addCommand(pluginCommand(arch, 'architecture'));
   program.addCommand(pluginCommand(buildStrategyCommand(), 'strategy-memory'));
   program.addCommand(buildCommandsCommand(() => program));
   program.addCommand(buildRetentionCommand(CLI_PORTS.retention));

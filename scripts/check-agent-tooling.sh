@@ -149,8 +149,8 @@ const AGENT_FLEET_DEFAULT_MANAGED = ["explorer", "deep-reasoner", "fast-worker",
 const AGENT_FLEET_INSTALL_COMMAND = "rh run install-agent-fleet";
 const AGENT_FLEET_USER_MANAGED_RECEIPT_PATH = path.join(HOME, ".repo-harness", "agent-fleet-user-managed.json");
 const CODEGRAPH_PACKAGE = "@colbymchenry/codegraph";
-const CODEGRAPH_GLOBAL_INSTALL_COMMAND = `bun add -g ${CODEGRAPH_PACKAGE} && rh tools configure codegraph --target codex --location global`;
-const CODEGRAPH_MCP_CONFIGURE_COMMAND = "rh tools configure codegraph --target <codex|claude|both> --location global";
+const CODEGRAPH_GLOBAL_INSTALL_COMMAND = `bun add -g ${CODEGRAPH_PACKAGE} && rh arch codegraph configure --target codex --location global`;
+const CODEGRAPH_MCP_CONFIGURE_COMMAND = "rh arch codegraph configure --target <codex|claude|both> --location global";
 const CODEGRAPH_LOCAL_INSTALL_COMMAND = "bun install";
 const CODEGRAPH_ENSURE_COMMAND = [
   "scripts/ensure-codegraph.sh",
@@ -163,7 +163,7 @@ const ARCHCTX_CONTRACTS_PACKAGE = "archctx-contracts";
 const ARCHCTX_MODEL_DIR = ".archcontext/model";
 const ARCHCTX_NODES_DIR = ".archcontext/model/nodes";
 const ARCHCTX_CAPABILITY_SOURCE_KEY = ".ai/harness/policy.json#context.capability_source";
-const ARCHCTX_STATUS_COMMAND = "rh architecture-projection status --json";
+const ARCHCTX_STATUS_COMMAND = "rh arch projection status --json";
 const WAZA_STAGING_ROOT = path.join(HOME, ".agents");
 const WAZA_STAGING_DIR = path.join(WAZA_STAGING_ROOT, "skills");
 const WAZA_STAGING_RULES_DIR = path.join(WAZA_STAGING_ROOT, "rules");
@@ -1921,7 +1921,7 @@ function bunExecutable() {
  * node_modules copy is outside the Bun global install and is not the managed
  * link. The
  * runnable command, with the resolved Node path, comes from
- * `rh architecture-projection status --json`. The selection is the
+ * `rh arch projection status --json`. The selection is the
  * one that the shell gate read above: without `selected` the probe loads no
  * provider, `selected` is false, and the CodeGraph and archctx detectors
  * resolve and run no binary.

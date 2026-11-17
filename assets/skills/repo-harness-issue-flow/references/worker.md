@@ -107,7 +107,7 @@ Each hit needs a line in the issue, or it goes.
 
 ### 3.1 Architecture loop
 
-This loop applies when `rh architecture-projection status --json` reports
+This loop applies when `rh arch projection status --json` reports
 `modelAuthority.source` `archcontext` and `modelAuthority.ready` `true`.
 Otherwise skip it.
 
@@ -184,7 +184,7 @@ ArchContext projection of the capability document.
 2. Run the preview on a path of the capability footprint:
 
    ```bash
-   rh architecture-projection plan --json --changed-path <path in the capability footprint>
+   rh arch projection plan --json --changed-path <path in the capability footprint>
    ```
 
    The request renders every capability document, so `--changed-path` does

@@ -107,7 +107,7 @@ function runConfigure(target: string, options: RunConfigureOptions = {}) {
     writeFakeSkillsCli(envRoot.fakeBin);
     recordPluginSelection({ HOME: envRoot.home });
 
-    const res = spawnSync("bun", [CLI, "tools", "configure", "codegraph", "--target", target, "--location", "global", "--json", "--repo", ROOT], {
+    const res = spawnSync("bun", [CLI, "arch", "codegraph", "configure", "--target", target, "--location", "global", "--json", "--repo", ROOT], {
       cwd: ROOT,
       encoding: "utf-8",
       env: {
@@ -143,7 +143,7 @@ function runConfigure(target: string, options: RunConfigureOptions = {}) {
   }
 }
 
-describe("tools configure codegraph", () => {
+describe("arch codegraph configure", () => {
   test("configures Codex through the CodeGraph target adapter", () => {
     const { res, log, codexConfigAfter } = runConfigure("codex");
     expect(res.status).toBe(0);
@@ -266,13 +266,13 @@ describe("architecture plugin guard", () => {
     try {
       writeFakeCodeGraph(envRoot.fakeBin, logFile);
       const commands = [
-        ["architecture-projection", "status", "--json"],
-        ["architecture-debt", "--json"],
-        ["refactor", "recommendations", "--repo", ROOT, "--json"],
-        ["tools", "ensure", "codegraph", "--repo", ROOT],
-        ["tools", "configure", "codegraph", "--target", "codex", "--location", "global", "--repo", ROOT],
-        ["module", "list", "--json"],
-        ["module", "review-prompt", "capability.runtime-harness.architecture", "--json"],
+        ["arch", "projection", "status", "--json"],
+        ["arch", "debt", "--json"],
+        ["arch", "refactor", "recommendations", "--repo", ROOT, "--json"],
+        ["arch", "codegraph", "ensure", "--repo", ROOT],
+        ["arch", "codegraph", "configure", "--target", "codex", "--location", "global", "--repo", ROOT],
+        ["arch", "module", "list", "--json"],
+        ["arch", "module", "review-prompt", "capability.runtime-harness.architecture", "--json"],
       ];
       // No install state, then a recorded selection without the plugin.
       for (const [selection, repair] of [
@@ -281,14 +281,14 @@ describe("architecture plugin guard", () => {
       ] as const) {
         if (selection) recordPluginSelection({ HOME: envRoot.home }, selection);
         for (const args of commands) {
-          const name = args[0] === "tools" ? args.slice(0, 3).join(" ") : args[0];
+          const name = args.slice(0, 3).join(" ");
           const res = spawnSync("bun", [CLI, ...args], {
             cwd: ROOT, encoding: "utf-8",
             env: { ...process.env, HOME: envRoot.home, PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}` },
           });
           expect(res.status, `${repair}: ${name}`).toBe(1);
           expect(res.stdout, name).toBe("");
-          expect(res.stderr, name).toContain(`rh ${name} needs the architecture plugin: the architecture plugin is not selected; run: ${repair}\n`);
+          expect(res.stderr, name).toContain(`rh arch needs the architecture plugin: the architecture plugin is not selected; run: ${repair}\n`);
         }
       }
       expect(() => readFileSync(logFile, "utf-8")).toThrow();

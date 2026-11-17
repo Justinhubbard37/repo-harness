@@ -82,7 +82,7 @@ with_architecture_home() {
 
 # Runs the read-only architecture check and writes its JSON result to $1.
 run_architecture_check() {
-  with_architecture_home bun src/cli/index.ts architecture-projection render-check --json > "$1"
+  with_architecture_home bun src/cli/index.ts arch projection render-check --json > "$1"
 }
 
 # Prints the committer time of the oldest unpublished main commit for the
@@ -201,17 +201,17 @@ if [[ "$lane" == architecture-advisory ]]; then
   debt_err="$(mktemp /tmp/rh-arch-debt-err-XXXXXX)"
   debt_records=""
   debt_status=0
-  with_architecture_home bun src/cli/index.ts architecture-debt --json --base "$base" > "$debt_json" 2> "$debt_err" || debt_status=$?
+  with_architecture_home bun src/cli/index.ts arch debt --json --base "$base" > "$debt_json" 2> "$debt_err" || debt_status=$?
   if [[ "$debt_status" -eq 0 ]]; then
     # One record per line: "log<TAB>text" or "warn<TAB>title<TAB>message".
     # Only the debt items that are new at HEAD get annotations. A coverage gap
     # is printed with its reason codes and is never reported as "no debt".
-    debt_records="$(bun -e 'const { managedArchctxAction } = await import("./src/core/architecture/projection.ts"); const r = JSON.parse(await Bun.file(process.argv[1]).text()); if (r.kind !== "repo-harness-architecture-debt" || r.base === null || !Array.isArray(r.introduced) || !Array.isArray(r.resolvedIds)) throw new Error("not an architecture debt report with a base"); const field = (value) => String(value).replace(/\s+/g, " ").trim(); const out = []; const log = (text) => out.push(["log", field(text)].join("\t")); const warn = (title, message) => out.push(["warn", title, field(message)].join("\t")); const head = r.head.debt; log(`Architecture debt: head coverage ${head.coverage}. Introduced ${r.introduced.length}. Resolved ${r.resolvedIds.length}.`); for (const [name, coverage, codes] of [["Head", head.coverage, head.coverageReasonCodes], ["Base", r.base.coverage, r.base.coverageReasonCodes]]) if (coverage !== "complete") log(`${name} coverage is ${coverage}. Reason codes: ${codes.join(", ") || "none"}. Debt outside the covered checks is not measured.`); if (r.introduced.length === 0 && head.coverage === "complete" && r.base.coverage === "complete") log("No new architecture debt."); const cap = 20; for (const item of r.introduced.slice(0, cap)) { const subjects = item.capabilityIds.length > 0 ? item.capabilityIds : item.paths; warn("Architecture debt introduced", `${item.kind} (${item.reasonCode}) in ${subjects.join(", ") || "the repository"}. Action: ${managedArchctxAction(item.action)}`); } if (r.introduced.length > cap) warn("Architecture debt introduced", `${r.introduced.length - cap} more new debt items have no annotation. Run rh architecture-debt --json --base ${r.base.ref} to list them.`); console.log(out.join("\n"));' "$debt_json" 2>> "$debt_err")" || debt_status=$?
+    debt_records="$(bun -e 'const { managedArchctxAction } = await import("./src/core/architecture/projection.ts"); const r = JSON.parse(await Bun.file(process.argv[1]).text()); if (r.kind !== "repo-harness-architecture-debt" || r.base === null || !Array.isArray(r.introduced) || !Array.isArray(r.resolvedIds)) throw new Error("not an architecture debt report with a base"); const field = (value) => String(value).replace(/\s+/g, " ").trim(); const out = []; const log = (text) => out.push(["log", field(text)].join("\t")); const warn = (title, message) => out.push(["warn", title, field(message)].join("\t")); const head = r.head.debt; log(`Architecture debt: head coverage ${head.coverage}. Introduced ${r.introduced.length}. Resolved ${r.resolvedIds.length}.`); for (const [name, coverage, codes] of [["Head", head.coverage, head.coverageReasonCodes], ["Base", r.base.coverage, r.base.coverageReasonCodes]]) if (coverage !== "complete") log(`${name} coverage is ${coverage}. Reason codes: ${codes.join(", ") || "none"}. Debt outside the covered checks is not measured.`); if (r.introduced.length === 0 && head.coverage === "complete" && r.base.coverage === "complete") log("No new architecture debt."); const cap = 20; for (const item of r.introduced.slice(0, cap)) { const subjects = item.capabilityIds.length > 0 ? item.capabilityIds : item.paths; warn("Architecture debt introduced", `${item.kind} (${item.reasonCode}) in ${subjects.join(", ") || "the repository"}. Action: ${managedArchctxAction(item.action)}`); } if (r.introduced.length > cap) warn("Architecture debt introduced", `${r.introduced.length - cap} more new debt items have no annotation. Run rh arch debt --json --base ${r.base.ref} to list them.`); console.log(out.join("\n"));' "$debt_json" 2>> "$debt_err")" || debt_status=$?
   fi
   # A workflow command must start its own line, so end the output with a newline.
   printf '%s\n' "$(cat "$debt_err")" >&2
   if [[ "$debt_status" -ne 0 ]]; then
-    warn "Architecture debt check failed" "rh architecture-debt --json --base $base failed: $(tail -n 5 "$debt_err")"
+    warn "Architecture debt check failed" "rh arch debt --json --base $base failed: $(tail -n 5 "$debt_err")"
   else
     while IFS=$'\t' read -r debt_record debt_title debt_message; do
       if [[ "$debt_record" == warn ]]; then
@@ -226,12 +226,12 @@ if [[ "$lane" == architecture-advisory ]]; then
   echo "[ci] architecture hand edits"
   arch_json="$(mktemp /tmp/rh-arch-check-XXXXXX)"
   arch_status=0
-  with_architecture_home bun src/cli/index.ts architecture-projection hand-edits --json --base "$base" > "$arch_json" || arch_status=$?
+  with_architecture_home bun src/cli/index.ts arch projection hand-edits --json --base "$base" > "$arch_json" || arch_status=$?
   if [[ "$arch_status" -eq 0 ]]; then
     arch_lines="$(bun -e 'const r = JSON.parse(await Bun.file(process.argv[1]).text()); if (!Array.isArray(r.edits) || r.edits.some(e => typeof e.path !== "string" || typeof e.reasonCode !== "string")) throw Error("Invalid hand-edit report"); console.log(r.edits.map(e => `${e.path}: ${e.reasonCode}`.replace(/\s+/g, " ")).join("\n"));' "$arch_json")" || arch_status=$?
   fi
   if [[ "$arch_status" -ne 0 ]]; then
-    warn "Architecture check failed" "rh architecture-projection hand-edits --json --base $base failed. Read the job log."
+    warn "Architecture check failed" "rh arch projection hand-edits --json --base $base failed. Read the job log."
   elif [[ -n "$arch_lines" ]]; then
     while IFS= read -r edit; do
       warn "Architecture generated output hand edited" "$edit. Keep model and human prose changes in this PR; the archctx rolling writer owns generated output."

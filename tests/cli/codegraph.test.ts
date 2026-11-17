@@ -56,7 +56,7 @@ function writeFakeSkillsCli(fakeBin: string) {
   );
 }
 
-describe("tools ensure codegraph", () => {
+describe("arch codegraph ensure", () => {
   test("--check is read-only and exposes the shared readiness report", () => {
     const envRoot = setupFakeEnvironment("repo-harness-tools-codegraph");
     const logFile = join(envRoot.root, "tool.log");
@@ -66,7 +66,7 @@ describe("tools ensure codegraph", () => {
       writeFakeCodeGraph(envRoot.fakeBin, logFile);
       writeFakeSkillsCli(envRoot.fakeBin);
 
-      const res = spawnSync("bun", [CLI, "tools", "ensure", "codegraph", "--check", "--json", "--repo", ROOT], {
+      const res = spawnSync("bun", [CLI, "arch", "codegraph", "ensure", "--check", "--json", "--repo", ROOT], {
         cwd: ROOT,
         encoding: "utf-8",
         env: {
@@ -97,7 +97,7 @@ describe("tools ensure codegraph", () => {
   }, 15000);
 
   test("human output names CodeGraph status", () => {
-    const res = spawnSync("bun", [CLI, "tools", "ensure", "codegraph", "--check"], {
+    const res = spawnSync("bun", [CLI, "arch", "codegraph", "ensure", "--check"], {
       cwd: ROOT,
       env: pluginSelectionEnv(),
       encoding: "utf-8",
@@ -127,7 +127,7 @@ test('standalone CodeGraph configure records restorable MCP provenance', () => {
     mkdirSync(join(fixture.home, '.codex'));
     writeFileSync(join(fixture.home, '.codex/config.toml'), 'model = "user-model"\n');
     const env = { ...process.env, HOME: fixture.home, PATH: `${fixture.fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0', BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
-    const configured = spawnSync('bun', [CLI, 'tools', 'configure', 'codegraph', '--target', 'codex', '--location', 'global', '--json', '--repo', ROOT], { cwd: ROOT, env, encoding: 'utf8' });
+    const configured = spawnSync('bun', [CLI, 'arch', 'codegraph', 'configure', '--target', 'codex', '--location', 'global', '--json', '--repo', ROOT], { cwd: ROOT, env, encoding: 'utf8' });
     expect(configured.status, configured.stderr).toBe(0);
     const receiptRaw = readFileSync(join(fixture.home, '.repo-harness/configuration-restore.json'), 'utf8');
     const receipt = JSON.parse(receiptRaw);

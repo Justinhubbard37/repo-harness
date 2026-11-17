@@ -217,8 +217,8 @@ for scope and recorded verification.
 ### Refactor recommendations
 
 ```bash
-rh refactor recommendations [--import-node-limit <n>]   # measured suggestions with evidence
-rh refactor decide <id> accept|defer|reject --reason "<text>" [--import-node-limit <n>]
+rh arch refactor recommendations [--import-node-limit <n>]   # measured suggestions with evidence
+rh arch refactor decide <id> accept|defer|reject --reason "<text>" [--import-node-limit <n>]
 ```
 
 ArchContext measures structural problems such as cycles and direction
@@ -340,8 +340,8 @@ UX: [`docs/prds/DESIGN-operator-console-uiux.md`](prds/DESIGN-operator-console-u
 Read committed architecture facts or export a module review prompt:
 
 ```bash
-rh module list --json
-rh module review-prompt capability.runtime-harness.task-agent-host --json
+rh arch module list --json
+rh arch module review-prompt capability.runtime-harness.task-agent-host --json
 ```
 
 The prompt uses HEAD content. It reports uncommitted paths and their content

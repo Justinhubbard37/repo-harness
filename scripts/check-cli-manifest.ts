@@ -9,6 +9,7 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import type { Command, Option } from "commander";
 import { allowsUnknownOptions, effectiveOptions, implicitHelpCommand } from "../src/cli/commands/commands";
+import { archctxRefusal } from "../src/core/architecture/projection";
 import { buildProgram } from "../src/cli/index";
 
 const SCANNED = [
@@ -117,9 +118,14 @@ export function checkSpan(root: Command, span: string): string[] {
     if (current.commands.length > 0 && current.registeredArguments.length === 0) {
       return [`unknown command "rh ${[...pathTokens, token].join(" ")}"`];
     }
+    // `rh arch` and `rh arch projection` start archctx for an unregistered token; the disposition table decides whether it starts.
+    if (pathTokens[0] === "arch" && current.commands.length > 0) {
+      const refusal = archctxRefusal([...pathTokens.slice(1), token]);
+      if (refusal !== null) return [`${refusal} in "rh ${[...pathTokens, token].join(" ")}"`];
+    }
     pathOpen = false;
   }
-  if (chain.some(allowsUnknownOptions)) return [];
+  if (allowsUnknownOptions(chain[chain.length - 1])) return [];
   const path = chain.slice(1).map(command => command.name()).join(" ");
   const declared = effectiveOptions(chain);
   const findings: string[] = [];

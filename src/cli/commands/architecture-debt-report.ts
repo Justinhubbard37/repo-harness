@@ -123,7 +123,7 @@ function closeBaseCheckout(repoRoot: string, parent: string, checkout: string, o
   return issues;
 }
 
-/** `architecture-debt` loads this module only after the architecture selection check. */
+/** `rh arch debt` loads this module only after the architecture selection check. */
 export function runArchitectureDebtCommand(options: { json?: boolean; base?: string }): void {
   try {
     const output = architectureDebtReport(git(process.cwd(), ['rev-parse', '--show-toplevel']), options.base);

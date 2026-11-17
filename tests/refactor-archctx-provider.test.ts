@@ -65,7 +65,7 @@ describe("refactor archctx provider", () => {
       const message = (error as Error).message;
       expect(message).toContain("archctx refactor scan timed out after 5000 ms");
       expect(message).toContain("--timeout-ms");
-      expect(message).not.toContain("architecture-projection");
+      expect(message).not.toContain("arch projection");
       expect(message).not.toContain("request id");
     }
     try {

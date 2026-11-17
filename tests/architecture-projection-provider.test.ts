@@ -739,7 +739,7 @@ describe('package-local ArchContext projection provider', () => {
     const result = projectionCli(f, { schemaVersion: 'archcontext.envelope/v1', ok: true, requestId: 'projection.run', data: declined }, declined.requestId);
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout).majorChangeAcceptance).toBe('declined-unprovable-proof');
-    expect(result.stderr).toContain('next: rh architecture-debt --json');
+    expect(result.stderr).toContain('next: rh arch debt --json');
     expect(result.stderr).not.toMatch(/next: archctx /);
     expect(result.stderr.trim().split('\n').filter(line => line.startsWith('archctx '))).toHaveLength(1);
   });
@@ -755,9 +755,9 @@ describe('package-local ArchContext projection provider', () => {
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout).humanActions[0].reasonCode).toBe('unresolved-major-change');
     expect(result.stderr).toContain('unresolved-major-change [capability.test.core]');
-    expect(result.stderr).toContain('rh architecture-projection publish status');
+    expect(result.stderr).toContain('rh arch projection publish status');
     expect(result.stderr).toContain('rolling PR');
-    expect(result.stderr).not.toContain('architecture-projection apply');
+    expect(result.stderr).not.toContain('arch projection apply');
   });
 
   test('every human-action reason code names itself and never suggests apply', () => {
@@ -765,7 +765,7 @@ describe('package-local ArchContext projection provider', () => {
       const line = humanActionLine({ reasonCode, affectedNodeIds: ['capability.test.core'], path: reasonCode === 'orphaned-document-review' ? 'docs/architecture/old.md' : undefined, requestPayloadDigest: `sha256:${'0'.repeat(64)}` });
       expect(line).toContain(`human action: ${reasonCode} [capability.test.core`);
       expect(line).toContain('; next: ');
-      expect(line).not.toContain('architecture-projection apply');
+      expect(line).not.toContain('arch projection apply');
       expect(line).not.toMatch(/next: archctx /);
       expect(line).not.toContain('\n');
     }
@@ -1216,7 +1216,7 @@ describe('package-local ArchContext projection provider', () => {
     // Run from a subdirectory: the command must target the git top level.
     const nested = join(repo, 'nested');
     mkdirSync(nested);
-    const cli = spawnSync(process.execPath, [CLI_ENTRY, 'architecture-projection', 'publish', 'status'], { cwd: nested, env, encoding: 'utf8', timeout: 60_000 });
+    const cli = spawnSync(process.execPath, [CLI_ENTRY, 'arch', 'projection', 'publish', 'status'], { cwd: nested, env, encoding: 'utf8', timeout: 60_000 });
     expect(cli.status, cli.stderr).toBe(0);
     const published = JSON.parse(cli.stdout) as { ok: boolean; data: { schemaVersion: string; remote: string; base: string; worktreePath: string } };
     expect(published.ok).toBe(true);
@@ -1233,7 +1233,7 @@ describe('package-local ArchContext projection provider', () => {
   test.each([
     ['no state dir', undefined, 'status', 'ARCHCONTEXT_STATE_DIR must be an explicit absolute path'],
     ['a relative state dir', 'writer-state', 'status', 'ARCHCONTEXT_STATE_DIR must be an explicit absolute path'],
-    ['an unknown mode', 'absolute', 'push-main', 'Usage: rh architecture-projection publish <status|once|follow>'],
+    ['an unknown mode', 'absolute', 'push-main', 'Usage: rh arch projection publish <status|once|follow>'],
   ])('publish refuses %s without creating writer state', (_case, stateDir, mode, message) => {
     const cwd = mkdtempSync(join(tmpdir(), 'repo-harness-publish-refusal-'));
     roots.push(cwd);
@@ -1242,7 +1242,7 @@ describe('package-local ArchContext projection provider', () => {
     delete env.ARCHCONTEXT_STATE_DIR;
     recordPluginSelection(env);
     if (stateDir) env.ARCHCONTEXT_STATE_DIR = stateDir === 'absolute' ? join(cwd, 'writer-state') : stateDir;
-    const result = spawnSync(process.execPath, [CLI_ENTRY, 'architecture-projection', 'publish', mode], { cwd, env, encoding: 'utf8', timeout: 60_000 });
+    const result = spawnSync(process.execPath, [CLI_ENTRY, 'arch', 'projection', 'publish', mode], { cwd, env, encoding: 'utf8', timeout: 60_000 });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(message);
     expect(result.stdout).toBe('');
@@ -1343,7 +1343,7 @@ describe('package-local ArchContext projection provider', () => {
     }));
     recordPluginSelection({ HOME: home });
     const output = execFileSync(process.execPath, [
-      join(import.meta.dir, '..', 'src', 'cli', 'index.ts'), 'architecture-projection', 'status', '--json',
+      join(import.meta.dir, '..', 'src', 'cli', 'index.ts'), 'arch', 'projection', 'status', '--json',
     ], { cwd: f.repoRoot, env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 10_000 });
     const readiness = JSON.parse(output);
     expect(readiness.projectionProvider.state).toBe('ready');

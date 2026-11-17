@@ -634,7 +634,7 @@ describe('doctor command (Phase 1C)', () => {
       expect(codexMcp.status).toBe('ok');
       expect(claudeMcp.status).toBe('warn');
       expect(claudeMcp.detail).toContain('alwaysLoad is not true');
-      expect(claudeMcp.detail).toContain('rh tools configure codegraph --target claude --location global');
+      expect(claudeMcp.detail).toContain('rh arch codegraph configure --target claude --location global');
       expect(index.status).toBe('ok');
 
       const log = fs.readFileSync(logFile, 'utf-8');

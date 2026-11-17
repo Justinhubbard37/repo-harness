@@ -12,8 +12,8 @@ Worker reference. Use only within the assigned architecture scope.
 4. Update the model and human-owned prose for the changed responsibility. Generated regions, diagrams and the projection manifest belong to the archctx rolling writer (see "Rolling writer"). Do not apply or commit generated output in a feature PR.
 5. archctx-generated Markdown Mermaid is the model's generated diagram. This skill does not hand-write diagrams or standalone HTML; use the external `mermaid` skill only to review layout and renderability of the Markdown source. The human-facing HTML map `docs/architecture/archimap.html` belongs to the `repo-harness-archimap` skill, which refreshes it after a model change.
 6. Verify with:
-   - `rh architecture-debt --json --base <review-base>` (handle debt in scope)
-   - `rh architecture-projection anchors --json` (read-only; see "Drift signals")
+   - `rh arch debt --json --base <review-base>` (handle debt in scope)
+   - `rh arch projection anchors --json` (read-only; see "Drift signals")
    - `rh run capability-resolver validate --repo <repo> --format text`
    - `bun run check:helpers` when a helper source or its standalone projection changed
    - The module reader and the review diff read the committed HEAD model, but archctx `resolve` reads the worktree model. Commit the model before a review diff.
@@ -25,10 +25,10 @@ manifest after a model PR merges. Publication is an operator step. A worker does
 not run it unless its task authorizes the push. An operator with Git and gh
 authentication for the target repo sets `ARCHCONTEXT_STATE_DIR` to one stable
 absolute path. The operator then runs
-`rh architecture-projection publish once` in the target repo, or runs
+`rh arch projection publish once` in the target repo, or runs
 `publish follow` from a repo-harness Git source checkout under a process
 supervisor; `follow` keeps that checkout at `origin/main` and does not publish
-while it cannot update. `rh architecture-projection publish status` with the same
+while it cannot update. `rh arch projection publish status` with the same
 `ARCHCONTEXT_STATE_DIR` reports the last run; another state dir reports an empty
 state. The writer pushes only the `archctx/projection` branch and opens or
 updates one rolling PR. Before that PR merges, check out its head in a clean
@@ -38,9 +38,9 @@ of the rolling PR accepts the proven major changes in it.
 
 ## Drift signals
 
-- Generated sections: `rh architecture-projection check --json`.
-  `changes[].outputChanged` reports render changes. When generated output differs, inspect `rh architecture-projection publish status` and the open rolling PR.
-- Human-written sections: `rh architecture-projection anchors --json`.
+- Generated sections: `rh arch projection check --json`.
+  `changes[].outputChanged` reports render changes. When generated output differs, inspect `rh arch projection publish status` and the open rolling PR.
+- Human-written sections: `rh arch projection anchors --json`.
   It runs `docs anchors` and writes no file. It lists cited paths that are
   missing, line numbers out of range, symbols that are missing and lines that
   moved. Fix the citations in your scope. Report the others.
@@ -78,7 +78,7 @@ write nodes.
 5. Run `rh arch validate --format json` and
    `rh arch flows check --no-sync --json`. Verify source matching with
    capability-resolver. Commit the model and human prose. After merge, an
-   operator runs `rh architecture-projection publish once` or a
+   operator runs `rh arch projection publish once` or a
    supervised `follow`, as "Rolling writer" describes, to publish the generated
    module documents. Missing docs for an unchanged node need writer repair, not
    a duplicate node.
@@ -123,9 +123,9 @@ write nodes.
 - A flow step is proven only with a relation for the exact step, a source symbol that is
   unique in its file, and a direct CodeGraph `calls` edge from source to sink.
 - A relation to another capability can change its generated page. Leave that
-  output to the rolling writer (`rh architecture-projection publish`
+  output to the rolling writer (`rh arch projection publish`
   after merge). Workers commit only their model and human prose.
-- `rh module list`, `module review-prompt` and Engineer contract
+- `rh arch module list`, `rh arch module review-prompt` and Engineer contract
   revisions read the committed HEAD snapshot. Commit the model before you verify
   them. An uncommitted model change shows in `worktree_dirty_paths`. An
   uncommitted new capability returns `capability_uncommitted`.
@@ -135,12 +135,12 @@ write nodes.
 Initial adoption is an explicit ownership migration. Its first approved generated
 baseline is separate from steady-state feature work. Subsequent generated updates
 belong to the rolling writer: after each merge, an operator runs
-`rh architecture-projection publish once` or a supervised `follow`.
+`rh arch projection publish once` or a supervised `follow`.
 
 Do not pass `--request-id` to the projection commands in this authorized adoption
 flow. repo-harness derives the default request identity from the request body.
 
-Use this flow when `architecture-projection status --json` returns a `next` step.
+Use this flow when `rh arch projection status --json` returns a `next` step.
 Then the repository has no complete ArchContext model, and `apply.enabled` is
 `false`. Do the flow in one branch. Commit the result in one pull request.
 
@@ -187,14 +187,14 @@ Then the repository has no complete ArchContext model, and `apply.enabled` is
    its declared contract files. For each capability whose contract files do not
    exist, run `rh capability-context sync --capability <id> --apply`
    with the id from that list. Commit.
-8. Run `rh architecture-projection apply --json`. A repository with an
+8. Run `rh arch projection apply --json`. A repository with an
    existing `docs/architecture/index.md` returns `adoption-required`. Then read the
    `adoptionPlanId` from the preview
    `rh arch docs adopt --profile repo-harness/v1`. The preview writes
    no file. Run
-   `rh architecture-projection adopt --json --adoption-plan-id <adoptionPlanId>`.
+   `rh arch projection adopt --json --adoption-plan-id <adoptionPlanId>`.
 9. Commit the projected `docs/architecture/` files. Run
-   `rh architecture-projection check --json` and expect `noop`.
+   `rh arch projection check --json` and expect `noop`.
 
 ## Failure Modes
 

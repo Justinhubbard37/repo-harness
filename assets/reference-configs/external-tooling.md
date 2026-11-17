@@ -462,7 +462,7 @@ is one terminal command, or explicit authorization for their agent to run the
 same command:
 
 ```bash
-bun add -g @colbymchenry/codegraph && rh tools configure codegraph --target codex --location global
+bun add -g @colbymchenry/codegraph && rh arch codegraph configure --target codex --location global
 ```
 
 This delegates host-specific MCP config to CodeGraph's target adapters for
@@ -1058,9 +1058,9 @@ identity, model files, documentation ownership and project freshness gates
 remain repository-local. Missing model/adoption evidence still blocks apply;
 the global apply mode does not authorize ownership adoption or semantic acceptance.
 
-Use `rh architecture-projection policy --json` to inspect the global
+Use `rh arch projection policy --json` to inspect the global
 source path, initialization state and effective execution settings without a
-provider process. `rh architecture-projection status --json` adds the
+provider process. `rh arch projection status --json` adds the
 exact package capability handshake and project apply readiness.
 `projectionProvider.command` is the managed invocation `[nodePath, binaryPath]`.
 Guidance runs archctx only as `rh arch <command>`, which starts the pinned
@@ -1090,9 +1090,9 @@ the projection manifest. The archctx rolling writer publishes those outputs.
 
 ### Rolling writer
 
-Run `rh architecture-projection publish <status|once|follow>` in the
+Run `rh arch projection publish <status|once|follow>` in the
 target repository. From a source checkout of repo-harness, run
-`bun <checkout>/src/cli/index.ts architecture-projection publish <mode>`, also
+`bun <checkout>/src/cli/index.ts arch projection publish <mode>`, also
 in the target repository. Run `bun install --frozen-lockfile` in the checkout
 first: a stale `node_modules` fails the archctx version check. The command
 resolves the archctx pinned by the repo-harness package and a compatible Node
@@ -1157,7 +1157,7 @@ repository's writer invocations. Keep the writer checkout and the state dir in
 one stable path that survives a reboot. Do not use a directory that the OS can
 clear, such as `/tmp/`. Do not run a second service with a different state
 root. Inspect
-`rh architecture-projection publish status` with that same state dir;
+`rh arch projection publish status` with that same state dir;
 another state dir reports an empty state. For initial setup, run `once`. If
 the archctx result reports missing code facts, read `data.worktreePath` from
 `status`, run `codegraph init -y <worktreePath>`, then run `once` again. Initialize only that
@@ -1181,7 +1181,7 @@ can still publish the unaffected targets, the run result is `published` with
 `projectionStatus: "applied-partial"`; the blocked targets keep their committed
 bytes. Treat both results as incomplete. Nothing unproven is published, and the
 model still needs the missing proof. Add it in a model PR; start from
-`rh architecture-debt --json`. The owner's GO to merge the rolling PR
+`rh arch debt --json`. The owner's GO to merge the rolling PR
 is the acceptance. repo-harness keeps no separate accept step. The rolling PR
 body records `Base: main at <sha>`. The Bot merges the rolling PR only with the
 owner's GO for its reviewed head, green checks, a passing
@@ -1207,9 +1207,9 @@ One module selects, formats and dedupes the notice. It emits at most three
 items and 800 UTF-8 bytes, with capability, model field and command on each
 item. The command is a repo-harness command, because a global install has
 no archctx on PATH. A citation item names
-`rh architecture-projection anchors --json`. Another archctx action
-names `rh architecture-debt --json`.
-Overflow points to `rh architecture-debt --json`. The marker
+`rh arch projection anchors --json`. Another archctx action
+names `rh arch debt --json`.
+Overflow points to `rh arch debt --json`. The marker
 `.ai/harness/state/agent-notice` is Git-ignored. It stores SHA-256 of JSON
 `[branch, sorted item ids, sorted unowned paths]`. Registry repositories also
 get the unowned paths that differ from the review-base merge-base. When Git
@@ -1228,10 +1228,10 @@ CI checks architecture in two jobs. The PR advisory reports new debt relative
 to the PR base, at most 20 items, and prints coverage gaps. Its item actions
 and the `apply`/`adopt` hint for a declined unprovable major change name
 repo-harness commands by the notice rule above. It then runs
-`architecture-projection hand-edits --json --base <PR base>`. This reads
+`rh arch projection hand-edits --json --base <PR base>`. This reads
 archctx `docs drift` manual-edit reason codes and warns only for paths changed
 in the PR. It does not parse generated markers. All advisory outcomes exit 0.
-The daily job runs `architecture-projection render-check --json`. It uses
+The daily job runs `rh arch projection render-check --json`. It uses
 archctx `changes[].outputChanged`. Real render drift
 or an incomplete check fails. The repair issue contains differing paths and
 human actions, and routes repair to the writer or model owner. It does not ask
@@ -1385,8 +1385,8 @@ instead. The command never creates an index, a model, a plan or a code edit.
 Read evidence and record a decision with:
 
 ```bash
-rh refactor recommendations [--json] [--import-node-limit <n>] [--timeout-ms <ms>]
-rh refactor decide <recommendation-id> accept|defer|reject --reason "<text>" [--import-node-limit <n>] [--timeout-ms <ms>]
+rh arch refactor recommendations [--json] [--import-node-limit <n>] [--timeout-ms <ms>]
+rh arch refactor decide <recommendation-id> accept|defer|reject --reason "<text>" [--import-node-limit <n>] [--timeout-ms <ms>]
 ```
 
 `recommendations` shows each open suggestion with its explanation, the metrics

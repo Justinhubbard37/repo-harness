@@ -37,7 +37,7 @@ describe("CodeGraph tooling integration", () => {
   test("shell adapter and CLI tools command share the same readiness model", () => {
     const env = pluginSelectionEnv();
     const viaScript = runJson("bash", [SCRIPT, "--check", "--json"], env);
-    const viaCli = runJson("bun", [CLI, "tools", "ensure", "codegraph", "--check", "--json"], env);
+    const viaCli = runJson("bun", [CLI, "arch", "codegraph", "ensure", "--check", "--json"], env);
 
     expect(viaScript.read_only).toBe(true);
     expect(viaCli.read_only).toBe(true);

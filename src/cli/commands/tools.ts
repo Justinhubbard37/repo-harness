@@ -1,11 +1,11 @@
 /**
- * `rh tools` — explicit tool lifecycle commands.
+ * `rh arch codegraph` — explicit CodeGraph readiness commands.
  *
  * Host adapter installation remains under `install --target`; tool readiness
  * mutation lives here so detector, installer, and MCP lifecycles stay separate.
- * The CodeGraph commands belong to the architecture plugin: the root guards
- * them by the recorded selection, and each action imports the CodeGraph code
- * only after that guard.
+ * The commands belong to the architecture plugin: `rh arch` guards them by the
+ * recorded selection, and each action imports the CodeGraph code only after
+ * that guard.
  */
 
 import { Command } from 'commander';
@@ -102,13 +102,11 @@ function parseLocation(value: string): CodegraphConfigureLocation {
   throw new Error(`invalid --location "${value}" (expected: global, local)`);
 }
 
-export function buildToolsCommand(): Command {
-  const tools = new Command('tools').description('Manage explicit external tool readiness');
-  const ensure = new Command('ensure').description('Ensure a named tool is ready');
-  const configure = new Command('configure').description('Configure a named tool for a host agent');
+export function buildCodegraphCommand(): Command {
+  const codegraph = new Command('codegraph').description('Check, ensure or configure CodeGraph readiness');
 
-  ensure
-    .command('codegraph')
+  codegraph
+    .command('ensure')
     .description('Check or ensure CodeGraph readiness for the current repo')
     .option('--json', 'Output JSON instead of human-readable text')
     .option('--check', 'Read-only readiness check; do not install, init, or sync')
@@ -131,8 +129,8 @@ export function buildToolsCommand(): Command {
       process.exit(failed ? 1 : 0);
     });
 
-  configure
-    .command('codegraph')
+  codegraph
+    .command('configure')
     .description('Configure CodeGraph MCP for Codex and/or Claude')
     .requiredOption('--target <target>', 'Target host: codex|claude|both')
     .requiredOption('--location <location>', 'Install location: global|local')
@@ -160,7 +158,5 @@ export function buildToolsCommand(): Command {
       process.exit(failed ? 1 : 0);
     });
 
-  tools.addCommand(ensure);
-  tools.addCommand(configure);
-  return tools;
+  return codegraph;
 }

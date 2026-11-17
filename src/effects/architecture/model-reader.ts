@@ -147,14 +147,14 @@ function modelReadFailure(error: unknown): ModuleReadError {
 }
 
 export interface ModuleReadOptions {
-  /** A decoded `architecture-projection check` result for this commit. */
+  /** A decoded `rh arch projection check` result for this commit. */
   freshness?: GeneratedSummaryFreshness;
 }
 export interface ModuleReviewOptions extends ModuleReadOptions {
   shard?: number;
   base?: string;
   head?: string;
-  /** A decoded `architecture-projection anchors` report. */
+  /** A decoded `rh arch projection anchors` report. */
   anchors?: DocsAnchorsReportV1;
   /** Process options for `archctx resolve` in diff mode. */
   archctx?: ArchctxProviderOptions;

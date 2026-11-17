@@ -20,7 +20,7 @@ const noCheckpoint = () => { throw new Error('checkpoint must not run'); };
 const timedOut = () => ({ status: null, signal: 'SIGTERM' as const, stdout: '', stderr: '', timedOut: true });
 const NOTICE_TIMEOUT = 'repo-harness: architecture notice: not finished in its time budget; the next hook measures again';
 const killed = () => ({ status: null, signal: 'SIGKILL' as const, stdout: '', stderr: '' });
-const STATUS = 'rh architecture-projection status --json';
+const STATUS = 'rh arch projection status --json';
 const NO_MODEL = 'no ArchContext model (.archcontext/manifest.yaml is missing)';
 const UNIGNORED = '[Architecture] notice unavailable: .ai/harness/state/ is not Git-ignored. Fix: run rh update to write the runtime-state block to the user-level Git excludes file.';
 const UNIGNORED_MESSAGE = 'Architecture: notice unavailable (.ai/harness/state/ is not Git-ignored); run rh update.';
@@ -178,7 +178,7 @@ describe('AgentNotice', () => {
     const failedRoot = fixture();
     const resolveFailed = collectAgentNotice(failedRoot, ownership(failedRoot), { env: noticeEnv(failedRoot), run: killed });
     expect(resolveFailed.content).toStartWith('[Architecture] notice unavailable (error): capability_ownership:unavailable ARCHCONTEXT_RESOLVE_FAILED: ');
-    expect(resolveFailed.systemMessage).toBe('Architecture: notice unavailable (error); run rh architecture-debt --json.');
+    expect(resolveFailed.systemMessage).toBe('Architecture: notice unavailable (error); run rh arch debt --json.');
     expect(resolveFailed.diagnostics).toStartWith('repo-harness: architecture notice unavailable: capability_ownership:unavailable ARCHCONTEXT_RESOLVE_FAILED: ');
   }, 240_000);
 
@@ -192,11 +192,11 @@ describe('AgentNotice', () => {
     const first = collectAgentNotice(root, () => ownership, options);
     expect(first.content).toContain(`[ArchitectureDebt] 1 new in ${NOTICE_CAPABILITY}`);
     expect(first.content).toContain('Run:');
-    expect(first.content).toContain('Run: rh architecture-projection anchors --json');
+    expect(first.content).toContain('Run: rh arch projection anchors --json');
     expect(first.content).not.toMatch(/Run: archctx /);
     expect(first.content).toContain('human');
     expect(Buffer.byteLength(first.content!)).toBeLessThanOrEqual(800);
-    expect(first.systemMessage).toBe(`Architecture: 1 debt item in ${NOTICE_CAPABILITY}; run rh architecture-debt --json.`);
+    expect(first.systemMessage).toBe(`Architecture: 1 debt item in ${NOTICE_CAPABILITY}; run rh arch debt --json.`);
     expect(first.diagnostics).toBeUndefined();
     const key = createHash('sha256').update(JSON.stringify(['feature', measured.report.items.map(item => item.id).sort(), []])).digest('hex');
     expect(readFileSync(join(root, '.ai/harness/state/agent-notice'), 'utf8').trim()).toBe(key);
@@ -221,7 +221,7 @@ describe('AgentNotice', () => {
     fixtureWrite(root, 'src/module/read.ts', 'export const read = () => 3;\n');
     const stale = collectAgentNotice(root, () => ownership, options).content!;
     expect(stale.split('\n').filter(line => line.startsWith('- state-machine'))).toEqual([
-      `- state-machine-stale ${NOTICE_CAPABILITY}; ${STATE_MACHINE_ID} src/module/read.ts anchor-changed. Run: rh architecture-debt --json`]);
+      `- state-machine-stale ${NOTICE_CAPABILITY}; ${STATE_MACHINE_ID} src/module/read.ts anchor-changed. Run: rh arch debt --json`]);
     fixtureWrite(root, 'src/module/read.ts', 'export const read = () => 2;\n');
     expect(collectAgentNotice(root, () => ownership, options).content).not.toContain('state-machine');
   });
@@ -261,12 +261,12 @@ describe('AgentNotice', () => {
     expect(Buffer.byteLength(rendered.content!)).toBeLessThanOrEqual(800);
     expect(rendered.content).not.toContain('�');
     expect(rendered.content!.split('\n').filter(line => line.startsWith('- '))).toHaveLength(3);
-    expect(rendered.content).toContain('(+5 more: rh architecture-debt --json)');
+    expect(rendered.content).toContain('(+5 more: rh arch debt --json)');
     expect(rendered.content).toContain('human prose');
-    expect(rendered.content).toContain('Run: rh architecture-projection anchors --json');
+    expect(rendered.content).toContain('Run: rh arch projection anchors --json');
     const huge = renderAgentNotice({ ...report, items: [{ ...item, action: 'x'.repeat(1024) }] })!;
     expect(Buffer.byteLength(huge.content!)).toBeLessThanOrEqual(800);
-    expect(huge.content).toContain('(+1 more: rh architecture-debt --json)');
+    expect(huge.content).toContain('(+1 more: rh arch debt --json)');
     expect(huge.content).not.toContain('Run: x');
     expect(renderAgentNotice({ ...report, items: [] })).toBeNull();
   });
@@ -276,18 +276,18 @@ describe('AgentNotice', () => {
     const report = checkpointArchitectureDebt(root, noticeOwnership(root), { env: noticeEnv(root) })!.report;
     const item = report.items.find(entry => entry.kind === 'stale-anchor')!;
     const anchors = renderAgentNotice({ ...report, items: [{ ...item, action: 'archctx docs anchors --json' }] })!;
-    expect(anchors.content).toContain('Run: rh architecture-projection anchors --json');
+    expect(anchors.content).toContain('Run: rh arch projection anchors --json');
     expect(anchors.content).not.toContain('archctx docs anchors');
     expect(anchors.content).not.toMatch(/Run: archctx /);
     const padded = renderAgentNotice({ ...report, items: [{ ...item, action: '  archctx docs anchors --json\n' }] })!;
-    expect(padded.content).toContain('Run: rh architecture-projection anchors --json');
+    expect(padded.content).toContain('Run: rh arch projection anchors --json');
     expect(padded.content).not.toContain('archctx docs anchors');
     const bare = renderAgentNotice({ ...report, items: [{ ...item, action: '\tarchctx\n' }] })!;
-    expect(bare.content).toEndWith('Run: rh architecture-debt --json');
+    expect(bare.content).toEndWith('Run: rh arch debt --json');
     // archctx 0.9.1 gives ownership items this action. repo-harness has no equivalent command.
     const plan = 'archctx plan --id changeset.<id> --operations-file <ownership-operations.json>';
     const owner = renderAgentNotice({ ...report, items: [{ ...item, kind: 'unowned-path', action: plan, details: { modelField: 'source.include/source.exclude/parent' } }] })!;
-    expect(owner.content).toContain('Run: rh architecture-debt --json');
+    expect(owner.content).toContain('Run: rh arch debt --json');
     expect(owner.content).not.toContain('archctx plan');
   });
 
@@ -379,7 +379,7 @@ describe('AgentNotice', () => {
     const env = noticeEnv(root);
     const failed = collectAgentNotice(root, () => ownership, { env, run: killed });
     expect(failed.content).toBe('[Architecture] notice unavailable (error): archctx checkpoint process failed: signal SIGKILL');
-    expect(failed.systemMessage).toBe('Architecture: notice unavailable (error); run rh architecture-debt --json.');
+    expect(failed.systemMessage).toBe('Architecture: notice unavailable (error); run rh arch debt --json.');
     expect(failed.diagnostics!.trim().split('\n')).toHaveLength(1);
     expect(existsSync(join(root, '.ai/harness/state/agent-notice'))).toBe(false);
     const repeated = collectAgentNotice(root, () => ownership, { env, run: killed });

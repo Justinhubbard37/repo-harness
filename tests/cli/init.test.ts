@@ -721,7 +721,7 @@ describe("init command", () => {
       expect(codegraphStep?.status).toBe("failed");
       expect(codegraphStep?.detail).toContain("index unavailable");
       expect(codegraphStep?.stderr).toContain("install with: bun add -g @colbymchenry/codegraph");
-      expect(codegraphStep?.stderr).toContain("rh tools configure codegraph --target codex --location global");
+      expect(codegraphStep?.stderr).toContain("rh arch codegraph configure --target codex --location global");
       expect(codegraphStep?.stderr).toContain("then run: codegraph init -i . && codegraph sync .");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
