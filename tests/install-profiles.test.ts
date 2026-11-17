@@ -55,6 +55,7 @@ import { HC_MIN_VERSION } from '../src/core/terminal/herdr-pin';
 import { openHostConfigGate } from '../src/effects/host-config/gate';
 import { hostConfigPaths } from '../src/effects/host-config/store';
 import { tomlFragment } from '../src/core/host-config/toml-fragment';
+import { currentProcessStartTime } from '../src/effects/locking/process-start-time';
 
 const ROOT = join(import.meta.dir, '..');
 const CLI = join(ROOT, 'src/cli/index.ts');
@@ -910,6 +911,48 @@ describe('install selection', () => {
     expect(after).toBeDefined();
     expect(after).not.toBe(before);
     expect(installStateStatus(refreshed, env).drift.status).toBe('consistent');
+  }));
+
+  test('the next locked transaction settles the copies of a killed install: equal ones go, a changed file moves to the vault, others stay', () => withHome((env) => {
+    const home = env.HOME!;
+    const transactions = join(home, '.repo-harness', 'transactions');
+    const claudeJson = join(home, '.claude.json');
+    writePath(claudeJson, '{"token":"synthetic"}\n');
+    // A real install transaction in a child process that dies after its copies.
+    const killed = spawnSync(process.execPath, ['-e', `const ip = await import(${JSON.stringify(join(ROOT, 'src/cli/installer/install-profile.ts'))}); const env = JSON.parse(process.env.PROBE_ENV); ip.beginInstallHostTransaction(ip.installProfileHostMutationPaths(env), env); process.kill(process.pid, 'SIGKILL');`],
+      { env: { ...env, PROBE_ENV: JSON.stringify(env) }, encoding: 'utf-8' });
+    expect(killed.signal, killed.stderr).toBe('SIGKILL');
+    const [orphan] = readdirSync(transactions).filter((name) => name.startsWith('install-'));
+    // The killed run had written over ~/.claude.json: its copy is the only preimage.
+    writeFileSync(claudeJson, '{"token":"changed"}\n');
+    const outside = join(home, 'outside');
+    writePath(join(outside, 'keep'), 'keep\n');
+    const dead = JSON.stringify({ pid: killed.pid, start_time: null, paths: [outside] });
+    const rows = {
+      changed: { 'owner.json': dead, '0/keep': 'before\n' },
+      live: { 'owner.json': JSON.stringify({ pid: process.pid, start_time: currentProcessStartTime(), paths: [claudeJson] }), '0': 'copy\n' },
+      unrecorded: { '0': 'copy\n' },
+      retained: { 'manifest.json': '{}\n', '0': 'copy\n' },
+    };
+    for (const [name, files] of Object.entries(rows)) for (const [file, text] of Object.entries(files)) writePath(join(transactions, `install-${name}`, file), text);
+    symlinkSync(outside, join(transactions, 'install-link'), 'dir');
+    writePath(join(transactions, '.staging-killed', 'owner.json'), dead);
+
+    commitInstallHostTransaction(beginInstallHostTransaction(installProfileHostMutationPaths(env), env));
+    expect(readdirSync(transactions).filter((name) => /^(install-|\.staging-)/.test(name)).sort(), orphan).toEqual(['install-changed', 'install-link', 'install-live', 'install-retained', 'install-unrecorded']);
+    expect(readdirSync(join(transactions, 'install-changed')).sort()).toEqual(['0', 'owner.json']);
+    const vault = join(hostConfigPaths(env).vault, createHash('sha256').update('{"token":"synthetic"}\n').digest('hex'));
+    expect(readFileSync(vault, 'utf-8')).toBe('{"token":"synthetic"}\n');
+    expect([readFileSync(join(outside, 'keep'), 'utf-8'), readFileSync(claudeJson, 'utf-8')]).toEqual(['keep\n', '{"token":"changed"}\n']);
+  }));
+
+  test('a rollback keeps a host path whose backup is missing and reports it', () => withHome((env) => {
+    const path = join(env.HOME!, 'surface');
+    writeFileSync(path, 'after\n');
+    const transaction = beginInstallHostTransaction([path], env);
+    rmSync(transaction.snapshots[0]!.backup_path!);
+    expect(() => rollbackInstallHostTransaction(transaction)).toThrow('is missing');
+    expect(readFileSync(path, 'utf-8')).toBe('after\n');
   }));
 
   test('host transaction restores prior bytes and removes later mutations', () => withHome((env) => {
