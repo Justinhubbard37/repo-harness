@@ -11,7 +11,8 @@ import { inspectWorkflowMarker } from '../../src/effects/adoption/workflow-marke
 import { HOST_RENDERERS, type HookOutcome } from '../../src/cli/hook/hook-protocol';
 import { ARCHCONTEXT_NODE_RANGE } from 'archctx-contracts';
 import { ARCHCTX_REQUIRED_VERSION } from '../../src/core/architecture/projection';
-import { checkpointArchitectureDebt } from '../../src/effects/architecture/archctx-provider';
+import { checkpointArchitectureDebt, resolveCompatibleNodeRuntime } from '../../src/effects/architecture/archctx-provider';
+import { renderAgentNotice } from '../../src/cli/hook/agent-notice';
 import { agentNoticeFixture, noticeEnv, noticeOwnership } from '../helpers/agent-notice';
 import { fixtureGit, fixtureWrite } from '../helpers/module-repository';
 
@@ -111,34 +112,60 @@ function clean(root: string): void {
 }
 
 describe('typed hook runtime', () => {
-  test('SessionStart delivers task posture from a local prepare process; a timeout preserves debt and exits zero', () => {
-    const root = agentNoticeFixture();
-    try {
-      fixtureGit(root, ['checkout', '-qb', 'feat/2874-session-posture']);
-      const report = checkpointArchitectureDebt(root, noticeOwnership(root), { env: noticeEnv(root) })!.report;
-      const consumer = join(root, 'home/consumer');
-      fixtureWrite(consumer, 'node_modules/archctx/package.json', JSON.stringify({ name: 'archctx', version: ARCHCTX_REQUIRED_VERSION,
-        engines: { node: ARCHCONTEXT_NODE_RANGE }, bin: { archctx: 'bin.mjs' } }));
-      const source = join(import.meta.dir, '../../src');
-      const launcher = join(root, 'home/session.ts');
-      fixtureWrite(root, 'home/session.ts', `
-        import { registerArchitecturePorts, ARCHITECTURE_CONTRACT_VERSION } from ${JSON.stringify(join(source, 'core/architecture/contracts.ts'))};
-        import { ARCHITECTURE_PROVIDERS } from ${JSON.stringify(join(source, 'effects/architecture/providers.ts'))};
-        import { collectAgentNotice } from ${JSON.stringify(join(source, 'cli/hook/agent-notice.ts'))};
-        import { runHook } from ${JSON.stringify(join(source, 'cli/hook/runtime.ts'))};
-        registerArchitecturePorts({ ...ARCHITECTURE_PROVIDERS, notice: { contractVersion: ARCHITECTURE_CONTRACT_VERSION,
-          collect: (root, ownership, options, point) => collectAgentNotice(root, ownership, { ...options, consumerRoot: ${JSON.stringify(consumer)} }, point) } });
-        process.exit(runHook({ event: 'SessionStart', routeId: 'default', cwd: ${JSON.stringify(root)}, env: process.env }).exitCode);
-      `);
-      let debt = '';
-      for (const slow of [false, true]) {
-        rmSync(join(root, '.ai/harness/state/agent-notice'), { force: true });
+  for (const [mode, behavior] of [
+    ['delivered', 'delivers task posture from a local prepare process'],
+    ['skipped', 'skips prepare when the daemon probe leaves less than 1500 ms'],
+    ['timeout', 'preserves debt and exits zero when prepare finishes after the deadline'],
+  ] as const) {
+    test(`SessionStart ${behavior}`, () => {
+      const root = agentNoticeFixture();
+      try {
+        fixtureGit(root, ['checkout', '-qb', 'feat/2874-session-posture']);
+        const node = resolveCompatibleNodeRuntime(noticeEnv(root));
+        const report = checkpointArchitectureDebt(root, noticeOwnership(root), {
+          env: noticeEnv(root), nowMs: () => 0,
+          run: (binary, args, options) => {
+            const { status, signal, stdout, stderr, error } = spawnSync(node, [binary, ...args], {
+              cwd: options.cwd, env: options.env, encoding: 'utf8',
+            });
+            if (error) throw error;
+            return { status, signal, stdout, stderr };
+          },
+        })!.report;
+        const consumer = join(root, 'home/consumer');
+        fixtureWrite(consumer, 'node_modules/archctx/package.json', JSON.stringify({ name: 'archctx', version: ARCHCTX_REQUIRED_VERSION,
+          engines: { node: ARCHCONTEXT_NODE_RANGE }, bin: { archctx: 'bin.mjs' } }));
+        const source = join(import.meta.dir, '../../src');
+        const launcher = join(root, 'home/session.ts');
+        fixtureWrite(root, 'home/session.ts', `
+          import { spawnSync } from 'node:child_process';
+          import { registerArchitecturePorts, ARCHITECTURE_CONTRACT_VERSION } from ${JSON.stringify(join(source, 'core/architecture/contracts.ts'))};
+          import { ARCHITECTURE_PROVIDERS } from ${JSON.stringify(join(source, 'effects/architecture/providers.ts'))};
+          import { collectAgentNotice } from ${JSON.stringify(join(source, 'cli/hook/agent-notice.ts'))};
+          import { runHook } from ${JSON.stringify(join(source, 'cli/hook/runtime.ts'))};
+          let now = 0;
+          registerArchitecturePorts({ ...ARCHITECTURE_PROVIDERS, notice: { contractVersion: ARCHITECTURE_CONTRACT_VERSION,
+            collect: (root, ownership, options, point) => collectAgentNotice(root, ownership, {
+              ...options, consumerRoot: ${JSON.stringify(consumer)}, nowMs: () => now,
+              run: (binary, args, options) => {
+                const { status, signal, stdout, stderr, error } = spawnSync(${JSON.stringify(node)}, [binary, ...args], {
+                  cwd: options.cwd, env: options.env, encoding: 'utf8',
+                });
+                if (error) throw error;
+                // Advance the product clock on child completion, independent of runner speed.
+                if (args[0] === 'checkpoint') now = 1100;
+                if (args[0] === 'daemon') now = ${mode === 'skipped' ? 1501 : 1500};
+                if (args[0] === 'prepare' && ${mode === 'timeout'}) now = 3001;
+                return { status, signal, stdout, stderr };
+              },
+            }, point) } });
+          process.exit(runHook({ event: 'SessionStart', routeId: 'default', cwd: ${JSON.stringify(root)}, env: process.env }).exitCode);
+        `);
         fixtureWrite(consumer, 'node_modules/archctx/bin.mjs', `
           import { appendFileSync } from 'node:fs';
           const args = process.argv.slice(2);
           appendFileSync(${JSON.stringify(join(root, 'home/archctx-calls'))}, args[0] + '\\n');
-          if (args[0] === 'prepare' && ${slow}) setTimeout(() => {}, 30000);
-          else console.log(JSON.stringify({ schemaVersion: 'archcontext.envelope/v1', requestId: args[0], ok: true,
+          console.log(JSON.stringify({ schemaVersion: 'archcontext.envelope/v1', requestId: args[0], ok: true,
             data: args[0] === 'daemon' ? { running: true, rpcVersionCompatible: true, productVersionCompatible: true } : args[0] === 'checkpoint' ? ${JSON.stringify(report)} : { posture: 'structural', context: {
               schemaVersion: 'archcontext.task-context/v1', task: args[2], posture: 'structural', constraints: ['constraint'] } } }));
         `);
@@ -148,20 +175,20 @@ describe('typed hook runtime', () => {
         const content = JSON.parse(result.stdout).hookSpecificOutput.additionalContext as string;
         expect(content).toContain('[ArchitectureDebt]');
         const measuredDebt = content.slice(content.indexOf('[ArchitectureDebt]')).split('\n[Architecture]')[0]!;
-        if (!slow) {
-          debt = measuredDebt;
+        expect(measuredDebt).toBe(renderAgentNotice(report)!.content);
+        if (mode === 'delivered') {
           expect(content).toContain('[Architecture] posture: structural; constraints: 1; run: rh arch prepare --task ... --json');
           expect(result.stderr).not.toContain('architecture notice');
         } else {
-          expect(measuredDebt).toBe(debt);
           expect(content).not.toContain('posture:');
           expect(result.stderr.trim().split('\n')).toHaveLength(1);
           expect(result.stderr).toContain('not finished in its time budget');
         }
-      }
-      expect(readFileSync(join(root, 'home/archctx-calls'), 'utf8').trim().split('\n')).toEqual(['checkpoint', 'daemon', 'prepare', 'checkpoint', 'daemon', 'prepare']);
-    } finally { clean(root); }
-  }, 30_000);
+        expect(readFileSync(join(root, 'home/archctx-calls'), 'utf8').trim().split('\n')).toEqual(
+          mode === 'skipped' ? ['checkpoint', 'daemon'] : ['checkpoint', 'daemon', 'prepare']);
+      } finally { clean(root); }
+    }, 30_000);
+  }
 
   test('fails open outside a git repository', () => {
     const root = mkdtempSync(join(tmpdir(), 'hrd09-not-git-'));
