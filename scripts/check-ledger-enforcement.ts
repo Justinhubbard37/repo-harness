@@ -174,7 +174,8 @@ export function evaluateLedger(text: string, head: readonly LedgerEntry[], base:
         add(after.latest, 'Seen', `${merged} gives ${after.max}×`, `a consolidation keeps the maximum ${before.max}×; record a new correction event in a separate entry`);
       } else {
         const kept = new Set(list(consolidated, 'Promoted').map(normalize));
-        const lost = promotions(before.entries).filter((ref) => !kept.has(normalize(ref)));
+        const replaced = before.entries.filter((entry) => !dates.has(field(entry, 'Date')) || field(entry, 'Date') === field(consolidated, 'Date'));
+        const lost = promotions(replaced).filter((ref) => !kept.has(normalize(ref)));
         if (lost.length) add(consolidated, 'Promoted', `${merged} drops Promoted ${lost.join(', ')}`, 'keep every Promoted reference of the entries that the consolidation replaces');
         const enforcer = field(before.latest, 'Enforced by');
         if (field(consolidated, 'Enforced by') !== enforcer) {
