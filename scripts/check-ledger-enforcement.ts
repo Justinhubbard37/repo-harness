@@ -172,13 +172,14 @@ export function evaluateLedger(text: string, head: readonly LedgerEntry[], base:
       const merged = `a consolidation of ${before.entries.length} entries into ${after.entries.length}`;
       if (!consolidated) {
         add(after.latest, 'Seen', `${merged} gives ${after.max}×`, `a consolidation keeps the maximum ${before.max}×; record a new correction event in a separate entry`);
-      }
-      const kept = new Set(promotions(after.entries).map(normalize));
-      const lost = promotions(before.entries).filter((ref) => !kept.has(normalize(ref)));
-      if (lost.length) add(after.latest, 'Promoted', `${merged} drops Promoted ${lost.join(', ')}`, 'keep every Promoted reference of the entries that the consolidation replaces');
-      const enforcer = field(before.latest, 'Enforced by');
-      if (field(after.latest, 'Enforced by') !== enforcer) {
-        add(after.latest, 'Enforced by', `${merged} changes ${enforcer} to ${field(after.latest, 'Enforced by') || 'nothing'}`, `keep "- Enforced by: ${enforcer}"`);
+      } else {
+        const kept = new Set(list(consolidated, 'Promoted').map(normalize));
+        const lost = promotions(before.entries).filter((ref) => !kept.has(normalize(ref)));
+        if (lost.length) add(consolidated, 'Promoted', `${merged} drops Promoted ${lost.join(', ')}`, 'keep every Promoted reference of the entries that the consolidation replaces');
+        const enforcer = field(before.latest, 'Enforced by');
+        if (field(consolidated, 'Enforced by') !== enforcer) {
+          add(consolidated, 'Enforced by', `${merged} changes ${enforcer} to ${field(consolidated, 'Enforced by') || 'nothing'}`, `keep "- Enforced by: ${enforcer}"`);
+        }
       }
     }
     for (const entry of before.entries) {
