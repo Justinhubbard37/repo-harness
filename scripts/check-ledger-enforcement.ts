@@ -163,14 +163,15 @@ export function evaluateLedger(text: string, head: readonly LedgerEntry[], base:
       add(after.latest, 'Seen', `the theme maximum fell from ${before.max}× to ${after.max}×`, `the maximum of a theme never falls; write ${before.max}×`);
       continue;
     }
-    // A consolidation (fewer entries) keeps the maximum on its latest entry, so a new event goes to
-    // its own PR, and it keeps the Promoted and the current Enforced by of the theme. Every other
-    // entry with the Date of a merge-base entry keeps the Seen of that entry.
-    const consolidation = after.entries.length < before.entries.length;
+    // Missing base Dates mark absorbed entries even when new events keep the entry count level.
+    // The consolidated series keeps the base maximum; a separate new entry may raise Seen.
+    const dates = new Set(after.entries.map((entry) => field(entry, 'Date')));
+    const consolidation = before.entries.some((entry) => !dates.has(field(entry, 'Date')));
+    const consolidated = consolidation ? after.entries.find((entry) => seen(entry) === before.max) : undefined;
     if (consolidation) {
       const merged = `a consolidation of ${before.entries.length} entries into ${after.entries.length}`;
-      if (after.max !== before.max) {
-        add(after.latest, 'Seen', `${merged} gives ${after.max}×`, `a consolidation keeps the maximum ${before.max}×; record a new correction event in its own PR`);
+      if (!consolidated) {
+        add(after.latest, 'Seen', `${merged} gives ${after.max}×`, `a consolidation keeps the maximum ${before.max}×; record a new correction event in a separate entry`);
       }
       const kept = new Set(promotions(after.entries).map(normalize));
       const lost = promotions(before.entries).filter((ref) => !kept.has(normalize(ref)));
@@ -182,7 +183,8 @@ export function evaluateLedger(text: string, head: readonly LedgerEntry[], base:
     }
     for (const entry of before.entries) {
       const now = after.entries.find((candidate) => field(candidate, 'Date') === field(entry, 'Date'));
-      if (now && seen(now) !== seen(entry) && !(consolidation && now === after.latest)) {
+      const sameDayLatest = now === after.latest && field(now, 'Date') === field(before.latest, 'Date');
+      if (now && seen(now) !== seen(entry) && now !== consolidated && !sameDayLatest) {
         add(now, 'Seen', `changed from ${seen(entry)}× to ${seen(now)}× on an existing entry`, `restore ${seen(entry)}×; do not edit Seen on older entries`);
       }
     }
