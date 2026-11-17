@@ -22,6 +22,7 @@ import {
   installFakeGh,
   isMergeMutation,
   passingScenario,
+  producedTestBudgetResult,
   type PublicationMergeScenario,
 } from '../helpers/publication-merge-fake-gh';
 
@@ -243,6 +244,44 @@ describe('publication merge refusals send no mergePullRequest', () => {
       gh_runner: (args) => { calls.push([...args]); return { status: 0, stdout: '{}' }; } });
     expect(result.document).toMatchObject({ ok: false, exit_code: 4, error: 'invalid_selection' });
     expect(calls).toEqual([]);
+  });
+});
+
+describe('publication merge binds the TestBudget result to its inputs', () => {
+  const budgetPolicy = (ratioCap: number) => policy({ merge_gate: { enabled: true }, publication: { acceptance_merge: 'on' },
+    rules: { TestBudget: { enabled: true, ratio_cap: ratioCap, file_cap: 1, test_paths: ['tests'], product_paths: ['src'] } } });
+  const exception = (lines: number) => `## Test budget exception\n\nAdded test lines: ${lines}\nAdded product lines: 10\nAdded test files: 1\n\nNo existing test covers the parser.`;
+  const BODY = `Closes #7\n\n${exception(30)}`;
+  const budgetScenario = (overrides: Partial<PublicationMergeScenario> = {}) => passingScenario({ policyBase: budgetPolicy(2), policyHead: budgetPolicy(2),
+    body: BODY, testBudget: { document: producedTestBudgetResult(budgetPolicy(2), BODY) }, ...overrides });
+
+  test('a final read with a changed exception refuses as test_budget_stale and sends no merge', () => {
+    const { result, mutations } = mergeInProcess(budgetScenario({ targetBody: `Closes #7\n\n${exception(31)}` }));
+    expect(result.document).toMatchObject({ ok: false, exit_code: 4, error: 'test_budget_stale' });
+    expect(mutations).toHaveLength(0);
+  });
+
+  test('a final read with other changed text still merges', () => {
+    const { result, mutations } = mergeInProcess(budgetScenario({ targetBody: `Closes #7, with more detail.\n\n${exception(30)}` }));
+    expect(result.exit_code).toBe(0);
+    expect(mutations).toHaveLength(1);
+  });
+
+  test('a live tip that moves the merge-base refuses the old result under an unchanged policy', () => {
+    const { result, calls, mutations } = mergeInProcess(budgetScenario({ liveTip: OTHER_COMMIT, policyAt: { [OTHER_COMMIT]: budgetPolicy(2) },
+      testBudget: { document: producedTestBudgetResult(budgetPolicy(2), BODY), mergeBase: 'f'.repeat(40) } }));
+    expect(failureOf(result).blockers?.map((blocker) => blocker.code)).toEqual(['test_budget_stale']);
+    expect(failureOf(result).blockers?.[0]?.detail).toContain('does not match the live diff_start');
+    // The load-bearing check: it still proves the live-tip merge-base if the fixture ever answers the PR-base compare too.
+    expect(calls.some((args) => args[1] === `repos/${REPOSITORY}/compare/${OTHER_COMMIT}...${HEAD}`)).toBe(true);
+    expect(mutations).toHaveLength(0);
+  });
+
+  test('a threshold change at the live tip refuses a result made with the base policy', () => {
+    const { result, mutations } = mergeInProcess(budgetScenario({ liveTip: OTHER_COMMIT, policyAt: { [OTHER_COMMIT]: budgetPolicy(3) } }));
+    expect(result.document).toMatchObject({ ok: false, exit_code: 4, error: 'merge_readiness_blocked' });
+    expect(failureOf(result).blockers?.map((blocker) => blocker.code)).toEqual(['test_budget_stale']);
+    expect(mutations).toHaveLength(0);
   });
 });
 

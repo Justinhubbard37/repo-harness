@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { selectAttemptTestArtifacts, testArtifactAttempt, type RequiredCheckTestExecutionV1 } from '../../src/core/evidence/test-execution-evidence';
 import { readTestExecutionEvidence } from '../../src/effects/publication/test-execution-evidence';
 import { notStackMemberDetail, projectPullRequestMergeReadiness, type MergeReadinessBlockerCode } from '../../src/core/publication/merge-readiness';
+import { parseTestBudgetException, testBudgetError, testBudgetExceptionDigest } from '../../src/core/ci/test-budget';
+import { producedTestBudgetResult, testBudgetAnswer, TEST_BUDGET_MERGE_BASE, type TestBudgetFixture } from '../helpers/publication-merge-fake-gh';
 
 import {
   MergeReadinessError,
@@ -632,7 +634,7 @@ test('rollback boundary binds the current base to one merged main PR and one rea
         const syncFacts = syncRead();
         expect(syncFacts.rollback_boundary).toEqual(expected);
         const verdict = projectPullRequestMergeReadiness({ expected_head_sha: HEAD, expected_base_sha: observedBase,
-          integration_mode: 'unmerged', observation: 'stable', provider: syncFacts, stack: notStackMemberDetail() });
+          integration_mode: 'unmerged', observation: 'stable', provider: syncFacts, stack: notStackMemberDetail(), test_budget: null });
         expect(verdict.ready).toBe(true); expect(verdict.blockers).toEqual([]);
         if (scenario === '404') expect(requests.some(path => path.includes('/pulls') || path.includes('/git/commits/'))).toBe(false);
       } else {
@@ -1210,3 +1212,90 @@ describe('required-check coverage reads', () => {
   });
 });
 
+describe('TestBudget result reads', () => {
+  const rule = (overrides: Record<string, unknown> = {}) => JSON.stringify({ rules: { TestBudget: {
+    enabled: true, ratio_cap: 2, file_cap: 1, test_paths: ['tests'], product_paths: ['src'], ...overrides } } });
+  const exception = (lines = 30, reason = 'No existing test covers the parser.') =>
+    `## Test budget exception\n\nAdded test lines: ${lines}\nAdded product lines: 10\nAdded test files: 1\n\n${reason}`;
+  const BODY = `Closes #7\n\n${exception()}\n\n## Rollback\n\ngit revert.`;
+
+  /** Readiness reads the policy at the PR base; `bodies` answers the identity reads in order. */
+  function budgetGh(policy: string, fixture: TestBudgetFixture, bodies: readonly string[] = [BODY], calls: string[][] = []) {
+    const source = fakeGh({ requiredBucket: 'pass', policy });
+    let views = 0;
+    return (args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { status: 0, stdout: JSON.stringify({ ...JSON.parse(source(args).stdout), body: bodies[Math.min(views++, bodies.length - 1)] }) };
+      }
+      return testBudgetAnswer(args, fixture) ?? source(args);
+    };
+  }
+
+  test.each([
+    ['an over-budget pass with a valid exception', rule(), BODY],
+    ['an edit of other body text', rule(), BODY.replace('Closes #7', 'Closes #7 and explains the parser change.')],
+    ['a disabled rule with its skipped result', rule({ enabled: false }), BODY],
+  ])('%s is ready', (_label, policy, liveBody) => {
+    const verdict = collectPullRequestMergeReadiness({ ...input,
+      gh_runner: budgetGh(policy, { document: producedTestBudgetResult(policy, BODY) }, [liveBody]) });
+    expect(verdict.blockers).toEqual([]);
+    expect(verdict.test_budget).toMatchObject({ head_sha: HEAD, diff_start: TEST_BUDGET_MERGE_BASE,
+      exception_digest: testBudgetExceptionDigest(parseTestBudgetException(liveBody)) });
+  });
+
+  test.each([
+    ['the exception numbers change', rule(), BODY.replace(exception(), exception(31)), 'exception_digest'],
+    ['the exception reason changes', rule(), BODY.replace(exception(), exception(30, 'Another reason.')), 'exception_digest'],
+    ['the exception section is removed', rule(), BODY.replace(exception(), ''), 'exception_digest'],
+    ['the threshold changes', rule({ ratio_cap: 3 }), BODY, 'policy_digest'],
+    ['the switch turns off', rule({ enabled: false }), BODY, 'policy_digest'],
+  ])('an old pass is stale when %s', (_label, livePolicy, liveBody, field) => {
+    const verdict = collectPullRequestMergeReadiness({ ...input,
+      gh_runner: budgetGh(livePolicy, { document: producedTestBudgetResult(rule(), BODY) }, [liveBody]) });
+    expect(verdict.ready).toBe(false);
+    expect(verdict.test_budget).toBeNull();
+    expect(verdict.blockers.find(blocker => blocker.code === 'test_budget_stale')?.detail).toContain(`does not match the live ${field}`);
+  });
+
+  const completed = (id: number, at: string, status = 'completed') => ({ id, name: 'Test budget', status, completed_at: status === 'completed' ? at : null,
+    details_url: `https://github.com/example/repo-harness/actions/runs/777/job/${id}`, app: { slug: 'github-actions' } });
+  test.each([
+    ['a check error', { document: testBudgetError({ head_sha: HEAD, diff_start: null, policy_digest: null, implementation_version: 1, exception_digest: null },
+      'diff_unavailable', 'the clone is shallow') }, 'test_budget_error'],
+    ['a violation', { document: producedTestBudgetResult(rule(), 'Closes #7') }, 'test_budget_violation'],
+    ['no check run', { checkRuns: [] }, 'test_budget_missing'],
+    ['a running newer check', { checkRuns: [completed(888, '2026-11-16T08:00:18Z'), completed(889, '', 'in_progress')] }, 'test_budget_pending'],
+    ['no result annotation', { annotations: [{ annotation_level: 'warning', title: '', message: 'Node.js 20 is deprecated.' }] }, 'test_budget_missing'],
+    ['a document that does not decode', { document: '{"schema":"repo-harness/test-budget-result/v1"' }, 'test_budget_missing'],
+  ] as const)('%s blocks the merge', (_label, fixture, code) => {
+    const verdict = collectPullRequestMergeReadiness({ ...input, gh_runner: budgetGh(rule(), fixture, ['Closes #7']) });
+    expect(verdict.ready).toBe(false);
+    expect(verdict.blockers.map(blocker => blocker.code)).toContain(code);
+  });
+
+  test('an invalid rule configuration is a blocker, not off', () => {
+    const verdict = collectPullRequestMergeReadiness({ ...input, gh_runner: budgetGh(rule({ ratio_cap: 0 }), {}) });
+    expect(verdict.blockers.map(blocker => blocker.code)).toEqual(['test_budget_policy_invalid']);
+  });
+
+  test('a policy without the rule reads no result', () => {
+    const calls: string[][] = [];
+    const verdict = collectPullRequestMergeReadiness({ ...input, gh_runner: budgetGh('{}', {}, [BODY], calls) });
+    expect(verdict.ready).toBe(true);
+    expect(verdict.test_budget).toBeNull();
+    expect(calls.some(args => args[1]?.includes('/check-runs') || args[1]?.includes('/compare/'))).toBe(false);
+  });
+
+  test('an exception edit between the identity reads is changed_during_read', () => {
+    const verdict = collectPullRequestMergeReadiness({ ...input, gh_runner: budgetGh(rule(), { document: producedTestBudgetResult(rule(), BODY) },
+      [BODY, BODY.replace(exception(), exception(31)), BODY, BODY.replace(exception(), exception(31))]) });
+    expect(verdict.blockers.map(blocker => blocker.code)).toEqual(['changed_during_read']);
+  });
+
+  test('the executor policy at the live tip replaces the base policy', () => {
+    const verdict = collectPullRequestMergeReadiness({ ...input, test_budget_base: { ref: BASE, file: { status: 'present', text: rule({ file_cap: 2 }) } },
+      gh_runner: budgetGh(rule(), { document: producedTestBudgetResult(rule(), BODY) }) });
+    expect(verdict.blockers.map(blocker => blocker.code)).toEqual(['test_budget_stale']);
+  });
+});

@@ -21,6 +21,7 @@ import {
   type PublicationPolicy,
 } from '../../core/publication/acceptance-merge-policy';
 import { checkClosingReferences, type ClosingIssueReference } from '../../core/publication/closing-references';
+import { parseTestBudgetException, testBudgetExceptionDigest } from '../../core/ci/test-budget';
 import { gitSpawnSync, withoutRepositorySelectingGitEnv } from '../git/runner';
 import type { MergeReadinessBlockerV1 } from '../../core/publication/merge-readiness';
 import {
@@ -43,6 +44,7 @@ export type PublicationMergeRefusalCode =
   | 'base_protection_insufficient'
   | 'merge_readiness_blocked'
   | 'pr_changed_after_readiness'
+  | 'test_budget_stale'
   | 'closing_references_incomplete'
   | 'closing_references_mismatch';
 
@@ -595,9 +597,10 @@ function prepareMerge(input: PublicationMergeInput): PreparedMerge {
   assertMergeKeepsPolicy(input, gating, defaultBranch);
   const requiredStatusChecks = assertBaseProtection(input, defaultBranch);
   // Reuse the protection read, and the policy read when the live tip is the base that readiness reads.
+  // TestBudget binds the live tip: its configuration and its merge-base with the head.
   const verdict = collectPullRequestMergeReadiness({ ...input,
     ...(gating.ref === input.expected_base_sha ? { policy_file_at_base: gating.file } : {}),
-    required_status_checks_at_base: requiredStatusChecks });
+    required_status_checks_at_base: requiredStatusChecks, test_budget_base: { ref: gating.ref, file: gating.file } });
   if (!verdict.ready) {
     throw new Refusal('merge_readiness_blocked', `readiness blockers: ${verdict.blockers.map((blocker) => blocker.code).join(', ')}`, verdict.blockers);
   }
@@ -607,6 +610,11 @@ function prepareMerge(input: PublicationMergeInput): PreparedMerge {
   if (target.state !== 'OPEN' || target.head_sha !== input.expected_head_sha
     || target.base_sha !== input.expected_base_sha || target.base_ref !== defaultBranch) {
     throw new Refusal('pr_changed_after_readiness', 'the PR state, head or base changed after the readiness verdict');
+  }
+  // The head and base fences above keep the other bound inputs; the body can change without a new head.
+  if (verdict.test_budget !== null
+    && testBudgetExceptionDigest(parseTestBudgetException(target.body)) !== verdict.test_budget.exception_digest) {
+    throw new Refusal('test_budget_stale', 'the Test budget exception in the PR body changed after the readiness verdict; run the merge again');
   }
   const headline = `${target.title} (#${input.pr_number})`;
   const closing = checkClosingReferences({ repository: input.repository, commit_headline: headline, commit_body: target.body,

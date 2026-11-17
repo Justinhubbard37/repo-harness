@@ -434,7 +434,8 @@
         "chain": [],
         "final_base_sha": null,
         "status": "not_member"
-      }
+      },
+      "test_budget": null
     }
   },
   "measurementUnits": "Logical provider reads are injected collector gh commands or watcher reader methods. They are not actual HTTP requests, latency, CPU, or production throughput. External API requests are zero.",

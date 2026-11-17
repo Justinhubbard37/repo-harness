@@ -1,3 +1,4 @@
+import type { TestBudgetBound, TestBudgetResultReadback } from '../ci/test-budget';
 import {
   validateRequiredCheckFailureEvidence,
   type RequiredCheckFailureEvidenceV1,
@@ -39,6 +40,12 @@ export type MergeReadinessBlockerCode =
   | 'required_check_coverage_missing'
   | 'required_check_coverage_policy_invalid'
   | GeneratedArtifactsFailureCode
+  | 'test_budget_policy_invalid'
+  | 'test_budget_pending'
+  | 'test_budget_missing'
+  | 'test_budget_stale'
+  | 'test_budget_violation'
+  | 'test_budget_error'
   | 'stack_member'
   | 'stack_depth_exceeded'
   | 'stack_cycle'
@@ -50,7 +57,7 @@ export interface MergeReadinessBlockerV1 {
   readonly code: MergeReadinessBlockerCode;
   readonly attention_owner: MergeReadinessAttentionOwner;
   /**
-   * Action text for a coverage or generated-artifact blocker, or the provider
+   * Action text for a coverage, generated-artifact or TestBudget blocker, or the provider
    * field or entry that failed for `provider_data_incomplete`. Absent for every other code.
    */
   readonly detail?: string;
@@ -130,6 +137,25 @@ export type RequiredCheckCoverageFactsV1 =
     readonly observed_checks: readonly { readonly name: string; readonly bucket: RequiredCheckBucketV1 }[];
   };
 
+/** The stored TestBudget result of the PR head, as readiness found it. */
+export type TestBudgetResultObservationV1 =
+  /** The newest Test budget run of this head has not completed. */
+  | { readonly status: 'pending' }
+  /** No usable result: no run, no or more than one result annotation, or a document that does not decode. */
+  | { readonly status: 'missing'; readonly detail: string }
+  | { readonly status: 'read'; readonly document: TestBudgetResultReadback };
+
+/**
+ * The TestBudget rule as readiness observed it (ADR-0004). `off`: the policy
+ * has no `rules.TestBudget`, so no result is read. `active` holds the five bound
+ * inputs recomputed from live state and the stored result; a disabled rule is
+ * active too and needs its `skipped` result.
+ */
+export type TestBudgetFactsV1 =
+  | { readonly status: 'off' }
+  | { readonly status: 'policy_invalid'; readonly message: string }
+  | { readonly status: 'active'; readonly live: TestBudgetBound; readonly result: TestBudgetResultObservationV1 };
+
 export interface ProviderMergeReadinessFactsV1 {
   readonly state: string;
   readonly is_draft: boolean;
@@ -166,6 +192,11 @@ export interface PullRequestMergeReadinessInput {
    * facts say.
    */
   readonly stack: MergeReadinessStackDetailV1;
+  /**
+   * Observed TestBudget facts for a merge gate. Null when the caller does not
+   * gate on the rule: integration evidence of a merged PR, or no provider facts.
+   */
+  readonly test_budget: TestBudgetFactsV1 | null;
 }
 
 export interface MergeReadinessVerdict {
@@ -191,6 +222,12 @@ export interface MergeReadinessVerdict {
   readonly required_check_coverage: RequiredCheckCoverageEvidenceV1 | null;
   /** Observed stacked-PR chain. A non-member has depth 0 and an empty chain. */
   readonly stack: MergeReadinessStackDetailV1;
+  /**
+   * The live bound inputs of the accepted TestBudget result. The merge
+   * executor compares its final read of the PR body with `exception_digest`.
+   * Null when the policy has no TestBudget configuration, the rule is not gated, or the verdict blocks.
+   */
+  readonly test_budget: TestBudgetBound | null;
 }
 
 export interface PullRequestSelectionV2 {
@@ -233,6 +270,12 @@ const ATTENTION: Readonly<Record<MergeReadinessBlockerCode, MergeReadinessAttent
   generated_artifacts_unpushed_regeneration: 'agent',
   generated_artifacts_unstable: 'agent',
   generated_artifacts_unavailable: 'external',
+  test_budget_policy_invalid: 'agent',
+  test_budget_pending: 'external',
+  test_budget_missing: 'agent',
+  test_budget_stale: 'agent',
+  test_budget_violation: 'agent',
+  test_budget_error: 'agent',
   stack_member: 'agent',
   stack_depth_exceeded: 'agent',
   stack_cycle: 'agent',
@@ -338,6 +381,46 @@ function observedStack(
   return Object.freeze({ member: true, depth, chain: Object.freeze(chain), final_base_sha: finalBaseSha, status });
 }
 
+const TEST_BUDGET_BOUND_FIELDS = ['head_sha', 'diff_start', 'policy_digest', 'implementation_version', 'exception_digest'] as const;
+const TEST_BUDGET_RERUN = 'start a new Test budget run for this head (re-run the job, edit the PR body or update the branch)';
+
+/**
+ * A stored result passes only when each bound input equals the live one and its
+ * state is `pass`, or `skipped` for a disabled rule (the policy digest tells
+ * them apart). Returns the accepted live inputs, or null after a blocker.
+ */
+function projectTestBudget(facts: TestBudgetFactsV1, blockers: MergeReadinessBlockerV1[]): TestBudgetBound | null {
+  if (facts.status === 'off') return null;
+  if (facts.status === 'policy_invalid') {
+    push(blockers, 'test_budget_policy_invalid',
+      `TestBudget policy is invalid: ${facts.message}; fix rules.TestBudget in .ai/harness/policy.json on the base branch`);
+    return null;
+  }
+  if (facts.status !== 'active') {
+    push(blockers, 'provider_data_incomplete', 'provider test_budget status is missing or unknown');
+    return null;
+  }
+  const result = facts.result;
+  if (result.status === 'pending') push(blockers, 'test_budget_pending');
+  else if (result.status === 'missing') push(blockers, 'test_budget_missing', `${result.detail}; ${TEST_BUDGET_RERUN}`);
+  else if (result.status !== 'read') push(blockers, 'provider_data_incomplete', 'provider test_budget result status is missing or unknown');
+  else {
+    const { document } = result;
+    const changed = TEST_BUDGET_BOUND_FIELDS.filter((field) => document.bound[field] !== facts.live[field]);
+    if (document.state === 'error') {
+      push(blockers, 'test_budget_error', `the Test budget check ended with error ${document.error_code ?? 'unknown'}; fix the cause, then ${TEST_BUDGET_RERUN}`);
+    } else if (changed.length > 0) {
+      push(blockers, 'test_budget_stale', `the Test budget result does not match the live ${changed.join(', ')}; ${TEST_BUDGET_RERUN}`);
+    } else if (document.state === 'violation') {
+      const measured = document.measured;
+      push(blockers, 'test_budget_violation', `the PR is over the test budget${measured === null ? '' : ` (${measured.added_test_lines} added test lines, `
+        + `${measured.added_product_lines} added product lines, ${measured.added_test_files} added test files; ratio cap ${measured.ratio_cap}, `
+        + `file cap ${measured.file_cap})`}; remove added tests or add a valid "## Test budget exception" section to the PR body`);
+    } else return facts.live;
+  }
+  return null;
+}
+
 /**
  * Deterministic projection over already-fenced observations. This function
  * performs no I/O and intentionally emits all applicable blockers in a stable
@@ -346,6 +429,7 @@ function observedStack(
 export function projectPullRequestMergeReadiness(input: PullRequestMergeReadinessInput): MergeReadinessVerdict {
   const blockers: MergeReadinessBlockerV1[] = [];
   let requiredCheckCoverage: RequiredCheckCoverageEvidenceV1 | null = null;
+  let testBudget: TestBudgetBound | null = null;
   if (input.provider !== null && !Array.isArray(input.provider.check_failures)) {
     push(blockers, 'provider_data_incomplete', 'provider check_failures is not an array');
   }
@@ -461,6 +545,7 @@ export function projectPullRequestMergeReadiness(input: PullRequestMergeReadines
         }
       }
     }
+    if (input.test_budget !== null) testBudget = projectTestBudget(input.test_budget, blockers);
   }
   return Object.freeze({
     ready: blockers.length === 0,
@@ -472,5 +557,6 @@ export function projectPullRequestMergeReadiness(input: PullRequestMergeReadines
     check_failures: Object.freeze([...checkFailures]),
     required_check_coverage: requiredCheckCoverage,
     stack,
+    test_budget: blockers.length === 0 ? testBudget : null,
   });
 }

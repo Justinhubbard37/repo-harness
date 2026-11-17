@@ -178,7 +178,9 @@ export function projectStackRow(f: Fixture) {
     observation: f.unavailable ? 'provider_unavailable' : f.hasNextPage ? 'provider_data_incomplete' : 'stable', provider,
     stack: member
       ? { member: true, depth: 0, chain: [memberEntry], final_base_sha: null, status: 'unobserved' }
-      : { member: false, depth: 0, chain: [], final_base_sha: null, status: 'not_member' } });
+      : { member: false, depth: 0, chain: [], final_base_sha: null, status: 'not_member' },
+    // A row carries no Test budget check run, so this predicate does not gate on TestBudget.
+    test_budget: null });
 }
 export class Cancelled extends Error { constructor() { super('offline cancellation'); } }
 export function logicalClock(cancelAfterSleeps = Infinity) {

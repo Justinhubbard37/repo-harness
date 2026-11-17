@@ -20,6 +20,9 @@ import { RULES, type TestBudgetParameters } from './rules';
 export const TEST_BUDGET_RESULT_SCHEMA = 'repo-harness/test-budget-result/v1';
 /** Bump when a change to this file can change a result for the same inputs. */
 export const TEST_BUDGET_IMPLEMENTATION_VERSION = 1;
+/** The producer: the job name (its check run name) and the workflow file that `.github/workflows/test-budget.yml` declares. */
+export const TEST_BUDGET_CHECK_NAME = 'Test budget';
+export const TEST_BUDGET_WORKFLOW_PATH = '.github/workflows/test-budget.yml';
 
 // The policy key tree is the one list of keys; a key that the tree lacks fails the type check here.
 const CONFIG_KEYS: Readonly<Record<'enabled' | keyof TestBudgetParameters, true>> = WORKFLOW_POLICY_KEYS.rules.TestBudget;
@@ -354,6 +357,63 @@ export function evaluateTestBudget(input: {
       reason: parsed?.reason ?? null,
     },
     error: null,
+  };
+}
+
+/**
+ * A stored result as a consumer reads it back from its store (the check
+ * annotation). `bound` keeps the stored values unchecked: the consumer compares
+ * each with its live value, so a malformed field reads as changed.
+ */
+export interface TestBudgetResultReadback {
+  readonly state: TestBudgetResult['state'];
+  readonly bound: { readonly [Key in keyof TestBudgetBound]: unknown };
+  /** The stored numbers of `pass` and `violation`; null when absent or malformed. */
+  readonly measured: TestBudgetMeasured | null;
+  /** The stored code of `error`; null when absent or not a code. */
+  readonly error_code: string | null;
+}
+
+function readbackObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+const isCap = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+function readbackMeasured(value: unknown): TestBudgetMeasured | null {
+  const measured = readbackObject(value);
+  if (measured === null || !isCount(measured.added_test_lines) || !isCount(measured.added_product_lines)
+    || !isCount(measured.added_test_files) || !isCap(measured.ratio_cap) || !isCount(measured.file_cap)
+    || (measured.ratio !== null && !isCap(measured.ratio))) return null;
+  return {
+    added_test_lines: measured.added_test_lines, added_product_lines: measured.added_product_lines,
+    added_test_files: measured.added_test_files, ratio: measured.ratio as number | null,
+    ratio_cap: measured.ratio_cap, file_cap: measured.file_cap,
+  };
+}
+
+/** Null when the text is not a v1 result document with a known state; the consumer then has no result. */
+export function decodeTestBudgetResult(text: string): TestBudgetResultReadback | null {
+  let document: Record<string, unknown> | null;
+  try {
+    document = readbackObject(JSON.parse(text));
+  } catch {
+    return null;
+  }
+  const bound = readbackObject(document?.bound);
+  const state = document?.state;
+  if (document === null || bound === null || document.schema !== TEST_BUDGET_RESULT_SCHEMA
+    || (state !== 'pass' && state !== 'violation' && state !== 'skipped' && state !== 'error')) return null;
+  const code = readbackObject(document.error)?.code;
+  return {
+    state,
+    bound: {
+      head_sha: bound.head_sha, diff_start: bound.diff_start, policy_digest: bound.policy_digest,
+      implementation_version: bound.implementation_version, exception_digest: bound.exception_digest,
+    },
+    measured: readbackMeasured(document.measured),
+    error_code: typeof code === 'string' && /^[a-z][a-z_]{0,63}$/u.test(code) ? code : null,
   };
 }
 

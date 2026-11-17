@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.publication.imports.evals-checks",
+  "kind": "depends-on",
+  "source": "capability.organization.publication",
+  "target": "capability.verification.evals-checks",
+  "intent": "Read the TestBudget configuration, exception digest and stored result document through the rule's own parser at merge readiness."
+}

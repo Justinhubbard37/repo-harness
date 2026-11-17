@@ -11,6 +11,8 @@ import { createHash } from 'crypto';
 import { join } from 'path';
 
 import { compileNativeTestExecutable } from './native-executable';
+import { evaluateTestBudget, parseTestBudgetException, readTestBudgetConfig } from '../../src/core/ci/test-budget';
+import { decodeWorkflowPolicy } from '../../src/core/workflow/policy-schema';
 
 export const REPOSITORY = 'example/repo-harness';
 export const REPOSITORY_ID = '1001';
@@ -28,6 +30,54 @@ export const POLICY_COVERAGE = `${JSON.stringify({ merge_gate: { enabled: true }
   acceptance_merge: 'on',
   required_check_coverage: { protected_paths: ['api-surface/**'], required_checks: ['Required / CI', 'build, typecheck, test (matrix)'] },
 } }, null, 2)}\n`;
+
+export const TEST_BUDGET_MERGE_BASE = 'e'.repeat(40);
+const TEST_BUDGET_RUN = 777;
+const TEST_BUDGET_JOB = 888;
+
+/** The stored Test budget result of the head: the producer's check run, its run and its annotations. */
+export interface TestBudgetFixture {
+  /** The result document; a string is the annotation message as is. */
+  readonly document?: unknown;
+  readonly checkRuns?: readonly Record<string, unknown>[];
+  readonly annotations?: readonly Record<string, unknown>[];
+  /** The live merge-base that the provider compare reports; default the merge-base the document records. */
+  readonly mergeBase?: string;
+}
+
+/** A result made by the producer's own code for a PR that adds 30 test lines, 10 product lines and 1 test file. */
+export function producedTestBudgetResult(policy: string, body: string): unknown {
+  const config = readTestBudgetConfig(decodeWorkflowPolicy(policy));
+  if (config.status === 'invalid') throw new Error(config.message);
+  return evaluateTestBudget({ head_sha: HEAD, diff_start: TEST_BUDGET_MERGE_BASE, config, exception: parseTestBudgetException(body), entries: [
+    { status: 'added', path: 'tests/parser.test.ts', previous_path: null, added_lines: 30 },
+    { status: 'modified', path: 'src/parser.ts', previous_path: null, added_lines: 10 },
+  ] });
+}
+
+/** The provider answers for the Test budget reads of readiness; `compareBase` is the commit readiness binds. Null for every other call. */
+export function testBudgetAnswer(args: readonly string[], fixture: TestBudgetFixture, head = HEAD, base = BASE, compareBase = base): { readonly status: number; readonly stdout: string } | null {
+  const found = (value: unknown) => ({ status: 0, stdout: JSON.stringify(value) });
+  const root = `repos/${REPOSITORY}`;
+  const path = args[1];
+  if (path === `${root}/compare/${compareBase}...${head}` && args.includes('{merge_base_sha: .merge_base_commit.sha}')) {
+    return found({ merge_base_sha: fixture.mergeBase ?? TEST_BUDGET_MERGE_BASE });
+  }
+  if (path?.startsWith(`${root}/commits/${head}/check-runs?check_name=Test%20budget&`)) {
+    const runs = fixture.checkRuns ?? [{ id: TEST_BUDGET_JOB, name: 'Test budget', status: 'completed', completed_at: '2026-11-16T08:00:18Z',
+      details_url: `https://github.com/${REPOSITORY}/actions/runs/${TEST_BUDGET_RUN}/job/${TEST_BUDGET_JOB}`, app: { slug: 'github-actions' } }];
+    return found({ total_count: runs.length, check_runs: runs });
+  }
+  if (path === `${root}/actions/runs/${TEST_BUDGET_RUN}`) {
+    return found({ path: '.github/workflows/test-budget.yml', event: 'pull_request', head_sha: head, run_attempt: 1,
+      pull_requests: [{ number: PR, head: { sha: head }, base: { sha: base } }] });
+  }
+  if (path === `${root}/check-runs/${TEST_BUDGET_JOB}/annotations?per_page=100`) {
+    return found(fixture.annotations ?? [{ annotation_level: 'notice', title: 'repo-harness/test-budget-result/v1',
+      message: typeof fixture.document === 'string' ? fixture.document : JSON.stringify(fixture.document) }]);
+  }
+  return null;
+}
 
 export interface PublicationMergeScenario {
   /** Policy text at the base and head SHAs; null is a 404. */
@@ -70,6 +120,9 @@ export interface PublicationMergeScenario {
   readonly changesRequested?: boolean;
   readonly title?: string;
   readonly body?: string;
+  /** The body of the executor's own PR reads; defaults to `body`. */
+  readonly targetBody?: string;
+  readonly testBudget?: TestBudgetFixture;
   /** `owner/repo#n` identifiers that closingIssuesReferences returns. */
   readonly closing?: readonly string[];
   readonly closingHasNextPage?: boolean;
@@ -155,6 +208,8 @@ export function fakeGhResponse(args: readonly string[], scenario: PublicationMer
     return { status: checks.some((check) => check.bucket === 'pending') ? 8 : 0, stdout: JSON.stringify(checks) };
   }
   if (command !== 'api') return { status: 2, stdout: '', stderr: `unexpected fake gh args: ${args.join(' ')}` };
+  const testBudget = scenario.testBudget === undefined ? null : testBudgetAnswer(args, scenario.testBudget, headSha, baseSha, liveTip);
+  if (testBudget !== null) return testBudget;
   if (sub === 'graphql') {
     const query = graphqlQuery(args);
     if (query.includes('mergePullRequest')) {
@@ -187,7 +242,7 @@ export function fakeGhResponse(args: readonly string[], scenario: PublicationMer
     }
     if (query.includes('closingIssuesReferences')) {
       return ok({ data: { repository: { nameWithOwner: REPOSITORY, pullRequest: {
-        id: PR_NODE, number: PR, title: scenario.title ?? '', body: scenario.body ?? '', state: 'OPEN',
+        id: PR_NODE, number: PR, title: scenario.title ?? '', body: scenario.targetBody ?? scenario.body ?? '', state: 'OPEN',
         isCrossRepository: scenario.isCrossRepository ?? false, headRefOid: headSha, baseRefOid: baseSha, baseRefName: 'main',
         autoMergeRequest: scenario.autoMerge ? { enabledAt: '2026-10-30T00:00:00Z' } : null,
         closingIssuesReferences: { pageInfo: { hasNextPage: scenario.closingHasNextPage ?? false },

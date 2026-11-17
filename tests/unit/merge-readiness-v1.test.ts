@@ -39,6 +39,7 @@ function readyInput(): PullRequestMergeReadinessInput {
       mergeable: 'MERGEABLE',
     },
     stack: notStackMemberDetail(),
+    test_budget: null,
   };
 }
 
@@ -54,6 +55,7 @@ describe('projectPullRequestMergeReadiness', () => {
       check_failures: [],
       required_check_coverage: null,
       stack: notStackMemberDetail(),
+      test_budget: null,
     });
   });
 
@@ -219,7 +221,7 @@ test.each(['head_sha','base_sha'] as const)('an otherwise green pull request los
 });
 test('ordinary PR readiness needs no receipt, lease or acceptance artifact', () => {
   const { provider, integration_mode, observation, stack } = readyInput();
-  const input = { provider: provider!, integration_mode, observation, stack,
+  const input = { provider: provider!, integration_mode, observation, stack, test_budget: null,
     expected_head_sha: HEAD, expected_base_sha: BASE };
   expect(projectPullRequestMergeReadiness(input).ready).toBe(true);
   expect(projectPullRequestMergeReadiness({ ...input, provider: { ...input.provider, checks: [] } }).ready).toBe(false);
@@ -246,7 +248,7 @@ test('a ready rollback boundary binds both provider and expected base', () => {
   expect(projectPullRequestMergeReadiness({ ...input, provider: { ...provider, base_sha: 'd'.repeat(40) } }).blockers.map(b => b.code))
     .toEqual(['base_moved_since_verification', 'provider_data_incomplete']);
   expect(projectPullRequestMergeReadiness({ provider, integration_mode: 'unmerged', observation: 'stable',
-    expected_head_sha: HEAD, expected_base_sha: 'd'.repeat(40), stack: notStackMemberDetail() }).blockers.map(b => b.code))
+    expected_head_sha: HEAD, expected_base_sha: 'd'.repeat(40), stack: notStackMemberDetail(), test_budget: null }).blockers.map(b => b.code))
     .toEqual(['base_moved_since_verification', 'provider_data_incomplete']);
 });
 
