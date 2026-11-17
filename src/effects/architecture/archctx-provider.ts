@@ -162,7 +162,7 @@ export class ArchctxClient {
     // Process errors can contain argv, including request-json. Do not print them.
     if (result.signal || result.error) throw new Error(`${label} process failed${result.signal ? `: signal ${result.signal}` : ''}`);
     if (result.stdout.trim() === '') throw new Error(`${label} failed: exit ${result.status}: ${result.stderr.trim()}`);
-    const value = parseJson(result.stdout, label);
+    const value = parseJson(result, label);
     if (args[0] === 'capabilities' && result.status === 0) return value;
     // Daemon lifecycle readback is not a request-scoped command and carries no
     // requestId; its caller validates the lifecycle envelope itself.
@@ -708,6 +708,20 @@ export function capabilitySource(repoRoot: string): ArchitectureProjectionReadin
   return source === 'archcontext' ? 'archcontext' : 'registry';
 }
 
-function parseJson(text: string, label: string): unknown {
-  try { return JSON.parse(text); } catch { throw new Error(`${label} returned corrupt JSON`); }
+function parseJson(result: ArchctxProcessResult, label: string): unknown {
+  try { return JSON.parse(result.stdout); } catch (error) {
+    if (label !== 'archctx resolve') throw new Error(`${label} returned corrupt JSON`);
+    // Resolve output contains paths and owners. Keep bounded evidence without argv.
+    const stdout = Buffer.from(result.stdout, 'utf8');
+    const stderr = Buffer.from(result.stderr, 'utf8');
+    throw new ArchctxClientError({
+      code: 'RH_ARCHCTX_RESOLVE_CORRUPT_JSON',
+      action: 'retry',
+      message: `${label} returned corrupt JSON; exit ${result.status}; stdout bytes ${stdout.length}`
+        + `; stdout head ${JSON.stringify(stdout.subarray(0, 128).toString('utf8'))}`
+        + `; stdout tail ${JSON.stringify(stdout.subarray(-128).toString('utf8'))}`
+        + `; stderr tail ${JSON.stringify(stderr.subarray(-128).toString('utf8'))}`
+        + `; parse error ${JSON.stringify((error as Error).message.slice(0, 160))}`,
+    });
+  }
 }

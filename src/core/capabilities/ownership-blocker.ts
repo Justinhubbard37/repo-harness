@@ -14,7 +14,7 @@ export interface CapabilityOwnershipBlocker {
   readonly key: CapabilityOwnershipBlockerKey;
   /** The first diagnostic code; it goes into `profile_reasons`. */
   readonly code: string;
-  /** The first diagnostic message on one line, at most MESSAGE_LIMIT characters. */
+  /** The first diagnostic message on one line; corrupt resolve JSON keeps its bounded evidence. */
   readonly message: string;
   /** One command that shows or repairs the cause. */
   readonly fix: string;
@@ -34,14 +34,15 @@ const PACKAGE_ERROR_CODES: ReadonlySet<string> = new Set([
   'RH_ARCHCTX_PACKAGE_MISSING',
 ]);
 
-function oneLine(message: string): string {
+function oneLine(message: string, limit = MESSAGE_LIMIT): string {
   const flat = message.replace(/\s+/g, ' ').trim();
-  return flat.length > MESSAGE_LIMIT ? `${flat.slice(0, MESSAGE_LIMIT - 3)}...` : flat;
+  return flat.length > limit ? `${flat.slice(0, limit - 3)}...` : flat;
 }
 
 function fixFor(diagnostic: CapabilityRegistryDiagnostic, mode: CapabilitySourceMode): string {
   switch (diagnostic.code) {
     case 'ARCHCONTEXT_RESOLVE_FAILED':
+      if (diagnostic.archctxErrorCode === 'RH_ARCHCTX_RESOLVE_CORRUPT_JSON') return 'rh state resolve --json';
       return PACKAGE_ERROR_CODES.has(diagnostic.archctxErrorCode ?? '') ? 'rh update' : 'rh doctor --json';
     case 'ARCHCONTEXT_RESOLVE_TIMEOUT':
     case 'ARCHCONTEXT_RESOLVE_UNAVAILABLE':
@@ -66,7 +67,7 @@ export function capabilityOwnershipBlocker(
   return Object.freeze({
     key: UNAVAILABLE_CODES.has(diagnostic.code) ? 'capability_ownership:unavailable' : 'capability_registry:invalid',
     code: diagnostic.code,
-    message: oneLine(diagnostic.message),
+    message: oneLine(diagnostic.message, diagnostic.archctxErrorCode === 'RH_ARCHCTX_RESOLVE_CORRUPT_JSON' ? 4096 : MESSAGE_LIMIT),
     fix: fixFor(diagnostic, mode),
   });
 }

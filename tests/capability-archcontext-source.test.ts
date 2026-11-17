@@ -10,7 +10,8 @@ import {
   type Capability,
 } from "../src/core/capabilities/registry";
 
-import { formatArchcontextCapabilityError, readArchcontextCapabilityAuthority, resolveArchcontextCapabilityPaths } from "../src/effects/architecture/archcontext-owners";
+import { archcontextResolveFailure, formatArchcontextCapabilityError, readArchcontextCapabilityAuthority, resolveArchcontextCapabilityPaths } from "../src/effects/architecture/archcontext-owners";
+import { capabilityOwnershipBlocker, capabilityOwnershipNextAction } from "../src/core/capabilities/ownership-blocker";
 import { readArchitectureNativeContext } from "../src/effects/architecture/architecture-read";
 import { ArchctxClientError } from "../src/core/architecture/projection";
 import { withReadonlyObservation } from "../src/effects/readonly-observation";
@@ -341,6 +342,35 @@ describe("capability source: archctx resolve envelope checks", () => {
       expect(args.slice(0, 2)).toEqual(["resolve", "--paths-from"]);
       return { status, signal: null, stdout, stderr: "" };
     },
+  });
+
+  test("corrupt resolve JSON keeps bounded evidence and a retry hint without retrying", () => {
+    const stdout = 'invalid\n' + '路'.repeat(400) + 'stdout-tail';
+    const stderr = 'discarded-stderr-head' + 'x'.repeat(400) + '\nstderr-tail';
+    for (const status of [0, 2]) {
+      let calls = 0;
+      let failure: unknown;
+      try {
+        resolveArchcontextCapabilityPaths(ROOT, owners, ['apps/web/page.tsx'], {
+          run: () => { calls++; return { status, signal: null, stdout, stderr }; },
+        });
+      } catch (error) { failure = error; }
+      expect(calls).toBe(1);
+      expect(failure).toBeInstanceOf(ArchctxClientError);
+      const diagnostic = archcontextResolveFailure(failure);
+      expect(diagnostic.archctxErrorCode).toBe('RH_ARCHCTX_RESOLVE_CORRUPT_JSON');
+      const action = capabilityOwnershipNextAction(capabilityOwnershipBlocker(diagnostic, 'archcontext'));
+      expect(action).toContain('ARCHCONTEXT_RESOLVE_FAILED:');
+      expect(action).toContain('archctx resolve returned corrupt JSON');
+      expect(action).toContain(`exit ${status}; stdout bytes ${Buffer.byteLength(stdout, 'utf8')}`);
+      expect(action).toContain(`stdout head ${JSON.stringify(Buffer.from(stdout).subarray(0, 128).toString('utf8'))}`);
+      expect(action).toContain(`stdout tail ${JSON.stringify(Buffer.from(stdout).subarray(-128).toString('utf8'))}`);
+      expect(action).toContain(`stderr tail ${JSON.stringify(Buffer.from(stderr).subarray(-128).toString('utf8'))}`);
+      expect(action).toContain('parse error ');
+      expect(action).toEndWith('; fix: rh state resolve --json');
+      expect(action).not.toContain('discarded-stderr-head');
+      expect(action.length).toBeLessThan(4096);
+    }
   });
 
   test("maps a well-formed result and reports an unowned path", () => {
