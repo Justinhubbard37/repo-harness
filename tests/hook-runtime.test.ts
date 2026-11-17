@@ -280,6 +280,8 @@ describe('host envelopes on the real hook entry (#678)', () => {
   }
 
   const HUMAN_DEBT = 'Architecture: 1 debt item in capability.core.owned; run rh arch debt --json.';
+  /** The SessionStart notice fails open inside 3 s: it writes this one line and delivers nothing. */
+  const NOTICE_TIMEOUT = 'not finished in its time budget';
 
   function context(stdout: string, event: string, systemMessage?: string): string {
     expect(stdout.endsWith('\n')).toBe(true);
@@ -354,10 +356,21 @@ process.exit(child.status ?? 1);
             ['Stop', 'default', { stop_hook_active: false }],
             ['UserPromptSubmit', 'inbox', { prompt: 'continue' }],
           ] as const) {
-            resetCalls();
-            const result = host(root, hostName, event, route, input, { REPO_HARNESS_NODE_BIN: shim });
+            // The notice path measures inside a 3 s fail-open budget. An expired budget is
+            // load, not a state change: the product writes one diagnostic line and the next
+            // hook measures again (#3070). Repeat an undelivered run so the delivery
+            // assertion tests the notice, not the runner's speed. A run that expired after its
+            // block was measured still delivers and claims the key, so it never repeats.
+            const runOnce = () => {
+              resetCalls();
+              const run = host(root, hostName, event, route, input, { REPO_HARNESS_NODE_BIN: shim });
+              return { run, calls: archctxCalls() };
+            };
+            const undelivered = (run: { stdout: string; stderr: string }) => run.stderr.includes(NOTICE_TIMEOUT) && !run.stdout.includes('"systemMessage"');
+            let attempt = runOnce();
+            for (let retry = 0; retry < 2 && undelivered(attempt.run); retry += 1) attempt = runOnce();
+            const { run: result, calls } = attempt;
             expect(result.status, result.stderr).toBe(0);
-            const calls = archctxCalls();
             const exports = calls.filter((argv) => argv.includes('export')).length;
             const resolves = calls.filter((argv) => argv.includes('resolve')).length;
             expect(exports, `${hostName} ${event}`).toBe(0);
