@@ -850,6 +850,9 @@ const FIND_PRIMARIES: ReadonlyMap<string, readonly [Count, Count, Count]> = new 
   ...entries('-Bmin -Bnewer -Btime -flags -mnewer -xattrname', bsdOnly(1)),
 ]);
 
+/** GNU actions whose first operand is a file that find truncates and writes. */
+const FIND_OUTPUTS = new Set(['-fprint', '-fprint0', '-fls', '-fprintf']);
+
 /** GNU options that may stand before a start, as `find -xdev build`; the user means them for the starts after them. */
 const FIND_GLOBAL = new Set(['-xdev', '-mount', '-depth', '-d', '-noleaf', '-ignore_readdir_race', '-noignore_readdir_race', '-daystart',
   '-follow', '-warn', '-nowarn', '-maxdepth', '-mindepth', '-regextype', '-files0-from', '-help', '-version']);
@@ -882,6 +885,8 @@ interface FindCommand<T> {
   readonly templateFollows: boolean;
   /** A word that starts with `-` and is no known primary or operator, or `-files0-from`, whose starts come from a file. */
   readonly unknown: T | null;
+  /** The file that each `-fprint`, `-fprint0`, `-fls` or `-fprintf` truncates and writes, with its primary. */
+  readonly outputs: ReadonlyArray<{ readonly primary: string; readonly file: T }>;
 }
 
 /**
@@ -912,6 +917,7 @@ function parseFind<T extends Valued>(args: readonly T[]): FindCommand<T> {
     writes: readings.some(found => found.writes),
     templateFollows: readings.some(found => found.templateFollows),
     unknown: readings.find(found => found.unknown)?.unknown ?? null,
+    outputs: [...new Map(readings.flatMap(found => found.outputs).map(output => [output.file, output])).values()],
   };
 }
 
@@ -924,6 +930,7 @@ function readFindExpression<T extends Valued>(args: readonly T[], from: number, 
   const starts: T[] = [];
   let follow = false, writes = false, templateFollows = false, expression = false;
   let unknown: T | null = null;
+  const outputs: Array<{ primary: string; file: T }> = [];
   for (let i = from; i < args.length; i++) {
     const value = args[i]!.value ?? '';
     if (!expression && !/^[-(!)]/.test(value)) { starts.push(args[i]!); continue; }
@@ -931,6 +938,7 @@ function readFindExpression<T extends Valued>(args: readonly T[], from: number, 
     if (operands === null && !FIND_RUNS.test(value)) { unknown ??= args[i]!; expression = true; continue; }
     if (!FIND_GLOBAL.has(value)) expression = true;
     if (value === '-files0-from') unknown ??= args[i]!;
+    if (FIND_OUTPUTS.has(value) && args[i + 1]) outputs.push({ primary: value, file: args[i + 1]! });
     if (value === '-delete') writes = true;
     else if (value === '-follow') follow = true;
     else if (FIND_RUNS.test(value)) {
@@ -942,7 +950,7 @@ function readFindExpression<T extends Valued>(args: readonly T[], from: number, 
     }
     i += operands ?? 0;
   }
-  return { starts, follow, writes, templateFollows, unknown };
+  return { starts, follow, writes, templateFollows, unknown, outputs };
 }
 
 /**
@@ -1043,6 +1051,8 @@ function commandTargets(cmd: Command, cwd: string | null, home: string): WriteTa
       break;
     case 'find': {
       const find = parseFind(args);
+      // An output file is written whether or not find removes anything, and is judged as a redirect target.
+      targets.push(...find.outputs.map(output => targetOf('overwrite', `find ${output.primary}`, output.file, cwd)));
       if (!find.writes) break;
       const follows = findFollowsLinks(find, cwd);
       targets.push(...[...find.starts, ...(find.currentDirectory ? [literalArg('.')] : [])].map(arg => follows(arg)

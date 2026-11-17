@@ -302,6 +302,9 @@ describe('safety hook: Bash host route', () => {
         [refuse, 'find -fprintf list %p -delete', out], [refuse, 'find -flags nodump -delete', out], [refuse, 'find -files0-from list -delete', 'stage'],
         [null, 'find build -xattr -delete'], [null, 'find build -sparse -delete'], [null, 'find build -mnewer source.txt -delete'],
         [null, 'find build -xattrname com.apple.quarantine -delete'],
+        // #3054: the output file of -fprint, -fprint0, -fls and -fprintf is an overwrite target, judged as a redirect target is.
+        [refuse, `find build -fprint ${out}/notes.txt`], [refuse, `find build -fprint0 ${out}/notes.txt`], [refuse, `find build -fls ${out}/notes.txt`],
+        [refuse, `find build -fprintf ${out}/notes.txt %p`], [null, `find build -fprint ${out}/new-list.txt`],
         // An unknown removal refuses; an unknown overwrite refuses only when its literal directory is outside the roots.
         [refuse, 'rm -rf build/$X'], [refuse, `echo x > ${out}/$X`], [null, 'echo x > "$TARGET"'], [null, 'echo x > build/$X'],
         [null, 'rm -rf build/*'], [null, 'rm -rf build/*/'], [null, 'rm stage/*.json'], [null, 'mv stage/*.json build/'], [null, 'cp stage/*.json build/'],
