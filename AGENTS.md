@@ -9,7 +9,7 @@
 - Create task worktrees only at `/tmp/<repo>-wt-<slug>` (Windows: `os.tmpdir()`) with `rh worktrees start --issue <number>`, or `git worktree add` with that path. Never create one beside the main checkout (`../`). Commit or push before a reboot or a tmp cleanup. Closeout and sweep remove only merged, clean and unowned worktrees; to keep one, give it an unmerged commit, keep it dirty, or mark or lock it.
 - For non-trivial work, follow the global Progressive Due Diligence rule (P1 map, P2 trace, P3 decision) before design decisions or code edits.
 - Keep root CLAUDE.md and AGENTS.md as standalone regular files; repeat shared rules in both and keep host-specific guidance separate.
-- Read the current request and repo-local agent context, work on a branch, make bounded commits, verify once, then report the PR outcome. Finish the main task first. Fix a small problem found on the way directly; for a large problem, open a GitHub issue before you work on it.
+- Read the current request and repo-local agent context, work on a branch, make bounded commits, verify once, then report the PR outcome. Verify the live checkout, declared revision and real entrypoint before relying on an issue, snapshot or agent report. Verify the actual observer configuration and emitted evidence before claiming that a mechanism runs or catches a problem. Keep changes within approved scope and preserve private operations state. Do not treat an advisory, a capacity limit or a healthy startup as delivery acceptance. Finish the main task first. Fix a small problem found on the way directly; for a large problem, open a GitHub issue before you work on it.
 - Read `tasks/lessons.md` at session start and apply its active lessons. Current repo state and evidence override a lesson.
 - Ordinary tasks use the PR description: goal, scope, changes, verification, risk and rollback. No plan, contract, review, notes or approval artifact is mandatory. Record a one-time decision in the issue.
 - GitHub operations (PRs, reviews, merges, labels, releases, comments) go only through the gh/git CLI or the GitHub API. Never use simulated browser clicks on github.com: the account can be banned.
@@ -17,7 +17,7 @@
 
 ## Code Optimization Principles
 - Identify observable conditions, controllable inputs, the invariant and the actual pressure point before changing structure.
-- Keep one source of truth for each datum; other representations are deterministic projections with drift checks.
+- Keep one source of truth for each datum and reuse its existing parser or resolver. Other representations are deterministic projections with drift checks. Change authoring sources and their projections together. Dry-run and apply use the same operation model. Keep ownership, identity, authorization and freshness distinct. Shape validation and persistence do not establish authority.
 - Do not add steady-state compatibility code, dual authority, semantic fallbacks, aliases or shadow parsers; one-shot migrations fail closed and remove the retired path.
 - Share components only for observed reuse or a cross-module invariant. Use an existing workspace only for independently meaningful consumers; do not convert this single-package repo without that boundary.
 - Prefer platform/standard-library features, then installed dependencies, and the smallest direct implementation; shrink obsolete code before adding layers. The repository is yours by default: refactor duplication, blocking structure and older model-written code instead of adding to it; keep behavior unless the task changes it, state the refactor in the PR, and route a refactor into another seat's files through the orchestrator.
@@ -32,10 +32,10 @@
 - Read `.ai/harness/policy.json#rules` for enabled rules and their parameters; `src/core/ci/rules.ts` defines their meaning and repair steps.
 - Select tests by observable risk and owning runtime boundary, including error/recovery paths when affected.
 - Mechanical prose changes need link/scope validation, not new product tests; do not test incidental formatting or that deleted files stay deleted.
-- Reviewers consume the recorded command, result, revision and environment; they do not rerun passing checks to claim ownership.
+- Reviewers consume the recorded command, result, revision and environment; they do not rerun passing checks to claim ownership. Bind assertions to explicit run IDs and revisions. Select evidence by those IDs.
 - Changed inputs or a new uncovered failure justify affected delta checks; an old pass is only historical evidence for its old subject.
-- Run the full suite daily; a failure opens an automatic repair task and appears in the daily report.
-- Isolate mutable HOME, repositories and process state; use real synchronization signals and preserve complete failure output.
+- Report each independent check failure so the first failed lane does not hide later faults. Run the full suite daily; a failure opens an automatic repair task and appears in the daily report.
+- Isolate mutable HOME, repositories and process state. Use real synchronization signals instead of sleeps or longer timeouts. Preserve complete failure output.
 - Report failed, timed-out, incomplete or omitted coverage explicitly; do not manufacture receipts, waiver files or pre-fix logs.
 - Never modify or delete test assertions just to make tests pass; justify every necessary test change item by item in the PR description. Remove a redundant test only when the PR names the retained test that covers the same behavior.
 - Before you write or change tests, load the `repo-harness-test` skill (`assets/skills/repo-harness-test/SKILL.md`).
