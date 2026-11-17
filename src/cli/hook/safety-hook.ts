@@ -5,8 +5,8 @@
  * - I2: refuse a removal or overwrite of an existing file outside the agent's worktree, the managed worktree root, the system temp
  *   directory and the host agent's own memory and plan directories, unless rh's install ledger records the file as rh-created.
  *   Creates and appends pass everywhere. The user authorizes anything else locally by running the command in their own shell,
- *   which no hook sees. A writing `find` that follows links below a start (`-L`, `-follow`, `-H` on a link start) makes that
- *   start an unknown target.
+ *   which no hook sees. A writing `find` that follows links below a start (`-L`, `-follow`, `-H` on a link start, or a writing
+ *   `-exec` template with `{}/`) makes that start an unknown target.
  * - Recursive delete: refuse `rm -r`, `find -delete`/`-exec` and `git clean -x` from the repository root or an ancestor.
  *
  * The threat model is accidents. A target built at run time, a script or binary that writes, and a hidden alias are accepted
@@ -829,49 +829,130 @@ const FIND_EXEC_READERS = new Set(['cat', 'head', 'tail', 'wc', 'grep', 'rg', 'l
 
 type Valued = { readonly value: string | null };
 
-/** find writes when it deletes or runs a program that is not a reader. */
-function findWrites(args: readonly Valued[]): boolean {
-  return args.some((word, n) => word.value === '-delete' || (FIND_RUNS.test(word.value ?? '') && !FIND_EXEC_READERS.has(args[n + 1]?.value ?? '')));
+type Count = number | null;
+const both = (n: number): readonly [Count, Count, Count] => [n, n, n];
+const gnuOnly = (n: number): readonly [Count, Count, Count] => [n, null, null];
+const bsdOnly = (n: number): readonly [Count, Count, Count] => [null, n, n];
+const entries = (names: string, count: readonly [Count, Count, Count]) => names.split(' ').map(name => [name, count] as const);
+
+/**
+ * The operands of each find primary and operator: [GNU findutils manual, macOS find(1) fewest, macOS find(1) most]; null where that
+ * find has no such word. macOS `-depth` stands alone or takes `n`. The `-exec` family takes a template instead.
+ */
+const FIND_PRIMARIES: ReadonlyMap<string, readonly [Count, Count, Count]> = new Map([
+  ...entries('-delete -empty -false -true -ls -print -print0 -prune -quit -nogroup -nouser -not -and -or ! ( ) -follow -xdev -mount -noleaf -d -ignore_readdir_race -noignore_readdir_race', both(0)),
+  ...entries('-amin -anewer -atime -cmin -cnewer -ctime -fstype -gid -group -ilname -iname -inum -ipath -iregex -iwholename -links -lname -maxdepth -mindepth -mmin -mtime -name -newer -path -perm -regex -samefile -size -type -uid -user -wholename', both(1)),
+  ['-depth', [0, 0, 1]],
+  ...entries('-a -o , -daystart -warn -nowarn -executable -readable -writable -help -version', gnuOnly(0)),
+  ...entries('-regextype -files0-from -context -used -xtype -fls -fprint -fprint0 -printf', gnuOnly(1)),
+  ['-fprintf', gnuOnly(2)],
+  ...entries('-acl -sparse -xattr', bsdOnly(0)),
+  ...entries('-Bmin -Bnewer -Btime -flags -mnewer -xattrname', bsdOnly(1)),
+]);
+
+/** GNU options that may stand before a start, as `find -xdev build`; the user means them for the starts after them. */
+const FIND_GLOBAL = new Set(['-xdev', '-mount', '-depth', '-d', '-noleaf', '-ignore_readdir_race', '-noignore_readdir_race', '-daystart',
+  '-follow', '-warn', '-nowarn', '-maxdepth', '-mindepth', '-regextype', '-files0-from', '-help', '-version']);
+
+/** The three readings of the table: GNU, macOS with the fewest operands, macOS with the most. */
+type Reading = 0 | 1 | 2;
+
+/**
+ * The operands that a word takes in one reading, or null when no find knows the word. A word that one find lacks takes the other
+ * find's count: the find that lacks it stops with an error.
+ */
+function findOperands(value: string, reading: Reading): number | null {
+  const counts = FIND_PRIMARIES.get(value) ?? (/^-newer[aBcmt]{2}$/.test(value) ? both(1) : undefined);
+  if (!counts) return null;
+  return counts[reading] ?? counts.find(count => count !== null)!;
+}
+
+/** One find command line: its start paths, the link mode that applies, and what its expression does. */
+interface FindCommand<T> {
+  readonly starts: T[];
+  /** A reading names no start, so find starts from the working directory. */
+  readonly currentDirectory: boolean;
+  /** The last of -H, -L and -P among the leading options. */
+  readonly mode: string;
+  /** `-follow` stands as an option or a primary, not as an operand. */
+  readonly follow: boolean;
+  /** find deletes, or runs a program that is not a reader. */
+  readonly writes: boolean;
+  /** A writing `-exec` template passes `{}` with a separator after it, so the program walks through a matched link. */
+  readonly templateFollows: boolean;
+  /** A word that starts with `-` and is no known primary or operator, or `-files0-from`, whose starts come from a file. */
+  readonly unknown: T | null;
 }
 
 /**
- * The leading options of find up to `--` or the first other word: BSD getopt clusters of `EHLPXdsx` that may end with `f <path>`,
- * and GNU `-D <opts>` and `-O<n>`. Returns the -f start paths, the index after the options, and the last of -H, -L and -P, the
- * mode that applies.
+ * The one find option parser. Leading options run up to `--` or the first other word: BSD getopt clusters of `EHLPXdsx` that may
+ * end with `f`, whose start path is the next word, and GNU `-D <opts>` and `-O<n>`. A path glued to `-f` is never read: that word is
+ * no cluster, so it is an unknown target. The rest is read once for each table reading, and the result joins every reading, so a
+ * write that one reading reaches counts.
  */
-function findOptions<T extends Valued>(args: readonly T[]): { starts: T[]; end: number; mode: string } {
-  const starts: T[] = [];
-  let mode = 'P';
-  let i = 0;
+function parseFind<T extends Valued>(args: readonly T[]): FindCommand<T> {
+  const leading: T[] = [];
+  let mode = 'P', i = 0;
   for (; i < args.length; i++) {
     const value = args[i]!.value ?? '';
-    if (value === '--') return { starts, end: i + 1, mode };
+    if (value === '--') { i++; break; }
     if (/^-O\d$/.test(value)) continue;
     if (value === '-D') { i++; continue; }
     const cluster = /^-([EHLPXdsx]*)(f?)$/.exec(value);
     if (!cluster || value === '-') break;
     mode = cluster[1]!.replace(/[^HLP]/g, '').at(-1) ?? mode;
-    if (cluster[2] && args[i + 1]) starts.push(args[++i]!);
+    if (cluster[2] && args[i + 1]) leading.push(args[++i]!);
   }
-  return { starts, end: i, mode };
-}
-
-/** The start paths of find, before the first expression word. */
-function findStarts<T extends Valued>(args: readonly T[]): T[] {
-  const { starts, end } = findOptions(args);
-  for (let i = end; i < args.length && !/^[-(!)]/.test(args[i]!.value ?? ''); i++) starts.push(args[i]!);
-  return starts;
+  const readings = ([0, 1, 2] as const).map(reading => readFindExpression(args, i, reading));
+  return {
+    starts: [...new Set([...leading, ...readings.flatMap(found => found.starts)])],
+    currentDirectory: leading.length === 0 && readings.some(found => found.starts.length === 0),
+    mode,
+    follow: readings.some(found => found.follow),
+    writes: readings.some(found => found.writes),
+    templateFollows: readings.some(found => found.templateFollows),
+    unknown: readings.find(found => found.unknown)?.unknown ?? null,
+  };
 }
 
 /**
- * Which starts find follows links from: every start in -L mode or with -follow, a start that is a link in -H mode. A writing
- * find then reaches files below a link that its start path does not name, so the start is an unknown target. A start that
- * cannot be checked counts as a link.
+ * The starts and the expression from `from` in one reading. The starts run to the first word that starts with `-`, `(`, `!` or
+ * `)`; a GNU global option before a start is skipped with its operands. In the expression an operand is never a primary, and an
+ * `-exec` template runs to `;`, or to `+` after `{}`. A word that no find knows there is an unknown target.
  */
-function findFollowsLinks(args: readonly Arg[], cwd: string | null): (start: Arg) => boolean {
-  const { mode } = findOptions(args);
-  if (mode === 'L' || args.some(arg => arg.value === '-follow')) return () => true;
-  if (mode !== 'H') return () => false;
+function readFindExpression<T extends Valued>(args: readonly T[], from: number, reading: Reading): Omit<FindCommand<T>, 'mode' | 'currentDirectory'> {
+  const starts: T[] = [];
+  let follow = false, writes = false, templateFollows = false, expression = false;
+  let unknown: T | null = null;
+  for (let i = from; i < args.length; i++) {
+    const value = args[i]!.value ?? '';
+    if (!expression && !/^[-(!)]/.test(value)) { starts.push(args[i]!); continue; }
+    const operands = findOperands(value, reading);
+    if (operands === null && !FIND_RUNS.test(value)) { unknown ??= args[i]!; expression = true; continue; }
+    if (!FIND_GLOBAL.has(value)) expression = true;
+    if (value === '-files0-from') unknown ??= args[i]!;
+    if (value === '-delete') writes = true;
+    else if (value === '-follow') follow = true;
+    else if (FIND_RUNS.test(value)) {
+      const template: Array<string | null> = [];
+      for (i++; i < args.length && args[i]!.value !== ';' && !(args[i]!.value === '+' && template.at(-1) === '{}'); i++) template.push(args[i]!.value);
+      if (FIND_EXEC_READERS.has(template[0] ?? '')) continue;
+      writes = true;
+      templateFollows ||= template.slice(1).some(word => /\{\}[\\/]/.test(word ?? ''));
+    }
+    i += operands ?? 0;
+  }
+  return { starts, follow, writes, templateFollows, unknown };
+}
+
+/**
+ * Which starts find follows links from: every start in -L mode, with -follow or with a writing template that passes `{}/`, and a
+ * start that is a link in -H mode. A writing find then reaches files below a link that its start path does not name, so the start
+ * is an unknown target. A start that cannot be checked counts as a link.
+ */
+function findFollowsLinks(find: FindCommand<Arg>, cwd: string | null): (start: Arg) => boolean {
+  if (find.mode === 'L' || find.follow || find.templateFollows) return () => true;
+  if (find.mode !== 'H') return () => false;
   return (start) => {
     if (start.value === null || (!isAbsolute(start.value) && cwd === null)) return false;
     // The raw path keeps its `..` parts: the kernel follows a link parent before the `..` after it.
@@ -960,14 +1041,15 @@ function commandTargets(cmd: Command, cwd: string | null, home: string): WriteTa
       // dd reads `of=FILE` from the whole word, so an unknown output keeps its literal directory.
       targets.push(...each('overwrite', args.filter(arg => text(arg).startsWith('of=')).map(arg => restArg(arg, 3, home))));
       break;
-    case 'find':
-      if (findWrites(args)) {
-        const starts = findStarts(args);
-        const follows = findFollowsLinks(args, cwd);
-        targets.push(...(starts.length ? starts : [literalArg('.')]).map(arg => follows(arg)
-          ? targetOf('destroy', 'find following links', { ...arg, value: null }, cwd) : targetOf('destroy', 'find', arg, cwd)));
-      }
+    case 'find': {
+      const find = parseFind(args);
+      if (!find.writes) break;
+      const follows = findFollowsLinks(find, cwd);
+      targets.push(...[...find.starts, ...(find.currentDirectory ? [literalArg('.')] : [])].map(arg => follows(arg)
+        ? targetOf('destroy', 'find following links', { ...arg, value: null }, cwd) : targetOf('destroy', 'find', arg, cwd)));
+      if (find.unknown) targets.push(targetOf('destroy', 'find', { ...find.unknown, value: null }, cwd));
       break;
+    }
   }
   return targets;
 }
@@ -1038,9 +1120,9 @@ function recursionFinding(args: readonly Word[], dirs: Dirs, resolver: StartReso
   }
   if (program === 'find') {
     const rest = args.slice(1);
-    if (!findWrites(rest)) return null;
-    const paths = findStarts(rest);
-    return starts(paths.length ? paths : [DOT], dirs).some(c => c !== 'other')
+    const find = parseFind(rest);
+    if (!find.writes) return null;
+    return starts([...find.starts, ...(find.currentDirectory ? [DOT] : [])], dirs).some(c => c !== 'other')
       ? 'find -delete or -exec from the repository root, an ancestor or an unknown start' : null;
   }
   if (program === 'git') {

@@ -283,6 +283,25 @@ describe('safety hook: Bash host route', () => {
         [refuse, 'find -f stage -L -- -name victim.txt -exec rm {} +'], [refuse, 'find -f stage/linked -H -- -name victim.txt -exec rm {} +'],
         [refuse, `find -- ${out} -name victim.txt -delete`, 'stage'], [null, 'find -L -P stage -name victim.txt -exec rm {} +'],
         [null, 'find -L -H stage -name victim.txt -exec rm {} +'],
+        // #3041: one find parser. A writing template with `{}/` walks through a matched link; BSD `-f <path>` before -H; a GNU global
+        // option before a start; an operand of -name is not a primary.
+        [refuse, 'find stage -name linked -exec rm -r {}/ \\;'], [null, 'find stage -name linked -exec rm -r {} \\;'],
+        [refuse, 'find -f stage/linked -H -name victim.txt -delete'], [null, 'find -xdev build -delete'], [refuse, `find -xdev ${out} -delete`],
+        [null, 'find build -name -follow -delete'],
+        // #3053 r1: an attached BSD -f start (alone, clustered, after a separate -f) is a start; an unknown option word is an unknown target.
+        [refuse, `find -f stage -Hf${out} -- -name victim.txt -delete`], [refuse, `find -f${out} -name victim.txt -delete`, 'stage'],
+        [refuse, `find -Hf${out} -name victim.txt -exec rm {} +`, 'stage'], [refuse, 'find -fbuild -delete', 'stage'], [refuse, 'find -Q build -delete', 'stage'],
+        // #3053 r1 bot: -fprintf takes two operands, so a later -delete is still read.
+        [refuse, `find ${out} -fprintf -exec echo -delete`],
+        // #3053 r2: one primary table (GNU manual, macOS find(1)); -acl takes no operand; no path is read from an attached -f, so a
+        // leading -f primary with no start judges the working directory; known BSD primaries pass in a root.
+        [refuse, `find ${out} -acl -delete`], [refuse, `find ${out} -type f ! -acl -delete`], [refuse, `find ${out} -acl -exec rm {} +`],
+        [refuse, `find ${out} -acl -execdir rm {} +`], [refuse, `find ${out} -acl -ok rm {} \\;`], [refuse, `find ${out} -acl -okdir rm {} \\;`],
+        [refuse, 'find -false -o -delete', out], [refuse, 'find -fstype apfs -delete', out], [refuse, "find -follow -type f -name '*.tmp' -delete", out],
+        [refuse, 'find -fls list -delete', out], [refuse, 'find -fprint list -delete', out], [refuse, 'find -fprint0 list -delete', out],
+        [refuse, 'find -fprintf list %p -delete', out], [refuse, 'find -flags nodump -delete', out], [refuse, 'find -files0-from list -delete', 'stage'],
+        [null, 'find build -xattr -delete'], [null, 'find build -sparse -delete'], [null, 'find build -mnewer source.txt -delete'],
+        [null, 'find build -xattrname com.apple.quarantine -delete'],
         // An unknown removal refuses; an unknown overwrite refuses only when its literal directory is outside the roots.
         [refuse, 'rm -rf build/$X'], [refuse, `echo x > ${out}/$X`], [null, 'echo x > "$TARGET"'], [null, 'echo x > build/$X'],
         [null, 'rm -rf build/*'], [null, 'rm -rf build/*/'], [null, 'rm stage/*.json'], [null, 'mv stage/*.json build/'], [null, 'cp stage/*.json build/'],
