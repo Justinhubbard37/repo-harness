@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.architecture.imports.adoption",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.architecture",
+  "target": "capability.public-surface.adoption",
+  "intent": "Resolve the source checkout for the projection writer."
+}

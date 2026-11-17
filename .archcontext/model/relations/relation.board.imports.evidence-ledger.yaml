@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.board.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.organization.board",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Use shared evidence decoders and hashes for board records."
+}

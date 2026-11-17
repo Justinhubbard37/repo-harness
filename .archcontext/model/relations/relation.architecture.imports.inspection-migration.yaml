@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.architecture.imports.inspection-migration",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.architecture",
+  "target": "capability.workflow-engine.inspection-migration",
+  "intent": "Use the shared clean-room runtime for the architecture probe."
+}

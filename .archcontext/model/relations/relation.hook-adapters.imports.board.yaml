@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.hook-adapters.imports.board",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.hook-adapters",
+  "target": "capability.organization.board",
+  "intent": "Read seat reset state in lifecycle hook handlers."
+}

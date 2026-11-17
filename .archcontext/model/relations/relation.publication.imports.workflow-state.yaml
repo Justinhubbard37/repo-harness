@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.publication.imports.workflow-state",
+  "kind": "depends-on",
+  "source": "capability.organization.publication",
+  "target": "capability.workflow-engine.workflow-state",
+  "intent": "Read workflow policy and no-progress state for publication readiness."
+}

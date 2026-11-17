@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.codegraph-readiness.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.verification.codegraph-readiness",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Hash CodeGraph reader evidence."
+}

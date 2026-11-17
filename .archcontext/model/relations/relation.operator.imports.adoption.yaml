@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.operator.imports.adoption",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.operator",
+  "target": "capability.public-surface.adoption",
+  "intent": "Build the adoption plan for language settings."
+}

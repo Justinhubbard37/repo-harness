@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.adoption.imports.contract-assets",
+  "kind": "depends-on",
+  "source": "capability.public-surface.adoption",
+  "target": "capability.workflow-engine.contract-assets",
+  "intent": "Read the workflow contract asset for adoption."
+}

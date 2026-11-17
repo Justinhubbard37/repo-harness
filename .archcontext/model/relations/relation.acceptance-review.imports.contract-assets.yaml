@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.acceptance-review.imports.contract-assets",
+  "kind": "depends-on",
+  "source": "capability.verification.acceptance-review",
+  "target": "capability.workflow-engine.contract-assets",
+  "intent": "Read task role profiles for review endpoints."
+}

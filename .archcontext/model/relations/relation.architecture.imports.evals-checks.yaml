@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.architecture.imports.evals-checks",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.architecture",
+  "target": "capability.verification.evals-checks",
+  "intent": "Read CI coverage selection and test reports for capability projection."
+}

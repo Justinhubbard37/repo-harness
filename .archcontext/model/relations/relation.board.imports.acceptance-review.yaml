@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.board.imports.acceptance-review",
+  "kind": "depends-on",
+  "source": "capability.organization.board",
+  "target": "capability.verification.acceptance-review",
+  "intent": "Resolve review model families for board review selection."
+}

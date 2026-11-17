@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.general-repo-access.imports.hook-adapters",
+  "kind": "depends-on",
+  "source": "capability.runtime-mcp.general-repo-access",
+  "target": "capability.runtime-harness.hook-adapters",
+  "intent": "Write repository access events through the shared segmented log."
+}

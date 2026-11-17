@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.workflow-state.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.workflow-engine.workflow-state",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Hash workflow state inputs and projections."
+}

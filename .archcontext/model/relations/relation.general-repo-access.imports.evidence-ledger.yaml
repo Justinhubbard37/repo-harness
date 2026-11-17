@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.general-repo-access.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.runtime-mcp.general-repo-access",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Decode and hash repository access authority and tool records."
+}

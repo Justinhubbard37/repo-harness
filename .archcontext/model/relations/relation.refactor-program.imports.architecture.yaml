@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.refactor-program.imports.architecture",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.refactor-program",
+  "target": "capability.runtime-harness.architecture",
+  "intent": "Use the shared ArchContext provider and projection contracts for refactor checks."
+}

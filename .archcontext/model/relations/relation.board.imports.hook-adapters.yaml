@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.board.imports.hook-adapters",
+  "kind": "depends-on",
+  "source": "capability.organization.board",
+  "target": "capability.runtime-harness.hook-adapters",
+  "intent": "Project the selected skill surface for seat launch."
+}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.contract-assets.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.workflow-engine.contract-assets",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Decode shared tool catalog records."
+}

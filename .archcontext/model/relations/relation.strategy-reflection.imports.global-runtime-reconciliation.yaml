@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.strategy-reflection.imports.global-runtime-reconciliation",
+  "kind": "depends-on",
+  "source": "capability.public-surface.strategy-reflection",
+  "target": "capability.runtime-harness.global-runtime-reconciliation",
+  "intent": "Resolve host skill roots for strategy skills."
+}

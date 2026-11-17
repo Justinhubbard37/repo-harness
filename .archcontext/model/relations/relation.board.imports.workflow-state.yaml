@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.board.imports.workflow-state",
+  "kind": "depends-on",
+  "source": "capability.organization.board",
+  "target": "capability.workflow-engine.workflow-state",
+  "intent": "Read coordination worktree topology during closeout."
+}

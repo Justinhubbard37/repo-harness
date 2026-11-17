@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.mcp-sidecar.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.mcp-sidecar",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Hash MCP audit and guarded write evidence."
+}

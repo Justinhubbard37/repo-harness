@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.global-runtime-reconciliation.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.runtime-harness.global-runtime-reconciliation",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Hash runtime candidates and reconciliation evidence."
+}

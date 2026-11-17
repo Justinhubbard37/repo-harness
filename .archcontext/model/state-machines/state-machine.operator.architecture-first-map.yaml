@@ -50,25 +50,25 @@ regions:
 events:
   - id: "pull-requests-ready"
     label: "the pull request list is ready"
-    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:197a45d2ff0125a6cb3cb662589a22c972cf73fee57a960ce51f15bbcbad65f6" }
+    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:0135877d2e2e695caf94fa23886ece14bcc3f56781e005129eb3f72b83a88048" }
     steps:
       - when: { cycle: ["waiting"] }
         then: { cycle: "this" }
   - id: "map-built"
     label: "the map of this repository is built"
-    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:197a45d2ff0125a6cb3cb662589a22c972cf73fee57a960ce51f15bbcbad65f6" }
+    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:0135877d2e2e695caf94fa23886ece14bcc3f56781e005129eb3f72b83a88048" }
     steps:
       - when: { cycle: ["this"], result: ["none", "ready", "unavailable"], served: ["pending", "ready", "unavailable"] }
         then: { cycle: "others", result: "ready", served: "ready" }
   - id: "map-fails"
     label: "the map of this repository fails"
-    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:197a45d2ff0125a6cb3cb662589a22c972cf73fee57a960ce51f15bbcbad65f6" }
+    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:0135877d2e2e695caf94fa23886ece14bcc3f56781e005129eb3f72b83a88048" }
     steps:
       - when: { cycle: ["this"], result: ["none", "ready", "unavailable"], served: ["pending", "ready", "unavailable"] }
         then: { cycle: "others", result: "unavailable", served: "unavailable" }
   - id: "cycle-ends"
     label: "the last repository of the cycle ends"
-    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:197a45d2ff0125a6cb3cb662589a22c972cf73fee57a960ce51f15bbcbad65f6" }
+    source: { kind: "code", path: "src/effects/operator/architecture-map-collector.ts", symbol: "startArchitectureMapCollector", confirmedDigest: "sha256:0135877d2e2e695caf94fa23886ece14bcc3f56781e005129eb3f72b83a88048" }
     steps:
       - when: { cycle: ["others"] }
         then: { cycle: "idle" }

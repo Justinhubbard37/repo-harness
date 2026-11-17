@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "archcontext.relation/v1",
+  "id": "relation.adoption.imports.evidence-ledger",
+  "kind": "depends-on",
+  "source": "capability.public-surface.adoption",
+  "target": "capability.runtime-harness.evidence-ledger",
+  "intent": "Hash adoption plans and report file transaction errors."
+}
