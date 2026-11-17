@@ -180,7 +180,7 @@ describe('safety hook: Bash host route', () => {
     const skill = join(home, '.claude/skills/repo-harness-cross-review');
     const savedTmp = process.env.TMPDIR;
     try {
-      for (const dir of ['repo/build/sub', 'repo/src', 'repo/stage/d', 'repo/stage/1', 'repo/big', 'repo/w/stage', 'repo/inner', 'outside/sub', 'outside/-archive', 'repo/links', 'tmp', 'managed', 'home/links', 'home/stage']) {
+      for (const dir of ['repo/build/sub', 'repo/src', 'repo/stage/d', 'repo/stage/1', 'repo/big', 'repo/w/stage', 'repo/inner', 'outside/sub', 'outside/-archive', 'repo/links', 'repo/tree/cache/version', 'tmp', 'managed', 'home/links', 'home/stage']) {
         mkdirSync(join(root, dir), { recursive: true });
       }
       mkdirSync(skill, { recursive: true });
@@ -198,6 +198,9 @@ describe('safety hook: Bash host route', () => {
       symlinkSync(repo, join(out, 'work\\'));
       // Worktree links to outside files, and an outside link to a worktree file.
       symlinkSync(join(out, 'x.txt'), join(repo, 'links/x.txt'));
+      // A link parent before `..`: tree/current/../archive is tree/cache/archive, a link to the outside directory.
+      symlinkSync(join(repo, 'tree/cache/version'), join(repo, 'tree/current'));
+      symlinkSync(out, join(repo, 'tree/cache/archive'));
       symlinkSync(out, join(repo, 'stage/ backup'));
       symlinkSync(join(out, 'notes.txt'), join(repo, 'notes.txt'));
       symlinkSync(join(repo, 'source.txt'), join(out, 'file-link'));
@@ -256,6 +259,15 @@ describe('safety hook: Bash host route', () => {
         [refuse, `cp source.txt {build/{1..1025},${out}}`], [refuse, 'tee {build/{1..1025},links/x.txt}'],
         // GNU getopt accepts a long option prefix.
         [refuse, 'mv --target=linked stage/b.json'], [refuse, 'cp --target=linked a.txt'],
+        // #3026: a writing find that follows links below its start refuses; plain and read-only find keep today's judge.
+        [refuse, 'find -L stage -name victim.txt -delete'], [refuse, 'find stage -follow -name victim.txt -delete'],
+        [refuse, "find -L stage -name '*.txt' -exec rm {} +"], [refuse, 'find -H stage/linked -delete'], [refuse, "find -L . -name '*.txt' -delete", 'stage'],
+        [null, 'find stage -name victim.txt -delete'], [null, "find -L stage -name '*.txt' -print"], [null, 'find -H stage -delete'],
+        // #3040 r1: `..` after a link parent, options after BSD `-f <path>` and `--`, and the last of -H, -L and -P applies.
+        [refuse, 'find -H tree/current/../archive -name victim.txt -exec rm {} +'], [refuse, `find -H ${repo}/tree/current/../archive -name victim.txt -exec rm {} +`],
+        [refuse, 'find -f stage -L -- -name victim.txt -exec rm {} +'], [refuse, 'find -f stage/linked -H -- -name victim.txt -exec rm {} +'],
+        [refuse, `find -- ${out} -name victim.txt -delete`, 'stage'], [null, 'find -L -P stage -name victim.txt -exec rm {} +'],
+        [null, 'find -L -H stage -name victim.txt -exec rm {} +'],
         // An unknown removal refuses; an unknown overwrite refuses only when its literal directory is outside the roots.
         [refuse, 'rm -rf build/$X'], [refuse, `echo x > ${out}/$X`], [null, 'echo x > "$TARGET"'], [null, 'echo x > build/$X'],
         [null, 'rm -rf build/*'], [null, 'rm -rf build/*/'], [null, 'rm stage/*.json'], [null, 'mv stage/*.json build/'], [null, 'cp stage/*.json build/'],
@@ -270,6 +282,7 @@ describe('safety hook: Bash host route', () => {
       expect(wrong).toEqual([]);
       // The refusal names the resolved outside path, so the local user can authorize it.
       expect(bashSafetyDenial('mv a.txt stage/*', repo, { repoRoot: repo, env, host: 'claude' })?.reason).toContain(`would remove or change ${out},`);
+      expect(bashSafetyDenial('find -L stage -delete', repo, { repoRoot: repo, env, host: 'claude' })?.reason).toContain(`target stage of find following links from ${repo} `);
     } finally {
       if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
       rmSync(root, { recursive: true, force: true });

@@ -5,7 +5,8 @@
  * - I2: refuse a removal or overwrite of an existing file outside the agent's worktree, the managed worktree root, the system temp
  *   directory and the host agent's own memory and plan directories, unless rh's install ledger records the file as rh-created.
  *   Creates and appends pass everywhere. The user authorizes anything else locally by running the command in their own shell,
- *   which no hook sees.
+ *   which no hook sees. A writing `find` that follows links below a start (`-L`, `-follow`, `-H` on a link start) makes that
+ *   start an unknown target.
  * - Recursive delete: refuse `rm -r`, `find -delete`/`-exec` and `git clean -x` from the repository root or an ancestor.
  *
  * The threat model is accidents. A target built at run time, a script or binary that writes, and a hidden alias are accepted
@@ -752,13 +753,52 @@ function findWrites(args: readonly Valued[]): boolean {
   return args.some((word, n) => word.value === '-delete' || (FIND_RUNS.test(word.value ?? '') && !FIND_EXEC_READERS.has(args[n + 1]?.value ?? '')));
 }
 
+/**
+ * The leading options of find up to `--` or the first other word: BSD getopt clusters of `EHLPXdsx` that may end with `f <path>`,
+ * and GNU `-D <opts>` and `-O<n>`. Returns the -f start paths, the index after the options, and the last of -H, -L and -P, the
+ * mode that applies.
+ */
+function findOptions<T extends Valued>(args: readonly T[]): { starts: T[]; end: number; mode: string } {
+  const starts: T[] = [];
+  let mode = 'P';
+  let i = 0;
+  for (; i < args.length; i++) {
+    const value = args[i]!.value ?? '';
+    if (value === '--') return { starts, end: i + 1, mode };
+    if (/^-O\d$/.test(value)) continue;
+    if (value === '-D') { i++; continue; }
+    const cluster = /^-([EHLPXdsx]*)(f?)$/.exec(value);
+    if (!cluster || value === '-') break;
+    mode = cluster[1]!.replace(/[^HLP]/g, '').at(-1) ?? mode;
+    if (cluster[2] && args[i + 1]) starts.push(args[++i]!);
+  }
+  return { starts, end: i, mode };
+}
+
 /** The start paths of find, before the first expression word. */
 function findStarts<T extends Valued>(args: readonly T[]): T[] {
-  let i = 0;
-  const starts: T[] = [];
-  for (; i < args.length && /^-[HLPEXdsx]$|^-O\d$|^-f$/.test(args[i]!.value ?? ''); i++) if (args[i]!.value === '-f' && args[i + 1]) starts.push(args[++i]!);
-  for (; i < args.length && !/^[-(!)]/.test(args[i]!.value ?? ''); i++) starts.push(args[i]!);
+  const { starts, end } = findOptions(args);
+  for (let i = end; i < args.length && !/^[-(!)]/.test(args[i]!.value ?? ''); i++) starts.push(args[i]!);
   return starts;
+}
+
+/**
+ * Which starts find follows links from: every start in -L mode or with -follow, a start that is a link in -H mode. A writing
+ * find then reaches files below a link that its start path does not name, so the start is an unknown target. A start that
+ * cannot be checked counts as a link.
+ */
+function findFollowsLinks(args: readonly Arg[], cwd: string | null): (start: Arg) => boolean {
+  const { mode } = findOptions(args);
+  if (mode === 'L' || args.some(arg => arg.value === '-follow')) return () => true;
+  if (mode !== 'H') return () => false;
+  return (start) => {
+    if (start.value === null || (!isAbsolute(start.value) && cwd === null)) return false;
+    // The raw path keeps its `..` parts: the kernel follows a link parent before the `..` after it.
+    const path = isAbsolute(start.value) ? start.value : `${cwd}${sep}${start.value}`;
+    try {
+      return lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() === true;
+    } catch { return true; }
+  };
 }
 
 const DOT: Word = { kind: 'word', value: '.', pattern: '.', expand: false, glob: false, quoted: false, assign: false };
@@ -834,7 +874,9 @@ function commandTargets(cmd: Command, cwd: string | null, home: string): WriteTa
     case 'find':
       if (findWrites(args)) {
         const starts = findStarts(args);
-        targets.push(...(starts.length ? starts : [literalArg('.')]).map(arg => targetOf('destroy', 'find', arg, cwd)));
+        const follows = findFollowsLinks(args, cwd);
+        targets.push(...(starts.length ? starts : [literalArg('.')]).map(arg => follows(arg)
+          ? targetOf('destroy', 'find following links', { ...arg, value: null }, cwd) : targetOf('destroy', 'find', arg, cwd)));
       }
       break;
   }
