@@ -1,6 +1,6 @@
 # organization/board 架構文檔
 
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-organization-board" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:1248cc795cfca04b3e0547386441342d99ad7db4f25e93f41f7c37c166248f1a" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-organization-board" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:d884d5a835237780208f17c5e39f344102545206e0aa931587c4b33b2d768117" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.organization.board`(kind `capability`)
 > **Matched Prefixes**:`src/core/board/**`、`src/effects/board/**`、`src/cli/commands/board.ts`、`src/cli/commands/quota.ts`、`src/cli/commands/seats.ts`
@@ -20,9 +20,9 @@ flowchart LR
   p1_component_board_cli_d6117ee8["Board (cli)"]:::component
   p1_component_board_core_94e5aae2["Board (core)"]:::component
   p1_component_board_effects_c9450ac3["Board (effects)"]:::component
-  p1_capability_organization_board_a5242ad5 -->|"Expose the board#44; board attention#44; seats and quota commands"| p1_component_board_cli_d6117ee8
+  p1_capability_organization_board_a5242ad5 -->|"Expose board#44; attention#44; seats and quota commands#44; and validate and post typed protocol comments through board post"| p1_component_board_cli_d6117ee8
   p1_component_board_cli_d6117ee8 -->|"Run the attention rules on the collected board#44; build the seat launch and format the quota report"| p1_component_board_core_94e5aae2
-  p1_component_board_cli_d6117ee8 -->|"Collect the board of one parent issue#44; read the quota and read the Claude agent types"| p1_component_board_effects_c9450ac3
+  p1_component_board_cli_d6117ee8 -->|"Collect the board of one parent issue#44; read the quota and Claude agent types#44; and post parser-checked protocol comments through the GitHub ports"| p1_component_board_effects_c9450ac3
   p1_component_board_effects_c9450ac3 -->|"Decode the provider reads#44; the quota sources and the seats section#44; and project the board"| p1_component_board_core_94e5aae2
   classDef actor fill:#111827,color:#ffffff,stroke:#f9fafb,stroke-width:2px
   classDef component fill:#075985,color:#ffffff,stroke:#bae6fd,stroke-width:2px
@@ -30,7 +30,7 @@ flowchart LR
   classDef external fill:#7c2d12,color:#ffffff,stroke:#fed7aa,stroke-width:2px
 ```
 
-- Proof: `proven` (`sha256:00051c88907b40f3962f3b6f813a3c379474d4c263b5e755d76882ca7af3df3d`).
+- Proof: `proven` (`sha256:12d6419b7124b1afc87d9b61a3a1832a0c39f9e3f1b3358a73573028364ea7ec`).
 - Semantic nodes: `5`; declared relations: `4`.
 
 ### 1.2 模組職責表
@@ -53,7 +53,7 @@ flowchart LR
 
 出向關係:
 
-- `calls` → `component.board.cli` — Expose the board, board attention, seats and quota commands
+- `calls` → `component.board.cli` — Expose board, attention, seats and quota commands, and validate and post typed protocol comments through board post
 - `depends-on` → `capability.verification.evals-checks` — Match open CI repair issues by the marker that the CI report writes
 - `depends-on` → `capability.workflow-engine.execution-primitives` — Build the seat launch from the pane prefix, the hc terminal labels, the repository registry and the Git common directory. Read the Git runner, the hc pin, the repo-harness home and the secret token rules for the board.
 - `depends-on` → `component.contract-assets.fleet-role-profiles` — Read the fleet role profiles for the seat ranges, the seat sub-agents and the seats section check.
@@ -74,7 +74,7 @@ flowchart LR
   - 無。
 - `component.board.cli`:
   - `calls` → `component.board.core` — Run the attention rules on the collected board, build the seat launch and format the quota report
-  - `calls` → `component.board.effects` — Collect the board of one parent issue, read the quota and read the Claude agent types
+  - `calls` → `component.board.effects` — Collect the board of one parent issue, read the quota and Claude agent types, and post parser-checked protocol comments through the GitHub ports
 - `component.board.core`:
   - 無。
 - `component.board.effects`:
@@ -91,7 +91,7 @@ flowchart LR
 
 ## 2. P2:端到端數據流
 
-> **Proof**: `proven` (`sha256:00051c88907b40f3962f3b6f813a3c379474d4c263b5e755d76882ca7af3df3d`); selectors `2/2`.
+> **Proof**: `proven` (`sha256:12d6419b7124b1afc87d9b61a3a1832a0c39f9e3f1b3358a73573028364ea7ec`); selectors `2/2`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#0d1117","actorBkg":"#312e81","actorBorder":"#c4b5fd","actorTextColor":"#ffffff","signalColor":"#e5e7eb","signalTextColor":"#e5e7eb","labelBoxBkgColor":"#4c1d95","labelBoxBorderColor":"#c4b5fd","labelTextColor":"#ffffff","noteBkgColor":"#78350f","noteBorderColor":"#fcd34d","noteTextColor":"#ffffff","sequenceNumberColor":"#ffffff"}}}%%

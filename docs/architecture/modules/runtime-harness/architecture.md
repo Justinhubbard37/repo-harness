@@ -1,13 +1,13 @@
 # runtime-harness/architecture 架構文檔
 
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-architecture" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:2f17846fa77277bad22bfb742350c767674c82f260d2f97a38d81e36ec344cee" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-runtime-harness-architecture" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:5ee4b75e79ffb961151f19ff70cc6c3bb36e655569dd368b11406c6ab00fea24" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.runtime-harness.architecture`(kind `capability`)
 > **Matched Prefixes**:`src/effects/architecture/**`、`src/core/architecture/projection.ts`、`src/core/architecture/module-view.ts`、`src/core/review/module-review-prompt.ts`、`src/cli/commands/module.ts`、`src/cli/hook/agent-notice.ts`、`scripts/axr5-archctx-clean-room.ts`、`scripts/check-state-boundaries.ts`、`scripts/project-test-capabilities.ts`、`scripts/sync-helper-sources.ts`、`assets/skills/repo-harness-archimap/**`、`assets/skill-commands/repo-harness-architecture/**`、`docs/verification/**`
 > **Local Contracts**:`AGENTS.md`、`CLAUDE.md`
 > **事實優先級**:倉庫當前狀態 > 本文檔機器區 > 本文檔人工區。機器區(引言、§1、§2)由 ArchContext 從架構模型與源碼度量投影生成,手改會在下次投影被覆蓋。本文檔不記錄出處;本次投影所驗證的 commit 見 `docs/architecture/.projection-manifest.json`。
 
-The Architecture plugin: the package-local archctx closure, the architecture reads, the projection, debt and setup commands, the hook notice, the architecture Checks and the architecture skills.
+The Architecture plugin: the rh arch command tree, the pinned archctx closure, architecture reads and checks, the task posture notice and the architecture skills.
 
 ## 1. P1:能力架構地圖
 
@@ -47,6 +47,8 @@ flowchart LR
 
 | 宣告入口 | 錨點 | 職責 |
 | --- | --- | --- |
+| `entrypoint.architecture.command` | `src/cli/commands/arch-actions.ts#runArch` | `sink.architecture.command` → `src/effects/architecture/archctx-provider.ts#runArchctxPassThrough` |
+| `entrypoint.architecture.verify` | `src/cli/commands/arch-verify.ts#archVerify` | `sink.architecture.verify` → `src/effects/architecture/architecture-read.ts#readArchVerification` |
 | `entrypoint.architecture.helper-projection` | `scripts/sync-helper-sources.ts#main` | `sink.architecture.capability-projection` → `scripts/sync-helper-sources.ts#buildCapabilityProjection`、`sink.architecture.projection-write` → `src/effects/source-projection.ts#writeProjectionFileAtomic`、`sink.architecture.projection-compare` → `src/effects/source-projection.ts#sameProjectionBytes` |
 | `entrypoint.architecture.writer` | `src/cli/commands/architecture-projection-actions.ts#publish` | `sink.architecture.writer` → `src/effects/architecture/projection-writer.ts#runArchitectureWriter` |
 
