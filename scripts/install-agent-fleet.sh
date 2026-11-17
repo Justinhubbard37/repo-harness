@@ -113,20 +113,19 @@ const SOURCE_DIR = process.env.REPO_HARNESS_AGENT_FLEET_SOURCE_DIR;
 const { readInstallState } = require(
   path.join(SOURCE_DIR, "../../src/cli/installer/install-profile.ts"),
 );
-const {
-  pathRecordHost,
-  pathRecordIsCurrent,
-  pathRecordKey,
-  readPathRecords,
-  writePathRecords,
-} = require(
+const { pathRecordIsCurrent, pathRecordKey, readPathRecords } = require(
   path.join(SOURCE_DIR, "../../src/effects/host-config/path-records.ts"),
 );
+const { openHostConfigGate } = require(path.join(SOURCE_DIR, "../../src/effects/host-config/gate.ts"));
+const { hostConfigPaths } = require(path.join(SOURCE_DIR, "../../src/effects/host-config/store.ts"));
+const { migrateReplacedAgents } = require(path.join(SOURCE_DIR, "../../src/cli/installer/replaced-agents-migration.ts"));
 const ENV = { ...process.env, HOME };
 // The state check fails closed on a state that this package no longer reads.
 readInstallState(ENV);
-// A fleet file that the user keeps is a `user_managed` path record; one that rh wrote is `created`.
-const records = readPathRecords(ENV);
+const gate = openHostConfigGate({ env: ENV });
+// A fleet file that the user keeps is a `user_managed` path record; one that rh wrote is `created`, or `replaced`
+// when it replaced a user file that the vault keeps. Read again after the one-shot migration below.
+let records = readPathRecords(ENV);
 const recordOf = (targetPath) => records[pathRecordKey(ENV, targetPath)];
 
 // A generated persona carries role identity only. The anti-extras execution
@@ -222,37 +221,18 @@ function validateUserManagedCodex(agent, content) {
   }
 }
 
-/** The fleet targets that the user keeps become exactly `files`: every other fleet `user_managed` record goes. */
-function writeUserManagedRecords(fleetPaths, files) {
-  const fleetKeys = new Set(fleetPaths.map((targetPath) => pathRecordKey(ENV, targetPath)));
-  const next = Object.fromEntries(Object.entries(records)
-    .filter(([key, record]) => !(record.kind === "user_managed" && fleetKeys.has(key))));
-  for (const file of files) {
-    next[pathRecordKey(ENV, file.path)] = {
-      owner: "core", host: pathRecordHost(ENV, file.path), kind: "user_managed",
-      baseline: { state: "unknown" }, committed: { type: "file", sha256: file.sha256 },
-    };
-  }
-  writePathRecords(ENV, next);
-}
-
-function backupAgentFile(host, targetPath) {
-  const dir = path.join(HOME, ".repo-harness", "replaced-agents");
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.chmodSync(dir, 0o700);
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backup = path.join(dir, `${host}-${path.basename(targetPath)}.${stamp}-${process.pid}.bak`);
-  const mode = fs.statSync(targetPath).mode & 0o777;
-  fs.writeFileSync(backup, fs.readFileSync(targetPath), { flag: "wx", mode });
-  fs.chmodSync(backup, mode);
-  return backup;
+/** One fleet file through the gate; an existing file keeps its mode. `replace` keeps a user file in the vault first. */
+function writeAgent(targetPath, content, replace) {
+  const stat = fs.lstatSync(targetPath, { throwIfNoEntry: false });
+  const mode = stat?.isFile() ? stat.mode & 0o777 : undefined;
+  gate.writePaths([{ path: targetPath, owner: "core", entry: { type: "file", bytes: Buffer.from(content), ...(mode === undefined ? {} : { mode }) }, replace }]);
 }
 
 function shellQuote(value) {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function compareAndWrite(targetPath, content, acceptedHash, host) {
+function compareAndWrite(targetPath, content, acceptedHash) {
   let existing = null;
   try {
     existing = fs.readFileSync(targetPath, "utf8");
@@ -263,34 +243,35 @@ function compareAndWrite(targetPath, content, acceptedHash, host) {
 
   if (existing === content) return "up-to-date";
 
+  // rh writes a fleet file only as a regular file; a link to a user file (also a dangling one) is follow-up #3102.
+  if (fs.lstatSync(targetPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    return `linked (links to ${fs.readlinkSync(targetPath)}; replace the link with a regular file, then run again)`;
+  }
+
   if (existing === null) {
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, content);
+    writeAgent(targetPath, content, false);
     return "installed";
   }
 
   const owned = recordOf(targetPath);
-  const current = owned?.kind === "created" && owned.committed.type === "file" && pathRecordIsCurrent(pathRecordKey(ENV, targetPath), owned);
+  const current = (owned?.kind === "created" || owned?.kind === "replaced") && owned.committed.type === "file"
+    && pathRecordIsCurrent(pathRecordKey(ENV, targetPath), owned);
 
-  if (force) {
-    let backup;
-    if (!current) {
-      try {
-        backup = backupAgentFile(host, targetPath);
-      } catch (_error) {
-        return "backup-failed";
-      }
+  if (force && !current) {
+    try {
+      writeAgent(targetPath, content, true);
+    } catch (_error) {
+      return "backup-failed";
     }
-    fs.writeFileSync(targetPath, content);
-    return backup
-      ? `replaced (backup: ${backup}; restore: cp ${shellQuote(backup)} ${shellQuote(targetPath)})`
-      : "installed";
+    const { backup } = readPathRecords(ENV)[pathRecordKey(ENV, targetPath)];
+    const copy = path.join(hostConfigPaths(ENV).vault, backup.slice("sha256:".length));
+    return `replaced (backup: ${copy}; restore: cp ${shellQuote(copy)} ${shellQuote(targetPath)})`;
   }
 
   if (acceptedHash === sha256(existing)) return "user-managed";
 
   if (current) {
-    fs.writeFileSync(targetPath, content);
+    writeAgent(targetPath, content, false);
     return "installed";
   }
 
@@ -350,6 +331,11 @@ const targets = prepared.flatMap(({ agent, source, parsed, mapped }) => {
     },
   ];
 });
+for (const { path: targetPath, copy } of migrateReplacedAgents(ENV, targets)) {
+  console.log(`[fleet] ${targetPath}: the user file in ${copy} is now in the rh vault; rh uninstall puts it back`);
+}
+records = readPathRecords(ENV);
+
 if (acceptUserManaged) {
   const acceptedFiles = [];
   let invalid = false;
@@ -372,12 +358,12 @@ if (acceptUserManaged) {
       invalid = true;
       continue;
     }
-    acceptedFiles.push({ path: target.path, sha256: sha256(existing.text) });
+    acceptedFiles.push(target.path);
     results.push({ host: target.host, file: target.file, status: "user-managed" });
   }
   for (const entry of results) console.log(`[fleet] ${entry.host}/${entry.file}: ${entry.status}`);
   if (invalid) process.exit(1);
-  writeUserManagedRecords(targets.map((target) => target.path), acceptedFiles);
+  gate.keepUserPaths("core", targets.map((target) => target.path), acceptedFiles);
   console.log(`[fleet] user-managed records: accepted ${acceptedFiles.length} files`);
   process.exit(0);
 }
@@ -385,13 +371,13 @@ if (acceptUserManaged) {
 for (const target of targets) {
   const kept = recordOf(target.path);
   const acceptedHash = !force && kept?.kind === "user_managed" ? kept.committed.sha256 : undefined;
-  const status = compareAndWrite(target.path, target.content, acceptedHash, target.host);
+  const status = compareAndWrite(target.path, target.content, acceptedHash);
   results.push({ host: target.host, file: target.file, status });
 }
 
-const failed = results.some((entry) => entry.status === "drift" || entry.status === "backup-failed");
+const failed = results.some((entry) => entry.status === "drift" || entry.status === "backup-failed" || entry.status.startsWith("linked"));
 // A forced run takes every fleet file back, so the user's claims on them go.
-if (force && !failed) writeUserManagedRecords(targets.map((target) => target.path), []);
+if (force && !failed) gate.keepUserPaths("core", targets.map((target) => target.path), []);
 
 for (const entry of results) {
   console.log(`[fleet] ${entry.host}/${entry.file}: ${entry.status}`);

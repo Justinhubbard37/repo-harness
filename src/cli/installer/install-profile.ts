@@ -4,7 +4,7 @@ import wazaRules from "../../core/skill-surface/waza-shared-rules.json";
 import { bunGlobalPackageRoot, expectedSkillProjections, skillLinkMatches } from './skill-projection';
 import { configurationReceiptPath } from './configuration-ownership';
 import { ensurePrivateDirectory, hostConfigPaths, putVault, resolveHostPath } from '../../effects/host-config/store';
-import { openHostConfigGate, rollbackHostConfigTransaction } from '../../effects/host-config/gate';
+import { openHostConfigGate, planPathRevert, rollbackHostConfigTransaction } from '../../effects/host-config/gate';
 import { migrateCodexConfigRecords } from './codex-config-migration';
 import { migrateJsonConfigRecords } from './json-config-migration';
 import { pathRecordHost, pathRecordIsCurrent, pathRecordKey, pathRecordsDigest, readPathRecords, readPathRecordSet, registerSupportedPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
@@ -427,7 +427,9 @@ function recordCapture(env: NodeJS.ProcessEnv, records: RecordMap, capture: Capt
   const previous = prior[key];
   if (previous?.kind === 'user_managed' || records.get(key)?.kind === 'user_managed') return;
   const baseline: FileBaseline = previous?.baseline ?? (absent.has(capture.path) ? { state: 'known', existed: false } : { state: 'unknown' });
-  records.set(key, { owner: capture.owner, host, kind: 'created', baseline, committed: capture.committed });
+  // A file that replaced a user file keeps its kind and the vault reference of that file.
+  const kind = previous?.kind === 'replaced' ? { kind: 'replaced' as const, backup: previous.backup! } : { kind: 'created' as const };
+  records.set(key, { owner: capture.owner, host, baseline, committed: capture.committed, ...kind });
 }
 
 function ownerSelected(record: PathRecord, plugins: readonly PluginId[]): boolean {
@@ -441,11 +443,12 @@ function selectionRecords(records: RecordMap, plugins: readonly PluginId[]): Rec
 
 /**
  * The current records that a rebuilt set carries: each path still on disk
- * unchanged, each `user_managed` record, and every record of a kept plugin.
+ * unchanged, each `user_managed` record, each `replaced` record (it holds the
+ * vault reference of a user file), and every record of a kept plugin.
  */
 function carriedRecords(prior: PathRecords, kept: readonly PluginId[] = []): RecordMap {
   return new Map(Object.entries(prior).filter(([key, record]) => (
-    record.kind === 'user_managed' || (kept as readonly string[]).includes(record.owner) || pathRecordIsCurrent(key, record)
+    record.kind === 'user_managed' || record.kind === 'replaced' || (kept as readonly string[]).includes(record.owner) || pathRecordIsCurrent(key, record)
   )));
 }
 
@@ -867,11 +870,12 @@ export function rollbackInstallHostTransaction(
           transaction_id: basename(transaction.backup_root), plugins: unresolved.plugins, pi_packages: unresolved.sources }), { mode: 0o600 });
       } catch (error) { failures.push(`Pi recovery record: ${String((error as Error).message ?? error)}`); }
     }
-    // The gate undoes its own writes by the ledger records before the ledger file goes back, so a linked host file needs no copy here.
+    // The gate undoes its own text writes by the ledger records before the ledger file goes back, so a linked host file needs no copy here.
+    // The snapshot below still restores the whole paths, so the gate gets no transaction directory for them.
     const ledger = transaction.snapshots.find((snapshot) => basename(snapshot.path) === 'ledger.json' && basename(dirname(snapshot.path)) === 'config');
     if (ledger) {
       try {
-        const result = rollbackHostConfigTransaction(dirname(dirname(ledger.path)), ledger.existed && ledger.backup_path !== null ? readFileSync(ledger.backup_path) : null);
+        const result = rollbackHostConfigTransaction(dirname(dirname(ledger.path)), ledger.existed && ledger.backup_path !== null ? readFileSync(ledger.backup_path) : null, null);
         failures.push(...result.unresolved.map((entry) => `${entry}: rh cannot prove this host configuration entry, so it stays as it is`));
       } catch (error) { failures.push(`host configuration rollback: ${String((error as Error).message ?? error)}`); }
     }
@@ -985,29 +989,28 @@ function removeOwnedSkillLockEntries(env: NodeJS.ProcessEnv, skillNames: Readonl
 
 /**
  * Remove the owned paths and Pi packages of each plugin that the target
- * selection drops. A changed path stops the switch. The selection commit then
- * writes the records without them.
+ * selection drops. A changed path stops the switch. The gate undoes each path
+ * and drops its record, and keeps its entry in `transaction` for a rollback.
  */
 function removeRetiredOwnedSurfaces(
   plugins: readonly PluginId[],
   current: Pick<InstallState, 'pi_packages'>,
   env: NodeJS.ProcessEnv,
+  transaction: string,
 ): readonly string[] {
-  const retired = Object.entries(readPathRecords(env)).filter(([, record]) => !ownerSelected(record, plugins));
-  for (const [key, record] of retired) {
-    if (!pathRecordIsCurrent(key, record)) throw new Error(`refusing plugin switch because managed surface drifted: ${key}`);
-  }
+  const records = readPathRecords(env);
+  const retired = Object.keys(records).filter((key) => !ownerSelected(records[key]!, plugins));
+  const planned = retired.find((key) => planPathRevert(key, records[key]!) === 'kept_edited');
+  if (planned) throw new Error(`refusing plugin switch because managed surface drifted: ${planned}`);
   const ownedSkills = new Set(selectionOwnedSkillNames(loadSkillSurfaceCatalog()));
-  const removedSkills = new Set<string>();
+  const removedSkills = new Set(retired.filter((key) => records[key]!.host === 'staged' && ownedSkills.has(basename(key))).map((key) => basename(key)));
   // Only a registration that this install created is in the state.
   const piPackages = plugins.includes('pi') ? [] : current.pi_packages;
   for (const source of piPackages) removePiPackage(source, env);
-  for (const [key, record] of retired) {
-    if (record.host === 'staged' && ownedSkills.has(basename(key))) removedSkills.add(basename(key));
-    rmSync(key, { recursive: true, force: true });
-  }
+  const changed = openHostConfigGate({ env }).revertPaths(retired, { transaction }).find((entry) => entry.action === 'kept_edited');
+  if (changed) throw new Error(`refusing plugin switch because managed surface drifted: ${changed.path}`);
   removeOwnedSkillLockEntries(env, removedSkills);
-  return [...piPackages, ...retired.map(([key]) => key)];
+  return [...piPackages, ...retired];
 }
 
 /**
@@ -1024,14 +1027,15 @@ function removeArchitectureHostFragments(env: NodeJS.ProcessEnv): void {
 
 export function prepareInstallSelectionSwitch(
   plugins: readonly PluginId[],
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv,
+  transaction: string,
 ): readonly string[] {
   // The old records of the host files move to the ledger first, so the architecture revert below finds them.
   migrateCodexConfigRecords(env);
   migrateJsonConfigRecords(env);
   const current = readInstallState(env);
   if (!current) return [];
-  const removed = removeRetiredOwnedSurfaces(plugins, current, env);
+  const removed = removeRetiredOwnedSurfaces(plugins, current, env, transaction);
   if (!ownerEnabled('architecture', plugins)) removeArchitectureHostFragments(env);
   return removed;
 }

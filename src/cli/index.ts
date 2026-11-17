@@ -283,7 +283,7 @@ function runTransactionalSelectionProjection(
     let priorReceipts: PathRecords;
     try {
       priorReceipts = readInstallState(transactionEnv) ? readPathRecords(transactionEnv) : {};
-      prepareInstallSelectionSwitch(selected.record, options.env);
+      prepareInstallSelectionSwitch(selected.record, options.env ?? process.env, transaction.backup_root);
       if (plugins.includes('architecture')) registerArchitecturePlugin();
       result = runGlobalRuntimeSetup({ ...options, plugins, runtimeLock: lock });
     } catch (error) {

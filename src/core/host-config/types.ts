@@ -34,12 +34,11 @@ export type FileBaseline =
   | { readonly state: 'unknown' };
 
 /**
- * How rh first wrote the file: `created` (a new file, a revert removes it),
- * `text_block` (`apply` edited a user file) or `replaced` (a delegated
- * writer replaced a user file); a revert of the last two restores the backup
- * when the record has one.
+ * How rh first wrote the file: `created` (a new file, a revert removes it) or
+ * `text_block` (`apply` edited a user file; a revert restores the backup when
+ * the record has one).
  */
-export type FileRecordKind = 'created' | 'text_block' | 'replaced';
+export type FileRecordKind = 'created' | 'text_block';
 
 /**
  * When `apply` puts the whole file into the vault: `whole-file` before any
@@ -63,10 +62,9 @@ export interface FileRecord {
   readonly committed: FileCommitted;
   /**
    * Vault reference of the whole file before rh first wrote over bytes that
-   * rh did not write (or the adopted state before rh); required for
-   * `replaced`, null for `created` and for a `text_block` that rh only added
-   * to under `overrides-only`. It is the restore target and never changes
-   * while the record lives.
+   * rh did not write (or the adopted state before rh); null for `created` and
+   * for a `text_block` that rh only added to under `overrides-only`. It is the
+   * restore target and never changes while the record lives.
    */
   readonly backup: Sha256 | null;
   /** Vault reference of the file as an outside edit left it, from the last rh write over it; for the report, never a restore target. */
@@ -102,10 +100,12 @@ export type PathRecordHost = 'claude' | 'codex' | 'pi' | 'staged' | 'bin';
 
 /**
  * `created`: an install wrote the whole path and an uninstall removes it while
- * it is current. `user_managed`: the user keeps the file; rh never writes or
- * removes it, and dropping the record releases it.
+ * it is current. `replaced`: rh wrote a file over a user file on the user's
+ * word (`--force`); the user file is in the vault, and a revert puts it back
+ * while the path still holds what rh wrote. `user_managed`: the user keeps the
+ * file; rh never writes or removes it, and dropping the record releases it.
  */
-export type PathRecordKind = 'created' | 'user_managed';
+export type PathRecordKind = 'created' | 'replaced' | 'user_managed';
 
 export type PathCommitted =
   | { readonly type: 'file'; readonly sha256: Sha256 }
@@ -124,6 +124,8 @@ export interface PathRecord {
   readonly baseline: FileBaseline;
   /** The path as rh last recorded it; a removal acts only while the path still matches it. */
   readonly committed: PathCommitted;
+  /** Vault reference of the user file that a `replaced` record replaced; only `replaced` has it. */
+  readonly backup?: Sha256;
 }
 
 /** Protocol 2 adds `paths` (#2896); `migrateLedgerSchema` moves a protocol 1 ledger once at a mutating entry. */

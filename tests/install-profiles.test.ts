@@ -426,7 +426,7 @@ describe('install selection', () => {
       applyInstallSelection(['platform'], ['platform'], env, new Date('2026-01-01T00:00:00Z'));
       // `install --plugins product` adds core Waza surfaces that discovery does not find: a staging copy and a rule.
       const forward = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
-      prepareInstallSelectionSwitch(['product'], env);
+      prepareInstallSelectionSwitch(['product'], env, forward.backup_root);
       const rule = join(env.HOME!, '.agents', 'rules', 'english.md');
       const staged = join(env.HOME!, '.agents', 'skills', 'think');
       writePath(rule, '# rule\n');
@@ -438,7 +438,7 @@ describe('install selection', () => {
 
       // Back to platform: the switch removes product, and the projection writes the platform facade again.
       const back = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
-      prepareInstallSelectionSwitch(['platform'], env);
+      prepareInstallSelectionSwitch(['platform'], env, back.backup_root);
       for (const [host, skill] of PLUGIN_SKILLS.platform!) writeMarkedFacade(join(env.HOME!, `.${host}`, 'skills', skill), '# managed\n');
       if (writer === 'rollback') rollbackInstallSelection(env, back);
       else applyInstallSelection(['platform'], ['platform'], env, new Date('2026-01-03T00:00:00Z'), back);
@@ -1288,7 +1288,7 @@ describe('install selection', () => {
       expect(configFiles.filter(path => ownedPath(env, path) !== null), name).toEqual([]);
 
       const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
-      const removed = prepareInstallSelectionSwitch(keep, env);
+      const removed = prepareInstallSelectionSwitch(keep, env, second.backup_root);
       applyInstallSelection(keep, keep, env, new Date('2026-01-02T00:00:00Z'), second);
       commitInstallHostTransaction(second);
       expect(existsSync(archctx), name).toBe(keep.includes('architecture'));
@@ -1334,7 +1334,7 @@ describe('install selection', () => {
     const status = installStateStatus(readInstallState(env)!, env);
     expect({ outside: status.ownership_outside_root, unsupported: [...status.ownership_unsupported].sort() })
       .toEqual({ outside: [pathRecordKey(env, external)], unsupported: [pathRecordKey(env, foreign), pathRecordKey(env, personal)].sort() });
-    expect(prepareInstallSelectionSwitch([], env)).toEqual([]);
+    expect(prepareInstallSelectionSwitch([], env, join(env.HOME!, 'transaction'))).toEqual([]);
     // The next record write drops the records and keeps the files.
     recordVerifiedAgentFleetOwnership(env);
     expect(readPathRecordSet(env)).toEqual({ records: {}, outside: [], unsupported: [] });
@@ -1537,7 +1537,8 @@ describe('install selection', () => {
 
     const pristine = join(home, '.codex', 'agents', 'deep-worker.toml');
     applyInstallSelection('all', ALL_PLUGINS, env);
-    expect(ownedPath(env, pristine)).toBeNull();
+    // The fleet records its own writes through the gate.
+    expect(ownedPath(env, pristine)?.kind).toBe('created');
     expect(ownedPath(env, custom)?.kind).toBe('user_managed');
 
     // Update paths record into the existing records without re-applying the selection.
@@ -1591,7 +1592,7 @@ describe('install selection', () => {
     expect(records(env).some(({ path }) => path.includes('/reverse-skill-router'))).toBe(false);
 
     const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
-    prepareInstallSelectionSwitch([], env);
+    prepareInstallSelectionSwitch([], env, second.backup_root);
     applyInstallSelection([], [], env, new Date('2026-01-02T00:00:00Z'), second);
     commitInstallHostTransaction(second);
 
@@ -1827,7 +1828,7 @@ describe('skill projection ownership', () => {
           applyInstallSelection('all', ALL_PLUGINS, env);
           for (const dest of paths) expect(ownedPath(env, dest)?.owner).toBe('core');
         }
-        const removed = prepareInstallSelectionSwitch([], env);
+        const removed = prepareInstallSelectionSwitch([], env, join(env.HOME!, 'transaction'));
         applyInstallSelection([], [], env);
         for (const dest of paths) {
           expect(removed).not.toContain(pathRecordKey(env, dest));

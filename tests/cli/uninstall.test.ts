@@ -160,10 +160,14 @@ function legacyProfile(home: string, path: string, content: string) {
  const entry={owner:'architecture',authority:'repo-harness-install-transaction',removal:'managed-surfaces-only',path,type:'managed-file',content_hash:`sha256:${createHash('sha256').update(content).digest('hex')}`,managed_marker:'codegraph-config-projection',symlink_target:null};
  put(home,relative(home,installStateFixturePath({HOME:home})),JSON.stringify({protocol:3,...versions(['architecture']),selection:['architecture'],transaction_id:'fixture',applied_at:new Date().toISOString(),ownership_manifest:[entry],previous:null}));
 }
-test('removes profile-owned rules and retires profile but preserves user files',()=>fixture((home,env)=>{
+test('removes profile-owned rules, restores a file that rh replaced, and retires profile but preserves user files',()=>fixture((home,env)=>{
  const path=join(home,'.codex/rules/anti-patterns.md');put(home,'.codex/rules/anti-patterns.md','owned');put(home,'.codex/rules/user.md','user');
  profile(home,[ownedFile(path,'owned')]);
- expect(runUserUninstall({target:'both',env}).status).toBe('complete');expect(existsSync(path)).toBe(false);
+ const agent=join(home,'.claude/agents/explorer.md');put(home,'.claude/agents/explorer.md','mine');
+ openHostConfigGate({env}).writePaths([{path:agent,owner:'core',entry:{type:'file',bytes:Buffer.from('rh')},replace:true}]);
+ const result=runUserUninstall({target:'both',env});
+ expect(result.status).toBe('complete');expect(existsSync(path)).toBe(false);
+ expect({action:result.items.find((item)=>item.path===agent)?.action,agent:readFileSync(agent,'utf8'),paths:ledger(home).paths}).toEqual({action:'restore',agent:'mine',paths:{}});
  expect(readFileSync(join(home,'.codex/rules/user.md'),'utf8')).toBe('user');expect(existsSync(join(home,'.repo-harness/install-state.json'))).toBe(false);
 }));
 test('modified profile-owned rule remains retryable with ownership retained',()=>fixture((home,env)=>{

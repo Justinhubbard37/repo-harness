@@ -1,6 +1,6 @@
 import { globalConfigurationPath, mutateGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { globalRuntimeScope, withRuntimeTransactionContext, type RuntimeTransactionContext } from '../../effects/locking/runtime-transaction-lock';
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
@@ -13,12 +13,12 @@ import { readRepositoryExcludes, repositoryCommonDirectory, repositoryExcludesLe
 import { readInstallState } from './install-profile';
 import { installStatePendingMigration, migrateInstallState, planInstallStateMigration } from './install-state-migration';
 import type { PathRecord } from '../../core/host-config/types';
-import { pathRecordIsCurrent, pathRecordsDigest, readPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
+import { pathRecordsDigest, readPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
 import { installProfileStatePath } from './install-state';
 import { assertConfigurationPath, configurationReceiptPath, hostConfigurationRoot, writePrivateConfiguration } from './configuration-ownership';
 import { migrateCodexConfigRecords, planCodexConfigMigration, previewAdoptedRevert } from './codex-config-migration';
 import { migrateJsonConfigRecords, planJsonConfigMigration, previewJsonAdoptedRevert } from './json-config-migration';
-import { openHostConfigGate, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
+import { openHostConfigGate, planPathRevert, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
 import { hostConfigPaths, resolveHostPath } from '../../effects/host-config/store';
 
 export interface UninstallOptions { target: 'codex' | 'claude' | 'both'; dryRun?: boolean; env?: NodeJS.ProcessEnv; runtimeLock?: RuntimeTransactionContext }
@@ -128,6 +128,8 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   const recordRoots = new Map<string, string>();
   const surfaceRoot = (path: string) => recordRoots.get(path) ?? (path === lock.path ? lock.root : repositoryExcludes.has(path) ? dirname(path) : path.startsWith(piSkills + '/') ? dirname(piSkills) : home);
   const removedSurfaces = new Set<string>();
+  // The gate's dry-run revert of each path record in removedSurfaces; the apply must match it.
+  const pathReverts = new Map<string, HostConfigRevertEntry>();
   const removedPi = new Set<string>();
   const remember = (path: string): void => { if (!originals.has(path)) originals.set(path, fingerprint(path)); };
   const read = (path: string): string => writes.has(path) ? writes.get(path) ?? '' : existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -212,7 +214,10 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
     // The host comes from the path as the install named it, so a linked ~/.claude still is `claude`.
     if (opts.target !== 'both' && record.host !== opts.target) continue;
     // The user keeps the file; the uninstall only releases the record.
-    if (record.kind === 'user_managed') { if (opts.target === 'both') removedSurfaces.add(key); continue; }
+    if (record.kind === 'user_managed') {
+      if (opts.target === 'both') { removedSurfaces.add(key); pathReverts.set(key, { path: key, action: 'released' }); }
+      continue;
+    }
     if (record.host === 'bin') {
       items.push({ path: key, action: 'preserve', reason: 'package-manager installation retained; remove separately after configuration cleanup' });
       continue;
@@ -221,11 +226,16 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       recordRoots.set(key, realRoot(record.host === 'pi' ? dirname(piSkills) : home));
       // A record may own the final symlink, but never a symlinked parent directory.
       assertConfigurationPath(dirname(key), surfaceRoot(key));
-      if (!fileExists(key)) { removedSurfaces.add(key); continue; }
-      if (!pathRecordIsCurrent(key, record)) { unresolved(key, 'owned surface changed since installation; preserved'); continue; }
-      remember(key); surfaceRemovals.push(key);
-      items.push({ path: key, action: 'remove', reason: 'unchanged transaction-owned surface' });
+      // The records of a dry-run migration are not in the ledger yet, so the plan reads them from `records`.
+      const action = planPathRevert(key, record);
+      if (action === 'kept_edited') { unresolved(key, 'owned surface changed since installation; preserved'); continue; }
+      pathReverts.set(key, { path: key, action });
       removedSurfaces.add(key);
+      if (action === 'released') continue;
+      remember(key); surfaceRemovals.push(key);
+      items.push(action === 'restored'
+        ? { path: key, action: 'restore', reason: 'unchanged transaction-owned file; the user file it replaced comes back from the vault' }
+        : { path: key, action: 'remove', reason: 'unchanged transaction-owned surface' });
     } catch (error) { unresolved(key, String((error as Error).message)); }
   }
 
@@ -282,17 +292,16 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   }
 
   const statePath = installProfileStatePath(env);
-  // The path records that stay: all go with a retired state, and a partial run keeps the rest for a retry or the other host.
-  let pendingRecords: PathRecords | null = null;
+  // A retired state drops every path record that the gate revert leaves (the preserved `bin` entries); a partial run keeps them for a retry or the other host.
+  let retireRecords = false;
   const recordsDigest = pathRecordsDigest(records);
   if (state) {
     const pendingPi = state.pi_packages.filter((source) => !removedPi.has(source));
     if (opts.target === 'both' && !pendingPi.length && !items.some((item) => item.action === 'unresolved')) {
       change(statePath, null, 'install state retired');
-      pendingRecords = {};
-    } else if (removedSurfaces.size || removedPi.size) {
-      pendingRecords = Object.fromEntries(Object.entries(records).filter(([key]) => !removedSurfaces.has(key)));
-      if (removedPi.size) change(statePath, `${JSON.stringify({ ...state, pi_packages: pendingPi, previous: null }, null, 2)}\n`, 'retain remaining ownership for retry/other host');
+      retireRecords = true;
+    } else if (removedPi.size) {
+      change(statePath, `${JSON.stringify({ ...state, pi_packages: pendingPi, previous: null }, null, 2)}\n`, 'retain remaining ownership for retry/other host');
     }
   }
   items.push({ path: join(home, '.repo-harness'), action: 'preserve', reason: 'archives, runtime history and the MCP config retained; third-party packages/plugins retained' });
@@ -309,10 +318,11 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       if (typeof lockCleanup === 'string') { writePrivateConfiguration(lock.path, lockCleanup, lock.root); writes.delete(lock.path); }
       // A failed Pi readback stops before the ownership ledger is written.
       for (const source of piRemovals) removePiPackage(source, env);
-      if (pendingRecords !== null && pathRecordsDigest(readPathRecords(env)) !== recordsDigest) throw new Error(`configuration changed after preview: ${hostConfigPaths(env).ledger}`);
-      for (const key of surfaceRemovals) rmSync(key, { recursive: true, force: true });
-      // The records go after their paths, so a stop between them leaves a record of a missing path, which a retry drops.
-      if (pendingRecords !== null) writePathRecords(env, pendingRecords);
+      const surfaces = [...removedSurfaces];
+      if ((surfaces.length || retireRecords) && pathRecordsDigest(readPathRecords(env)) !== recordsDigest) throw new Error(`configuration changed after preview: ${hostConfigPaths(env).ledger}`);
+      // The gate undoes each entry and then drops its record, so a stop between them leaves a record of a missing path, which a retry releases.
+      if (surfaces.length && !sameRevert(gate.revertPaths(surfaces), surfaces.map((key) => pathReverts.get(key)!))) throw new Error(`configuration changed after preview: ${surfaces.join(', ')}`);
+      if (retireRecords) writePathRecords(env, {});
       for (const [path, content] of writes) {
         assertConfigurationPath(path, surfaceRoot(path));
         if (path === globalConfigurationPath(env)) {

@@ -1,3 +1,4 @@
+import { readFileSync, rmSync } from 'node:fs';
 import { sha256Prefixed } from '../../core/evidence/sha256';
 import { planFile, type FilePlan, type PlannedFragment } from '../../core/host-config/plan';
 import { fragmentFormat } from '../../core/host-config/registry';
@@ -16,6 +17,8 @@ import {
   EMPTY_LEDGER,
   type HostConfigLedger,
   type HostPath,
+  type PathCommitted,
+  type PathRecord,
   type Sha256,
   type SkippedOverride,
   type TextRange,
@@ -29,6 +32,7 @@ import {
   missingDirectories,
   observeFile,
   parseLedger,
+  hostPathKey,
   pathRecordOf,
   putVault,
   readLedger,
@@ -41,6 +45,19 @@ import {
   type HostConfigPaths,
 } from './store';
 import { isPathInside } from '../path-containment';
+import { pathRecordHost, pathRecordIsCurrent } from './path-records';
+import {
+  discardStagedEntry,
+  hasPreimage,
+  keepPreimage,
+  observePathEntry,
+  publishPathEntry,
+  removePathEntry,
+  restorePreimage,
+  sameCommitted,
+  stagePathEntry,
+  type PathEntry,
+} from './whole-path';
 
 export interface HostConfigFileChange {
   readonly path: string;
@@ -57,8 +74,39 @@ export interface HostConfigApplyResult {
 }
 
 export interface HostConfigDelegateResult {
+  /** The path-record keys whose entry the writer changed. */
   readonly changed: readonly string[];
 }
+
+/** One whole entry for the gate to write at a host path, owned by `owner` (`core` or a plugin id). */
+export interface HostConfigPathWrite {
+  readonly path: string;
+  readonly owner: string;
+  readonly entry: PathEntry;
+  /**
+   * The user's word to replace a file that rh does not own (`--force`): the
+   * gate keeps that file in the vault first and records `replaced`.
+   */
+  readonly replace?: boolean;
+}
+
+/** A host path that an out-of-process writer may write, owned by `owner`. */
+export interface HostConfigPathDeclaration {
+  readonly path: string;
+  readonly owner: string;
+  /** As in `HostConfigPathWrite`: the writer may replace a file that rh does not own. */
+  readonly replace?: boolean;
+}
+
+export interface HostConfigPathOptions {
+  /**
+   * The runtime transaction directory. Before the gate replaces or removes an
+   * entry that rh owns, it keeps a copy here, so a rollback of the transaction
+   * can put it back; the transaction deletes the directory at commit.
+   */
+  readonly transaction?: string;
+}
+
 
 export interface HostConfigRevertEntry {
   readonly path: string;
@@ -110,11 +158,42 @@ export interface HostConfigGateOptions {
 export interface HostConfigGate {
   apply(changes: readonly HostConfigFileChange[]): HostConfigApplyResult;
   /**
-   * Only for out-of-process writers: `run` gets the destinations with links
-   * followed and may write them. The gate backs up the bytes that rh did not
-   * write and records each path before `run`, and records each change after.
+   * Write whole entries (a file, a link, a directory tree) and record each as
+   * a path record before it is published. An existing path must be rh's (a
+   * current record of the same owner); any other existing path is refused,
+   * except a file under `replace`, which goes to the vault first.
    */
-  delegate(declaredPaths: readonly string[], run: (destinations: readonly string[]) => void): HostConfigDelegateResult;
+  writePaths(writes: readonly HostConfigPathWrite[], options?: HostConfigPathOptions): readonly string[];
+  /**
+   * Only for out-of-process writers: `run` gets the path-record keys (parent
+   * links followed, leaf kept) and may write them. The gate keeps the files
+   * that `replace` lets the writer replace in the vault before `run`, and
+   * records each entry that the writer changed after it. A changed path that
+   * rh did not own and that `replace` did not allow is reported and not
+   * recorded.
+   */
+  delegate(declared: readonly HostConfigPathDeclaration[], run: (destinations: readonly string[]) => void, options?: HostConfigPathOptions): HostConfigDelegateResult;
+  /**
+   * Undo the path records of the named paths, which the caller takes from the
+   * records that may grant a removal (`readPathRecords`): a `created` entry goes
+   * while it is current, a `replaced` file gets the user file back while it
+   * still holds rh's bytes, and a `user_managed` record is released. A changed
+   * entry stays with its record and is reported `kept_edited`.
+   */
+  revertPaths(paths: readonly string[], options?: HostConfigPathOptions): readonly HostConfigRevertEntry[];
+  /**
+   * The user's word that they keep each file in `kept`: its record becomes
+   * `user_managed` with the file's current hash. Every other `user_managed`
+   * record of a path in `scope` goes. `kept` must be inside `scope`.
+   */
+  keepUserPaths(owner: string, scope: readonly string[], kept: readonly string[]): void;
+  /**
+   * One-shot migration: rh's current file at `path` replaced the user file
+   * `backup` before the ledger had path records. The backup goes to the vault
+   * and the record becomes `replaced`. The path must have no record or a
+   * current `created` record of `owner`.
+   */
+  adoptReplacedPath(path: string, owner: string, backup: Buffer): void;
   /**
    * Undo rh's recorded writes, for the named paths or for all; a path without
    * a record is not touched. With an owner or selector filter, only the
@@ -293,44 +372,218 @@ function applyChanges(paths: HostConfigPaths, changes: readonly HostConfigFileCh
   return { written, skipped };
 }
 
-function delegateWrite(paths: HostConfigPaths, declaredPaths: readonly string[], run: (destinations: readonly HostPath[]) => void): HostConfigDelegateResult {
-  const targets = admitPaths(paths, declaredPaths);
-  const ledger = readLedger(paths);
-  refuseRecordedPaths(ledger, targets);
-  const files = { ...ledger.files };
-  const persist = () => writeLedger(paths, { ...ledger, files });
-  const observed = targets.map((path) => {
-    const previous = files[path];
-    // A whole-file writer would replace rh's text blocks and the user's bytes around them with no record of either.
-    if (previous?.kind === 'text_block') throw new HostConfigError('host_config_invalid_state', `rh text blocks are recorded in this file, so a delegated writer may not replace it: ${path}`);
-    const { observation, bytes } = observeFile(path);
-    const preimage = expectedOf(observation, path);
-    const backup = backupUserBytes(paths, previous, preimage, bytes, true);
-    const provisional = nextFileRecord(previous, { kind: preimage.existed ? 'replaced' : 'created', backup, baselineUnknown: false }, preimage, preimage);
-    return { path, preimage, previous, provisional };
-  });
-  for (const { path, provisional } of observed) files[path] = provisional;
-  persist();
-  let failure: unknown = null;
-  try { run(targets); } catch (error) { failure = error; }
+// ---- whole paths --------------------------------------------------------
 
-  // Every change the writer made keeps its record, also when the writer failed; an unchanged path gets its old record back.
-  const changed: HostPath[] = [];
-  for (const { path, preimage, previous, provisional } of observed) {
-    const result = expectedOf(observeFile(path).observation, path);
-    if (!sameExpected(result, preimage)) {
-      files[path] = { ...provisional, committed: committedOf(result) };
-      changed.push(path);
-    } else if (previous) {
-      files[path] = previous;
-      markExternalChange(files, path, preimage);
-    } else {
-      delete files[path];
+/** A path record key, the host that the install root names, and the record of another key whose directory holds it. */
+function admitWholePath(env: NodeJS.ProcessEnv, paths: HostConfigPaths, ledger: HostConfigLedger, path: string): { key: string; host: PathRecord['host'] } {
+  const key = hostPathKey(paths, path);
+  const host = pathRecordHost(env, path);
+  if (host === null) throw new HostConfigError('host_config_invalid_path', `not inside an install root, so rh records no whole path there: ${path}`);
+  const holder = pathRecordOf(ledger, key as HostPath);
+  if (holder !== null && holder !== key) throw new HostConfigError('host_config_invalid_state', `the recorded directory ${holder} holds this path, so rh does not write it on its own: ${path}`);
+  // A whole entry would replace rh's text blocks and the user's bytes around them with no record of either.
+  if (ledger.files[key]?.kind === 'text_block') throw new HostConfigError('host_config_invalid_state', `rh text blocks are recorded in this file, so rh does not write it as a whole path: ${path}`);
+  return { key, host };
+}
+
+/** True when the entry at the key is rh's to replace for `owner`: a current record of that owner that the user does not keep. */
+function ownsEntry(record: PathRecord | undefined, owner: string, key: string): record is PathRecord {
+  return record !== undefined && record.owner === owner && record.kind !== 'user_managed' && pathRecordIsCurrent(key, record);
+}
+
+function refusal(path: string, record: PathRecord | undefined, owner: string): HostConfigError {
+  const reason = !record ? 'rh has no record of it' : record.owner !== owner ? `rh records it for ${record.owner}`
+    : record.kind === 'user_managed' ? 'the user keeps it' : 'it changed since rh wrote it';
+  return new HostConfigError('host_config_invalid_state', `${reason}, so rh does not replace it: ${path}`);
+}
+
+/** The bytes of a user file that `replace` lets rh write over, in the vault; only a regular file qualifies. */
+function vaultUserFile(paths: HostConfigPaths, key: string, observed: PathCommitted, path: string): Sha256 {
+  if (observed.type !== 'file') throw new HostConfigError('host_config_invalid_state', `only a file can be replaced on the user's word: ${path}`);
+  return putVault(paths, readFileSync(key));
+}
+
+function nextPathRecord(previous: PathRecord | undefined, owner: string, host: PathRecord['host'], observed: PathCommitted | null,
+  committed: PathCommitted, backup: Sha256 | undefined): PathRecord {
+  const baseline = previous?.baseline ?? (observed === null ? { state: 'known' as const, existed: false as const }
+    : observed.type === 'file' ? { state: 'known' as const, existed: true as const, sha256: observed.sha256 } : { state: 'unknown' as const });
+  const kept = backup ?? (previous?.kind === 'replaced' ? previous.backup : undefined);
+  return { owner, host, kind: kept ? 'replaced' : 'created', baseline, committed, ...(kept ? { backup: kept } : {}) };
+}
+
+/** `validPathRecord` holds a `replaced` record to a file: the user file that it replaced comes back as a file. */
+function assertReplacedIsFile(record: PathRecord, path: string): void {
+  if (record.kind === 'replaced' && record.committed.type !== 'file') {
+    throw new HostConfigError('host_config_invalid_state', `rh replaced a user file here, so it writes only a file at this path: ${path}`);
+  }
+}
+
+/** Each record reaches the ledger before its entry is published, so every whole-path write has its record. */
+function writeWholePaths(env: NodeJS.ProcessEnv, paths: HostConfigPaths, writes: readonly HostConfigPathWrite[], options: HostConfigPathOptions): string[] {
+  const ledger = readLedger(paths);
+  const records = { ...ledger.paths };
+  let directories = ledger.directories;
+  const persist = () => writeLedger(paths, { ...ledger, paths: records, directories });
+  const admitted = writes.map((write) => ({ write, ...admitWholePath(env, paths, ledger, write.path) }));
+  if (new Set(admitted.map(({ key }) => key)).size !== admitted.length) throw new HostConfigError('host_config_invalid_state', 'a call names one path twice');
+  const written: string[] = [];
+  for (const { write, key, host } of admitted) {
+    const previous = records[key];
+    const observed = observePathEntry(key);
+    let backup: Sha256 | undefined;
+    if (observed !== null && !ownsEntry(previous, write.owner, key)) {
+      if (!write.replace) throw refusal(write.path, previous, write.owner);
+      backup = vaultUserFile(paths, key, observed, write.path);
+    }
+    const createdDirs = missingDirectories(key as HostPath);
+    createDirectories(createdDirs);
+    let staged: string | null = null;
+    try {
+      const stage = stagePathEntry(key, write.entry);
+      staged = stage.staged;
+      const next = nextPathRecord(previous, write.owner, host, observed, stage.committed, backup);
+      assertReplacedIsFile(next, write.path);
+      if (sameCommitted(observed, stage.committed) && previous && JSON.stringify(previous) === JSON.stringify(next)) {
+        discardStagedEntry(staged);
+        continue;
+      }
+      if (observed !== null && backup === undefined && options.transaction) keepPreimage(options.transaction, key);
+      records[key] = next;
+      directories = [...directories, ...createdDirs];
+      persist();
+      publishPathEntry(staged, key);
+      staged = null;
+      written.push(key);
+    } catch (error) {
+      if (staged) discardStagedEntry(staged);
+      if (previous) records[key] = previous; else delete records[key];
+      directories = directories.filter((directory) => !createdDirs.includes(directory));
+      removeCreatedDirectories(createdDirs);
+      persist();
+      throw error;
     }
   }
-  persist();
+  return written;
+}
+
+/**
+ * The out-of-process form of `writeWholePaths`. Every destination is checked
+ * before `run`: an existing entry must be rh's, or a file under `replace`,
+ * which goes to the vault first; any other destination stops the call before
+ * the writer runs. Records follow the writer: a path that it did not change
+ * keeps the record that the ledger then holds, so the writer's own record
+ * changes (a `user_managed` claim) stay.
+ */
+function delegateWholePaths(env: NodeJS.ProcessEnv, paths: HostConfigPaths, declared: readonly HostConfigPathDeclaration[],
+  run: (destinations: readonly string[]) => void, options: HostConfigPathOptions): HostConfigDelegateResult {
+  const ledger = readLedger(paths);
+  const admitted = declared.map((declaration) => ({ declaration, ...admitWholePath(env, paths, ledger, declaration.path) }));
+  if (new Set(admitted.map(({ key }) => key)).size !== admitted.length) throw new HostConfigError('host_config_invalid_state', 'a call names one path twice');
+  const checked = admitted.map(({ declaration, key, host }) => {
+    const previous = ledger.paths[key];
+    const observed = observePathEntry(key);
+    const owned = observed === null || ownsEntry(previous, declaration.owner, key);
+    if (!owned && !(declaration.replace && observed.type === 'file')) {
+      throw observed.type === 'file' || !declaration.replace ? refusal(declaration.path, previous, declaration.owner)
+        : new HostConfigError('host_config_invalid_state', `only a file can be replaced on the user's word: ${declaration.path}`);
+    }
+    return { declaration, key, host, previous, observed, owned };
+  });
+  const before = checked.map((entry) => {
+    const backup = entry.owned ? undefined : putVault(paths, readFileSync(entry.key));
+    if (entry.observed !== null && entry.owned && options.transaction) keepPreimage(options.transaction, entry.key);
+    return { ...entry, backup };
+  });
+  let failure: unknown = null;
+  try { run(admitted.map(({ key }) => key)); } catch (error) { failure = error; }
+
+  const after = readLedger(paths);
+  const records = { ...after.paths };
+  const changed: string[] = [];
+  const invalid: string[] = [];
+  for (const { declaration, key, host, previous, observed, owned, backup } of before) {
+    const now = observePathEntry(key);
+    if (sameCommitted(now, observed)) continue;
+    const next = now === null ? null : nextPathRecord(owned ? previous : undefined, declaration.owner, host, observed, now, backup);
+    // A `replaced` path that the writer made a link or a tree keeps no record; the user file stays in the vault.
+    if (next?.kind === 'replaced' && next.committed.type !== 'file') { delete records[key]; invalid.push(declaration.path); continue; }
+    if (next === null) delete records[key]; else records[key] = next;
+    changed.push(key);
+  }
+  writeLedger(paths, { ...after, paths: records });
   if (failure !== null) throw failure;
+  if (invalid.length) throw new HostConfigError('host_config_invalid_state', `rh replaced a user file at these paths, but the delegated writer did not leave a file there: ${invalid.join(', ')}`);
   return { changed };
+}
+
+function keepUserPaths(env: NodeJS.ProcessEnv, paths: HostConfigPaths, owner: string, scope: readonly string[], kept: readonly string[]): void {
+  const ledger = readLedger(paths);
+  const records = { ...ledger.paths };
+  const inScope = new Map(scope.map((path) => { const admitted = admitWholePath(env, paths, ledger, path); return [admitted.key, admitted.host]; }));
+  for (const key of inScope.keys()) if (records[key]?.kind === 'user_managed') delete records[key];
+  for (const path of kept) {
+    const key = hostPathKey(paths, path);
+    const host = inScope.get(key);
+    if (host === undefined) throw new HostConfigError('host_config_invalid_path', `a kept path must be inside the scope: ${path}`);
+    const committed = observePathEntry(key);
+    if (committed?.type !== 'file') throw new HostConfigError('host_config_invalid_state', `the user keeps only a file: ${path}`);
+    records[key] = { owner, host, kind: 'user_managed', baseline: { state: 'unknown' }, committed };
+  }
+  writeLedger(paths, { ...ledger, paths: records });
+}
+
+function adoptReplacedPath(env: NodeJS.ProcessEnv, paths: HostConfigPaths, path: string, owner: string, backup: Buffer): void {
+  const ledger = readLedger(paths);
+  const { key, host } = admitWholePath(env, paths, ledger, path);
+  const previous = ledger.paths[key];
+  const committed = observePathEntry(key);
+  if (committed?.type !== 'file') throw new HostConfigError('host_config_invalid_state', `only a file can have replaced a user file: ${path}`);
+  if (previous && !(previous.kind === 'created' && ownsEntry(previous, owner, key))) throw refusal(path, previous, owner);
+  const record: PathRecord = { owner, host, kind: 'replaced', baseline: previous?.baseline ?? { state: 'unknown' }, committed, backup: putVault(paths, backup) };
+  writeLedger(paths, { ...ledger, paths: { ...ledger.paths, [key]: record } });
+}
+
+/**
+ * The undo that a path record gets now, with no write: a caller that plans
+ * from records that the ledger does not hold yet (a dry-run migration) uses
+ * the same rule as `revertPaths`.
+ */
+export function planPathRevert(key: string, record: PathRecord): HostConfigRevertEntry['action'] {
+  if (record.kind === 'user_managed') return 'released';
+  if (observePathEntry(key) === null) return record.kind === 'created' ? 'released' : 'kept_edited';
+  if (!pathRecordIsCurrent(key, record)) return 'kept_edited';
+  return record.kind === 'replaced' ? 'restored' : 'removed';
+}
+
+function revertWholePath(paths: HostConfigPaths, key: string, record: PathRecord, transaction: string | undefined): HostConfigRevertEntry['action'] {
+  const action = planPathRevert(key, record);
+  if (action !== 'restored' && action !== 'removed') return action;
+  if (transaction) keepPreimage(transaction, key);
+  if (record.kind === 'replaced') {
+    const committed = record.committed as Extract<PathCommitted, { type: 'file' }>;
+    replaceTarget(key as HostPath, readVault(paths, record.backup!), { existed: true, sha256: committed.sha256 });
+  } else removePathEntry(key);
+  return action;
+}
+
+function revertWholePaths(paths: HostConfigPaths, only: readonly string[], options: HostConfigPathOptions): HostConfigRevertEntry[] {
+  const ledger = readLedger(paths);
+  const records = { ...ledger.paths };
+  const keys = only.map((path) => hostPathKey(paths, path));
+  const report: HostConfigRevertEntry[] = [];
+  const dropped: string[] = [];
+  for (const key of keys) {
+    const record = records[key];
+    if (!record) continue;
+    const action = revertWholePath(paths, key, record, options.transaction);
+    if (action !== 'kept_edited') { delete records[key]; dropped.push(key); }
+    report.push({ path: key, action });
+  }
+  const attempted = ledger.directories.filter((directory) => dropped.some((key) => isPathInside(directory, key)));
+  const kept = removeCreatedDirectories(attempted);
+  const directories = ledger.directories.filter((directory) => !attempted.includes(directory) || kept.includes(directory));
+  writeLedger(paths, { ...ledger, paths: records, directories });
+  return report;
 }
 
 interface FragmentRevert {
@@ -406,7 +659,7 @@ export function planFileRevert(input: FileRevertInput): FileRevertPlan {
     if (kind === 'created') return { entry: { path, action: 'removed' }, write: input.existed ? { kind: 'remove' } : null, record: 'drop', removed: all };
     const backup = input.backup();
     if (input.bytes !== null && backup.equals(input.bytes)) return { entry: { path, action: 'released' }, write: null, record: 'drop', removed: all };
-    return { entry: { path, action: kind === 'replaced' ? 'restored' : 'text_removed' }, write: { kind: 'replace', content: backup }, record: 'drop', removed: all };
+    return { entry: { path, action: 'text_removed' }, write: { kind: 'replace', content: backup }, record: 'drop', removed: all };
   }
   if (!input.existed || input.bytes === null) return { entry: { path, action: 'kept_edited', kept: own.map((entry) => entry.selector) }, write: null, record: 'keep', removed: [] };
   const result = revertFragments(path, decode(input.bytes, path), own, all, input.hasBackup ? decode(input.backup(), path) : null);
@@ -419,7 +672,7 @@ export function planFileRevert(input: FileRevertInput): FileRevertPlan {
     const action = result.kept.length || !removed.size ? 'kept_edited' : 'text_removed';
     return { entry: withKept(action), write: removed.size ? { kind: 'replace', content } : null, record: removed.size ? 'update' : 'keep', removed: result.removed };
   }
-  // A changed file with no fragment to take out (a created or replaced file) stays with its record.
+  // A changed file with no fragment to take out (a created file) stays with its record.
   if (!removed.size && !(kind === 'text_block' && !input.hasBackup)) return { entry: withKept('kept_edited'), write: null, record: 'keep', removed: [] };
   const empty = kind === 'created' && all.some((record) => fragmentFormat(path, record.selector)?.empty(result.content) === true);
   const write = empty ? { kind: 'remove' as const } : removed.size ? { kind: 'replace' as const, content } : null;
@@ -515,8 +768,12 @@ const fragmentKey = (record: FragmentRecord): string => `${record.owner}\0${reco
 
 /**
  * The rollback of the gate writes of one install transaction, from the ledger
- * as it was before the transaction (`snapshot`, null when there was none). It
- * writes host files only; the transaction restores the ledger file after it.
+ * as it was before the transaction (`snapshot`, null when there was none), and
+ * the transaction directory that holds the path preimages (`transaction`). It
+ * writes the host files and then the ledger: the snapshot's records, except
+ * the path record of each entry that it cannot undo, which stays so that the
+ * entry keeps its owner. With a null `transaction` it undoes the text writes
+ * only: the caller's own snapshot then restores the whole paths and the ledger.
  * For each file whose records changed, an intact fragment goes back to its
  * state before the transaction: to its snapshot text after a refresh, to its
  * adopted text when the transaction adopted it, out when the transaction
@@ -526,7 +783,7 @@ const fragmentKey = (record: FragmentRecord): string => `${record.owner}\0${reco
  * exist before it and still holds exactly what it wrote. Every other entry
  * stays and is returned.
  */
-export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer | null): HostConfigRollbackResult {
+export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer | null, transaction: string | null): HostConfigRollbackResult {
   const paths = hostConfigPathsAt(harness);
   const before = snapshot === null ? EMPTY_LEDGER : parseLedger(snapshot, `${paths.ledger} (transaction snapshot)`);
   const now = readLedger(paths);
@@ -574,15 +831,63 @@ export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer 
     if (created && all.some((entry) => fragmentFormat(path, entry.selector)?.empty(content) === true)) removeTarget(path, current);
     else if (content !== decode(bytes, path)) replaceTarget(path, Buffer.from(content, 'utf8'), current);
   }
-  removeCreatedDirectories(now.directories.filter((directory) => !before.directories.includes(directory)));
+  if (transaction === null) {
+    removeCreatedDirectories(now.directories.filter((directory) => !before.directories.includes(directory)));
+    return { unresolved };
+  }
+  const pathRecords = rollbackWholePaths(paths, before, now, transaction, unresolved);
+  const kept = removeCreatedDirectories(now.directories.filter((directory) => !before.directories.includes(directory)));
+  const restored: HostConfigLedger = { ...before, paths: pathRecords, directories: [...before.directories, ...kept] };
+  // No ledger before the transaction and no record left: the ledger file goes, as it was.
+  if (snapshot === null && JSON.stringify(restored) === JSON.stringify(EMPTY_LEDGER)) rmSync(paths.ledger, { force: true });
+  else writeLedger(paths, restored);
   return { unresolved };
 }
 
+/**
+ * The path records after a rollback. A path that the transaction wrote goes
+ * back to its entry before the transaction: out when it was absent, the user
+ * file from the vault when the transaction replaced one, and the transaction's
+ * preimage when it refreshed or removed rh's entry. An entry that is no longer
+ * what the transaction recorded stays with that record, and is returned.
+ */
+function rollbackWholePaths(paths: HostConfigPaths, before: HostConfigLedger, now: HostConfigLedger, transaction: string, unresolved: string[]): Record<string, PathRecord> {
+  const records: Record<string, PathRecord> = { ...before.paths };
+  for (const key of new Set([...Object.keys(before.paths), ...Object.keys(now.paths)])) {
+    const old = before.paths[key];
+    const current = now.paths[key];
+    if (JSON.stringify(old) === JSON.stringify(current)) continue;
+    // A claim or release of a file that the user keeps changes no entry.
+    if (current?.kind === 'user_managed' || (!current && old?.kind === 'user_managed')) continue;
+    if (!current) {
+      const entry = observePathEntry(key);
+      // A revert in this transaction took the record out: the entry is gone, or it is the user file that came back from the vault.
+      const reverted = entry === null || (old!.kind === 'replaced' && entry.type === 'file' && entry.sha256 === old!.backup);
+      if (reverted && hasPreimage(transaction, key)) restorePreimage(transaction, key);
+      else if (!pathRecordIsCurrent(key, old!)) unresolved.push(key);
+      continue;
+    }
+    if (!pathRecordIsCurrent(key, current)) { records[key] = current; unresolved.push(key); continue; }
+    if (current.kind === 'replaced' && current.backup !== old?.backup) {
+      const committed = current.committed as Extract<PathCommitted, { type: 'file' }>;
+      replaceTarget(key as HostPath, readVault(paths, current.backup!), { existed: true, sha256: committed.sha256 });
+    } else if (!old) removePathEntry(key);
+    else if (hasPreimage(transaction, key)) restorePreimage(transaction, key);
+    else { records[key] = current; unresolved.push(key); }
+  }
+  return records;
+}
+
 export function openHostConfigGate(options: HostConfigGateOptions = {}): HostConfigGate {
-  const paths = hostConfigPaths(options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const paths = hostConfigPaths(env);
   return {
     apply: (changes) => applyChanges(paths, changes),
-    delegate: (declaredPaths, run) => delegateWrite(paths, declaredPaths, run),
+    writePaths: (writes, pathOptions) => writeWholePaths(env, paths, writes, pathOptions ?? {}),
+    delegate: (declared, run, pathOptions) => delegateWholePaths(env, paths, declared, run, pathOptions ?? {}),
+    revertPaths: (only, revertOptions) => revertWholePaths(paths, only, revertOptions ?? {}),
+    keepUserPaths: (owner, scope, kept) => keepUserPaths(env, paths, owner, scope, kept),
+    adoptReplacedPath: (path, owner, backup) => adoptReplacedPath(env, paths, path, owner, backup),
     revert: (only, revertOptions) => revertFiles(paths, only, revertOptions ?? {}),
     adopt: (path, adoption) => adoptFile(paths, path, adoption),
     recorded: (path) => {

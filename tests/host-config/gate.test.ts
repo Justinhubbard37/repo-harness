@@ -3,7 +3,8 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FragmentEdit, HostConfigStrategy, HostPath } from '../../src/core/host-config/types';
-import { openHostConfigGate, type HostConfigFileChange } from '../../src/effects/host-config/gate';
+import { openHostConfigGate, rollbackHostConfigTransaction, type HostConfigFileChange } from '../../src/effects/host-config/gate';
+import type { PathEntry } from '../../src/effects/host-config/whole-path';
 import { hostConfigPaths, migrateLedgerSchema, replaceTarget } from '../../src/effects/host-config/store';
 import { jsonFragment } from '../../src/core/host-config/json-fragment';
 
@@ -50,11 +51,11 @@ test('an install-owned whole path refuses every gate operation and stays in the 
   writeFileSync(join(f.root, 'ledger.json'), JSON.stringify({ ...f.ledger(), paths }));
   const operations = [
     () => f.gate().apply([f.change(inside, 'on')]),
-    () => f.gate().delegate([inside], () => writeFileSync(inside, 'rh=delegate\n')),
     () => f.gate().adopt(inside, { backup: null, fragments: [], externalChange: false }),
     () => f.gate().revert([inside]),
   ];
   for (const operation of operations) expect(operation).toThrow(`an install owns this whole path (${skill})`);
+  expect(() => f.gate().writePaths([{ path: inside, owner: 'core', entry: { type: 'file', bytes: Buffer.from('x') } }])).toThrow(`the recorded directory ${skill} holds this path`);
   expect(readFileSync(inside, 'utf8')).toBe('rh=user\n');
   // A write elsewhere keeps the path records.
   f.gate().apply([f.change(f.b, 'on')]);
@@ -105,10 +106,7 @@ test('every write has a ledger record before a revert, and a revert touches no p
     .toEqual({ a: 'keep=1\n', mode: 0o640, tool: false, c: 'rh=user\n' });
   expect(f.ledger()).toEqual({ protocol: 2, files: {}, fragments: [], directories: [], paths: {} });
 
-  // The record is in the ledger before the writer runs, and a failed ledger write stops the file write.
-  let seen: unknown;
-  f.gate().delegate([c], () => { seen = f.ledger().files[c]?.kind; });
-  expect(seen).toBe('replaced');
+  // A failed ledger write stops the file write.
   chmodSync(f.root, 0o500);
   try { expect(() => f.gate().apply([f.change(f.a, 'on')])).toThrow(expect.objectContaining({ code: 'EACCES' })); }
   finally { chmodSync(f.root, 0o700); }
@@ -117,13 +115,6 @@ test('every write has a ledger record before a revert, and a revert touches no p
 
 test('rh backs up user bytes before it replaces them, and a revert restores the backup', () => {
   const f = fixture();
-  // A delegated writer replaces a user file: the old bytes go to the vault first.
-  f.gate().delegate([f.a], ([destination]) => writeFileSync(destination!, 'external\n'));
-  const { kind, backup } = f.ledger().files[f.a];
-  expect({ kind, vault: f.vault(backup) }).toEqual({ kind: 'replaced', vault: 'keep=1\n' });
-  expect(f.gate().revert([f.a]).map((entry) => entry.action)).toEqual(['restored']);
-  expect(readFileSync(f.a, 'utf8')).toBe('keep=1\n');
-
   // An explicit override backs up the whole user file, a refresh keeps that backup, and a revert puts it back.
   const skipped = f.gate().apply([f.change(f.a, 'x', { selector: 'keep', kind: 'override' })]);
   expect(skipped).toEqual({ written: [], skipped: [{ code: 'host_config_override_skipped', file: f.a, owner: 'o1', selector: 'keep' }] });
@@ -158,25 +149,16 @@ test('an edit since rh last wrote a file is a sticky external change, also when 
   writeFileSync(f.a, 'keep=1\nrh=on\nuser=1\n');
   expect(f.gate().apply([f.change(f.a, 'on')]).written).toEqual([]);
   expect(f.ledger().files[f.a]).toMatchObject({ external_change: true, committed });
-
-  const g = fixture();
-  g.gate().delegate([g.a], ([target]) => writeFileSync(target!, 'rh=on\n'));
-  writeFileSync(g.a, 'rh=on\nuser=1\n');
-  expect(g.gate().delegate([g.a], () => {}).changed).toEqual([]);
-  expect(g.ledger().files[g.a].external_change).toBe(true);
 });
 
 test('a file that the user edited before a later rh write is kept by a revert; the first backup stays, and the edited file goes to the vault apart', () => {
-  for (const first of ['created', 'replaced', 'text_block'] as const) {
-    // A whole-file writer may not replace a text_block file (see the user value test).
-    for (const later of first === 'text_block' ? ['apply'] : ['apply', 'delegate']) {
+  for (const first of ['created', 'text_block'] as const) {
+    {
       const f = fixture();
       const path = first === 'created' ? join(f.home, '.new.conf') : f.a;
-      if (first === 'replaced') f.gate().delegate([path], ([target]) => writeFileSync(target!, 'rh=1\n'));
-      else f.gate().apply([f.change(path, '1')]);
+      f.gate().apply([f.change(path, '1')]);
       writeFileSync(path, 'rh=1\nuser=precious\n');
-      if (later === 'apply') f.gate().apply([f.change(path, '2')]);
-      else f.gate().delegate([path], ([target]) => writeFileSync(target!, readFileSync(target!, 'utf8').replace('rh=1', 'rh=2')));
+      f.gate().apply([f.change(path, '2')]);
       const record = f.ledger().files[path];
       expect({ kind: record.kind, backup: record.backup === null ? null : f.vault(record.backup), external: f.vault(record.external_backup), revert: f.gate().revert().map((entry) => entry.action), text: readFileSync(path, 'utf8') })
         .toEqual({ kind: first, backup: first === 'created' ? null : 'keep=1\n', external: 'rh=1\nuser=precious\n', revert: ['kept_edited'], text: 'rh=2\nuser=precious\n' });
@@ -241,10 +223,6 @@ test('a user value at a recorded selector stays unless selected, and its bytes g
   setting('rh2', { kind: 'refresh', selected: true });
   expect({ backup: f.vault(f.ledger().files[f.a].backup), external: f.vault(f.ledger().files[f.a].external_backup), revert: f.gate().revert().map((entry) => entry.action), text: readFileSync(f.a, 'utf8') })
     .toEqual({ backup: 'setting=original\n', external: 'setting=USER-EDIT\n', revert: ['kept_edited'], text: 'setting=rh2\n' });
-  // A whole-file writer may not replace a file that holds rh text blocks.
-  f.gate().apply([f.change(f.a, 'on')]);
-  expect(() => f.gate().delegate([f.a], ([target]) => writeFileSync(target!, 'external\n'))).toThrow(expect.objectContaining({ code: 'host_config_invalid_state' }));
-  expect(readFileSync(f.a, 'utf8')).toBe('setting=rh2\nrh=on\n');
 });
 
 test('a revert releases a fragment claim that needed no write, for a named path and for all', () => {
@@ -303,9 +281,6 @@ test('user links are followed: the real file is written and the link stays', () 
     .toEqual([real, later, f.a]);
   expect({ keys: Object.keys(f.ledger().files), linked: lstatSync(join(f.home, '.linked')).isSymbolicLink(), dangling: readFileSync(join(f.home, '.dangling.conf'), 'utf8') })
     .toEqual({ keys: [real, later, f.a], linked: true, dangling: 'rh=on\n' });
-  let destinations: readonly string[] = [];
-  f.gate().delegate([join(f.home, '.linked', 'y.conf')], (resolved) => { destinations = resolved; });
-  expect(destinations).toEqual([join(f.home, 'dotfiles', 'y.conf')]);
   expect(() => f.gate().apply([f.change(real, 'a'), f.change(join(f.home, '.linked', 'x.conf'), 'b')])).toThrow(expect.objectContaining({ code: 'host_config_invalid_state' }));
 });
 
@@ -364,4 +339,82 @@ test('a revert removes an emptied container only when the record proves rh creat
   const backup = f.gate().apply([{ path, backup: 'overrides-only', fragments: [{ owner: 'o1', selector: 'mcpServers.codegraph', kind: 'override', strategy: jsonFragment, value: { command: 'rh' }, selected: true }] }]);
   expect(backup.written.length).toBe(1);
   expect(statSync(join(f.root, 'vault', String(f.ledger().files[path].backup).replace('sha256:', ''))).mode & 0o777).toBe(0o600);
+});
+
+test('a whole-path write records its entry first; delegate, a transaction rollback and a revert follow the records', () => {
+  const f = fixture();
+  const claude = join(f.home, '.claude');
+  const [file, link, tree, user] = [join(claude, 'agents', 'a.md'), join(claude, 'commands', 'c.md'), join(claude, 'skills', 's'), join(claude, 'agents', 'u.md')];
+  const source = (text: string) => { const dir = mkdtempSync(join(f.home, 'src-')); writeFileSync(join(dir, 'SKILL.md'), text); return dir; };
+  const bytes = (text: string): PathEntry => ({ type: 'file', bytes: Buffer.from(text) });
+  const w = (path: string, entry: PathEntry, replace = false) => ({ path, owner: 'core', entry, replace });
+  expect(f.gate().writePaths([w(file, bytes('rh\n')), w(link, { type: 'symlink', target: file }), w(tree, { type: 'directory', source: source('v1\n') })])).toEqual([file, link, tree]);
+  expect(f.gate().writePaths([w(file, bytes('rh\n'))])).toEqual([]);
+  expect(f.ledger().paths[file]).toMatchObject({ owner: 'core', host: 'claude', kind: 'created', baseline: { state: 'known', existed: false } });
+  // A file that rh has no record of stays without the user's word; with it, its bytes go to the vault first.
+  writeFileSync(user, 'mine\n');
+  expect(() => f.gate().writePaths([w(user, bytes('rh\n'))])).toThrow(`rh has no record of it, so rh does not replace it: ${user}`);
+  f.gate().writePaths([w(user, bytes('rh\n'), true)]);
+  expect({ kind: f.ledger().paths[user].kind, vault: f.vault(f.ledger().paths[user].backup) }).toEqual({ kind: 'replaced', vault: 'mine\n' });
+
+  // In a transaction rh refreshes the tree in process and the file out of process, and adds two files; the user edits one.
+  const snapshot = readFileSync(join(f.root, 'ledger.json'));
+  const transaction = mkdtempSync(join(f.home, 'tx-'));
+  const [added, edited] = [join(claude, 'agents', 'n.md'), join(claude, 'agents', 'e.md')];
+  f.gate().writePaths([w(tree, { type: 'directory', source: source('v2\n') }), w(added, bytes('new\n')), w(edited, bytes('new\n'))], { transaction });
+  expect(f.gate().delegate([{ path: file, owner: 'core' }], ([target]) => writeFileSync(target!, 'rh2\n'), { transaction }).changed).toEqual([file]);
+  writeFileSync(edited, 'new\nuser\n');
+  expect(rollbackHostConfigTransaction(join(f.home, '.repo-harness'), snapshot, transaction).unresolved).toEqual([edited]);
+  expect({ tree: readFileSync(join(tree, 'SKILL.md'), 'utf8'), file: readFileSync(file, 'utf8'), added: existsSync(added), edited: readFileSync(edited, 'utf8') })
+    .toEqual({ tree: 'v1\n', file: 'rh\n', added: false, edited: 'new\nuser\n' });
+  expect(Object.keys(f.ledger().paths)).toEqual([file, link, tree, user, edited]);
+
+  // A revert undoes each entry that is as rh recorded it; a changed entry stays with its record.
+  rmSync(link);
+  symlinkSync(user, link);
+  expect(f.gate().revertPaths([file, link, tree, user, edited]).map((entry) => [entry.path, entry.action]))
+    .toEqual([[file, 'removed'], [link, 'kept_edited'], [tree, 'removed'], [user, 'restored'], [edited, 'kept_edited']]);
+  expect({ user: readFileSync(user, 'utf8'), file: existsSync(file), tree: existsSync(tree), paths: Object.keys(f.ledger().paths) })
+    .toEqual({ user: 'mine\n', file: false, tree: false, paths: [link, edited] });
+});
+
+test('a delegated writer runs only on paths that rh may write; a replaced path stays a file; a rollback undoes a revert of a replaced file', () => {
+  const f = fixture();
+  const agents = join(f.home, '.claude', 'agents');
+  const [unrecorded, edited, kept, foreign, user, blocks] = ['u', 'e', 'k', 'f', 'r', 't'].map((name) => join(agents, `${name}.md`)) as [string, string, string, string, string, string];
+  const file = (text: string): PathEntry => ({ type: 'file', bytes: Buffer.from(text) });
+  f.gate().writePaths([{ path: edited, owner: 'core', entry: file('rh\n') }, { path: foreign, owner: 'o2', entry: file('o2\n') }]);
+  writeFileSync(edited, 'rh\nuser\n');
+  writeFileSync(unrecorded, 'theirs\n');
+  writeFileSync(kept, 'mine\n');
+  f.gate().keepUserPaths('core', [kept], [kept]);
+  const ledger = f.ledger();
+  for (const [path, reason] of [[unrecorded, 'rh has no record of it'], [edited, 'it changed since rh wrote it'], [kept, 'the user keeps it'], [foreign, 'rh records it for o2']] as const) {
+    const before = readFileSync(path, 'utf8');
+    let ran = false;
+    expect(() => f.gate().delegate([{ path, owner: 'core' }], () => { ran = true; })).toThrow(`${reason}, so rh does not replace it: ${path}`);
+    expect({ ran, bytes: readFileSync(path, 'utf8') }).toEqual({ ran: false, bytes: before });
+  }
+  expect(f.ledger()).toEqual(ledger);
+
+  // On the user's word the file goes to the vault before the writer runs, and the path stays a file.
+  writeFileSync(user, 'original\n');
+  expect(f.gate().delegate([{ path: user, owner: 'core', replace: true }], ([target]) => writeFileSync(target!, 'rh\n')).changed).toEqual([user]);
+  expect({ kind: f.ledger().paths[user].kind, vault: f.vault(f.ledger().paths[user].backup) }).toEqual({ kind: 'replaced', vault: 'original\n' });
+  expect(() => f.gate().writePaths([{ path: user, owner: 'core', entry: { type: 'symlink', target: edited } }]))
+    .toThrow(`rh replaced a user file here, so it writes only a file at this path: ${user}`);
+  expect({ bytes: readFileSync(user, 'utf8'), kind: f.ledger().paths[user].kind }).toEqual({ bytes: 'rh\n', kind: 'replaced' });
+
+  // A rollback undoes a revert in its transaction: rh's file and its record come back.
+  const snapshot = readFileSync(join(f.root, 'ledger.json'));
+  const transaction = mkdtempSync(join(f.home, 'tx-'));
+  expect(f.gate().revertPaths([user], { transaction }).map((entry) => entry.action)).toEqual(['restored']);
+  expect(rollbackHostConfigTransaction(join(f.home, '.repo-harness'), snapshot, transaction).unresolved).toEqual([]);
+  expect({ bytes: readFileSync(user, 'utf8'), record: f.ledger().paths[user] }).toEqual({ bytes: 'rh\n', record: JSON.parse(snapshot.toString()).paths[user] });
+
+  // A file with rh text blocks is no whole path.
+  writeFileSync(blocks, 'keep=1\n');
+  f.gate().apply([f.change(blocks, 'on')]);
+  expect(() => f.gate().writePaths([{ path: blocks, owner: 'core', entry: file('rh\n') }]))
+    .toThrow(`rh text blocks are recorded in this file, so rh does not write it as a whole path: ${blocks}`);
 });
