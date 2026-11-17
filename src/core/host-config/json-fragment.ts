@@ -113,18 +113,23 @@ function parseSelector(selector: string): Selector {
 
 const ROUTE_COMMAND = / (\S+) --route (\S+)$/;
 
-/** The managed route commands of one hook entry, as `<event> <routeId>`. */
-function managedRoutes(entry: unknown): { routes: string[]; others: number } {
+/**
+ * The managed route commands of one hook entry, as `<event> <routeId>`;
+ * `others` counts every other command, `user` only those that are not rh's.
+ */
+function managedRoutes(entry: unknown): { routes: string[]; others: number; user: number } {
   const hooks = (entry as { hooks?: unknown } | null)?.hooks;
-  if (!Array.isArray(hooks)) return { routes: [], others: 0 };
+  if (!Array.isArray(hooks)) return { routes: [], others: 0, user: 0 };
   const routes: string[] = [];
-  let others = 0;
+  let others = 0, user = 0;
   for (const hook of hooks) {
     const command = (hook as { command?: unknown } | null)?.command;
-    const route = typeof command === 'string' && isRepoHarnessManagedHookCommand(command) ? ROUTE_COMMAND.exec(command) : null;
+    const managed = isRepoHarnessManagedHookCommand(command);
+    const route = managed ? ROUTE_COMMAND.exec(command) : null;
     if (route) routes.push(`${route[1]} ${route[2]}`); else others += 1;
+    if (!managed) user += 1;
   }
-  return { routes, others };
+  return { routes, others, user };
 }
 
 function elementMatches(content: string, node: JsonNode, key: string, event: string): boolean {
@@ -334,9 +339,11 @@ export function managedHookSelectors(content: string): string[] {
   for (const [event, entries] of Object.entries(hooks)) {
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
-      const { routes, others } = managedRoutes(entry);
-      if (!routes.length) continue;
-      if (routes.length !== 1 || others !== 0) {
+      const { routes, others, user } = managedRoutes(entry);
+      // Any rh command beside a user's command makes the entry mixed, also a retired one with no route.
+      const mixed = user !== 0 && routes.length + others > user;
+      if (!routes.length && !mixed) continue;
+      if (mixed || routes.length !== 1 || others !== 0) {
         throw invalid(`a hook entry in ${event} holds a repo-harness command together with other commands. Move that command into its own entry, or delete it, then run rh again`);
       }
       const [routeEvent, routeId] = routes[0]!.split(' ');

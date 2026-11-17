@@ -150,7 +150,7 @@ describe('issue 698 host configuration ownership', () => {
     });
   });
 
-  test('issue 698 preserves user commands that mention retired paths or command prefixes', () => {
+  test('issue 698 refuses a user hook entry that holds a retired rh command, and lookalike user commands are not rh\'s', () => {
     withTempHome('repo-harness-install', (home) => {
       const filePath = path.join(home, '.claude/settings.json');
       const commands = [
@@ -163,15 +163,15 @@ describe('issue 698 host configuration ownership', () => {
       ];
       const historical = 'repo=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; HOOK_REPO_ROOT="$repo" bash "$repo/.ai/hooks/run-hook.sh" session-start-context.sh';
       expect(isRepoHarnessManagedHookCommand(historical)).toBe(true);
+      expect(commands.filter((command) => isRepoHarnessManagedHookCommand(command))).toEqual([]);
+      const original = JSON.stringify({ theme: 'user', hooks: { SessionStart: [{ hooks: [...commands, historical].map(command => ({ type: 'command', command })) }] } });
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify({ theme: 'user', hooks: { SessionStart: [{ hooks: [...commands, historical].map(command => ({ type: 'command', command })) }] } }));
-      expect(runInstall({ target: 'claude', location: 'global' }).exitCode).toBe(0);
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      expect(data.theme).toBe('user');
-      // A retired rh command inside a user's entry has no selector: install leaves it to the legacy cleanup of `rh upgrade`.
-      expect(data.hooks.SessionStart[1].hooks.map((hook: any) => hook.command)).toEqual([...commands, historical]);
-      expect(runUninstall({ target: 'claude', location: 'global' }).exitCode).toBe(0);
-      expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).hooks.SessionStart[0].hooks.map((hook: any) => hook.command)).toEqual([...commands, historical]);
+      fs.writeFileSync(filePath, original);
+      const install = runInstall({ target: 'claude', location: 'global' });
+      expect(install.exitCode).toBe(1);
+      expect(install.lines).toContain('[claude] error: a hook entry in SessionStart holds a repo-harness command together with other commands. Move that command into its own entry, or delete it, then run rh again');
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
+      expect(fs.existsSync(path.join(home, '.repo-harness/configuration-restore.json'))).toBe(false);
     });
   });
 });
