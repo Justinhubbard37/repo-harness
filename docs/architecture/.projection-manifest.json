@@ -780,7 +780,7 @@
     "projection_target.entity.capability-runtime-harness-global-runtime-reconciliation":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.global-runtime-reconciliation","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/global-runtime-reconciliation.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:6a5ad1ecf5a933db520cef5cfc4051535b4af98652478db0f1e339d32500b0d9"},
     "projection_target.entity.capability-runtime-harness-hook-adapters":
-      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.hook-adapters","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/hook-adapters.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:2a6fc7318d580741c0e5db33b9e9629c709076a7cdfedbb283e04ff66b3da057"},
+      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.hook-adapters","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/hook-adapters.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:0a1d01cb92dea959d207f0b58ad14c3a27f15fb4782d89607a9d426a0cfa0379"},
     "projection_target.entity.capability-runtime-harness-mcp-sidecar":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.runtime-harness.mcp-sidecar","entityKind":"capability"},"path":"docs/architecture/modules/runtime-harness/mcp-sidecar.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:56eabc1f7d76a09d5ab11b76a60811a59000b0137deb9aae518a22ee46819003"},
     "projection_target.entity.capability-runtime-harness-operator":
@@ -794,7 +794,7 @@
     "projection_target.entity.capability-verification-acceptance-review":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.verification.acceptance-review","entityKind":"capability"},"path":"docs/architecture/modules/verification/acceptance-review.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:8c04adfcae2ce322f8b98dceeec627e7ee2aee1f6f59a61da72f5d792b047a98"},
     "projection_target.entity.capability-verification-codegraph-readiness":
-      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.verification.codegraph-readiness","entityKind":"capability"},"path":"docs/architecture/modules/verification/codegraph-readiness.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:5586719007f62592f6c1196b7d14a202bade972c206dbb3be10c171d1fe13f79"},
+      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.verification.codegraph-readiness","entityKind":"capability"},"path":"docs/architecture/modules/verification/codegraph-readiness.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:ec079d9a182a34acf5ba538704b4e145fe7a85747f14ab8552822e28208aaf56"},
     "projection_target.entity.capability-verification-evals-checks":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.verification.evals-checks","entityKind":"capability"},"path":"docs/architecture/modules/verification/evals-checks.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:44390b27cafad0769252ff8d9a5d4e92178ee0d01989b4be2db71512b3f62347"},
     "projection_target.entity.capability-workflow-engine-contract-assets":
