@@ -168,6 +168,7 @@ jobs:
       matrix:
         test:
           - tests/generic-review.test.ts
+          - tests/generic-review-oar-seam.test.ts
           - tests/acceptance-receipt.test.ts
           - tests/herdr-task-lifecycle.test.ts
     steps:
