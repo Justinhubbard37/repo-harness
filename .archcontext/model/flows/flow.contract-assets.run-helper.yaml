@@ -30,7 +30,7 @@ outcomes:
         label: "Run the helper as a bounded child with a protected environment"
         evidence:
           entrypointId: entrypoint.contract-assets.helper-runner
-          sourceSymbol: "runHelper"
+          sourceSymbol: "executeHelper"
           sinkId: sink.contract-assets.bounded-process
     terminal:
       participant: capability
@@ -45,7 +45,7 @@ outcomes:
         label: "Propagate the bounded child failure"
         evidence:
           entrypointId: entrypoint.contract-assets.helper-runner
-          sourceSymbol: "runHelper"
+          sourceSymbol: "executeHelper"
           sinkId: sink.contract-assets.bounded-process
     terminal:
       participant: capability

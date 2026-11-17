@@ -77,7 +77,7 @@ source:
     - id: entrypoint.contract-assets.helper-runner
       path: src/effects/runtime/helper-runner.ts
       symbols:
-        - name: runHelper
+        - name: executeHelper
           sinks:
             - id: sink.contract-assets.bounded-process
               path: src/effects/process-runner.ts
