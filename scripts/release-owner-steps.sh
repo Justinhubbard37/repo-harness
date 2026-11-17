@@ -198,12 +198,14 @@ A step whose result shows it is done (npm shows the version, the tag is at ${sha
 5. git tag -a v${version} ${sha} -m "${core_name} ${version}" && git push ${REMOTE} v${version}
 6. bash scripts/release-owner-steps.sh notes ${version} > ${worktree}.notes.md && gh release create v${version} --repo ${slug} --verify-tag --title "${core_name} ${version}" --notes-file ${worktree}.notes.md
 7. bash scripts/release-owner-steps.sh check tagged ${version}
+8. bun scripts/check-released-managed-values.ts --write
+   It reads the release tags and writes one file, assets/released-managed-values.v1.json; it pushes nothing. Put that file in one Low PR (like PR #3014) and merge it: until it lands, every other PR fails "released managed values".
 
-Post-release steps, a joint decision of the orchestrator and the advisor after step 7 passes:
-8. bun add -g ${core_name}@${version} --no-cache && rh update --version ${version}
-9. The upgrade steps of the release notes:
+Post-release steps, a joint decision of the orchestrator and the advisor after step 7 passes. Step 8 is a release follow-up and needs no decision:
+9. bun add -g ${core_name}@${version} --no-cache && rh update --version ${version}
+10. The upgrade steps of the release notes:
 ${upgrade:-   (the [${version}] section has no Upgrade part)}
-10. Each of the orchestrator and advisor seats writes its handoff. Close its old pane, then start it again:
+11. Each of the orchestrator and advisor seats writes its handoff. Close its old pane, then start it again:
    herdr-app do tab.new --name "\$(rh seats argv orchestrator --repository-id ${repository_id} --json | jq -r .tab)" --space <space> --folder <checkout> --argv "\$(rh seats argv orchestrator --repository-id ${repository_id})"
    herdr-app do pane.split --direction right --pane <orchestrator pane> --argv "\$(rh seats argv advisor --repository-id ${repository_id})"
 EOF

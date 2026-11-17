@@ -79,6 +79,12 @@ failure.
    Not found: run `bash scripts/release-owner-steps.sh notes <version> > /tmp/repo-harness-wt-release-<version>.notes.md && gh release create v<version> --verify-tag --title "repo-harness <version>" --notes-file /tmp/repo-harness-wt-release-<version>.notes.md`.
    Found: skip; step 7 checks it.
 7. `bash scripts/release-owner-steps.sh check tagged <version>`
+8. Rebuild the released managed values: `bun scripts/check-released-managed-values.ts --write`.
+   The command reads the release tags and writes
+   `assets/released-managed-values.v1.json`; it pushes nothing. Put the rebuilt
+   file in one Low PR (like PR #3014) and merge that PR: until it lands, every
+   other PR fails the `released managed values` check. The check rebuilds the
+   list from the release tags, so main fails until the file is updated.
 
 `wait` polls `npm view <name>@<version> version` every 10 s for 15 minutes. A
 wait that ends without the version fails with the package name. Inside steps 3
@@ -88,10 +94,9 @@ later; do not publish again. The settle above is the other case.
 `bash scripts/release-owner-steps.sh plan <version>` is a read-only preflight:
 it runs the guard checks for a version and prints the release commit, this
 command list and the host post-release steps. After step 7 passes, the tag and
-the GitHub Release exist. Run `bun scripts/check-released-managed-values.ts --write`
-and merge the rebuilt `assets/released-managed-values.v1.json` as a Low PR.
-The test rebuilds this list from release tags, so main fails until the file is
-updated. The projection PR (`archctx/projection`) merges by rule 3 on green CI.
+the GitHub Release exist, and step 8 reads them. Step 8 is a release follow-up,
+not a post-release step. The projection PR (`archctx/projection`) merges by
+rule 3 on green CI.
 
 The orchestrator and the advisor decide together on the host post-release steps:
 `rh update` on the owner host, the Upgrade steps of the release
