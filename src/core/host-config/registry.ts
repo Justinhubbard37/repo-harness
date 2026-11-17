@@ -1,4 +1,5 @@
 import { jsonFragment, jsonDocumentIsEmpty, jsonFragmentValue, removeJsonFragment } from './json-fragment';
+import { isMarkedBlockSelector, markedBlock, markedBlockDocumentIsEmpty, removeMarkedBlock } from './marked-block';
 import { tomlFragment } from './toml-fragment';
 import type { FragmentEdit, FragmentRecord, HostConfigStrategy } from './types';
 
@@ -33,8 +34,23 @@ const JSON_FORMAT: FragmentFormat = {
   empty: jsonDocumentIsEmpty,
 };
 
-/** The format of a host file follows from its name; null for a file that no strategy owns. */
-export function fragmentFormat(path: string): FragmentFormat | null {
+const MARKED_BLOCK: FragmentFormat = {
+  strategy: markedBlock,
+  remove: (content, selector) => removeMarkedBlock(content, selector),
+  restore: (content, selector, backup) => {
+    const range = markedBlock.locate(backup, selector);
+    return range ? markedBlock.apply(content, selector, backup.slice(range.start, range.end)) : removeMarkedBlock(content, selector);
+  },
+  empty: markedBlockDocumentIsEmpty,
+};
+
+/**
+ * The format of a fragment: a marked-block selector names its format, because
+ * a linked rules file can have any name; else the file name decides. Null for
+ * a fragment that no strategy owns.
+ */
+export function fragmentFormat(path: string, selector: string): FragmentFormat | null {
+  if (isMarkedBlockSelector(selector)) return MARKED_BLOCK;
   if (path.endsWith('.toml')) return TOML;
   if (path.endsWith('.json')) return JSON_FORMAT;
   return null;

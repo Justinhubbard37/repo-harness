@@ -10,14 +10,17 @@
  * (`assets/released-managed-values.v1.json`); every other text is kept.
  */
 
-import { accessSync, constants, lstatSync, mkdirSync, readFileSync, writeFileSync, type Stats } from 'fs';
-import { basename, dirname, join } from 'path';
-import { shellQuote } from '../../core/shell-quote';
+import { accessSync, constants, lstatSync, readFileSync, statSync, type Stats } from 'fs';
+import { join } from 'path';
+import { HostConfigError, type FragmentEdit, type HostConfigStrategy } from '../../core/host-config/types';
+import { insertMarkedBlock, markedBlock, markedBlockLayout, markedBlockMarkers, removeMarkedBlock, MARKED_BLOCK_FRAGMENTS } from '../../core/host-config/marked-block';
+import { openHostConfigGate, planFileRevert, type HostConfigAdoption, type HostConfigGate, type HostConfigRevertEntry } from '../../effects/host-config/gate';
+import { hostConfigPaths, resolveHostPath } from '../../effects/host-config/store';
 import { isReleasedGlobalRulesBlock, isReleasedGlobalRulesSection } from '../../effects/upgrade/released-values';
-import { assertConfigurationPath } from './configuration-ownership';
 
-export const GLOBAL_RULES_BEGIN = '<!-- BEGIN: repo-harness global-working-rules -->';
-export const GLOBAL_RULES_END = '<!-- END: repo-harness global-working-rules -->';
+export const GLOBAL_RULES_SELECTOR = 'global-working-rules';
+const GLOBAL_RULES_OWNER = MARKED_BLOCK_FRAGMENTS[GLOBAL_RULES_SELECTOR];
+export const { begin: GLOBAL_RULES_BEGIN, end: GLOBAL_RULES_END } = markedBlockMarkers(GLOBAL_RULES_SELECTOR);
 const GLOBAL_RULES_SELF_NOTE =
   '<!-- repo-harness manages this block; sync keeps an edited block unchanged. Keep personal rules outside the markers. -->';
 /** The self-note of v0.8.5 to v0.32.0; a released block with it still records its reporting language. */
@@ -167,31 +170,6 @@ export function renderGlobalRulesBlock(sourceRoot: string, language: ReportingLa
   ].join('\n');
 }
 
-function countOccurrences(haystack: string, needle: string): number {
-  let count = 0;
-  let index = haystack.indexOf(needle);
-  while (index !== -1) {
-    count += 1;
-    index = haystack.indexOf(needle, index + needle.length);
-  }
-  return count;
-}
-
-type MarkerLayout =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'unbalanced' }
-  | { readonly kind: 'balanced'; readonly start: number; readonly end: number };
-
-function markerLayout(content: string): MarkerLayout {
-  const beginCount = countOccurrences(content, GLOBAL_RULES_BEGIN);
-  const endCount = countOccurrences(content, GLOBAL_RULES_END);
-  if (beginCount === 0 && endCount === 0) return { kind: 'none' };
-  const start = content.indexOf(GLOBAL_RULES_BEGIN);
-  const end = content.indexOf(GLOBAL_RULES_END);
-  if (beginCount !== 1 || endCount !== 1 || end < start) return { kind: 'unbalanced' };
-  return { kind: 'balanced', start, end };
-}
-
 function splitLines(text: string): string[] {
   return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 }
@@ -302,28 +280,41 @@ function managedBlockProved(block: string, sourceRoot: string): boolean {
   return language !== null && block === renderGlobalRulesBlock(sourceRoot, language).trimEnd();
 }
 
+/** The ledger's text of rh's block in one file; null when the ledger has no record of it. */
+export type GlobalRulesRecord = string | null;
+
+/**
+ * One authority proves that the marked block is rh's. A file that the
+ * host-config ledger records: the block must equal the recorded text. A file
+ * with no record: the block must equal a released block or the rendering of
+ * its own inputs.
+ */
+function blockProved(raw: string, recorded: GlobalRulesRecord, sourceRoot: string): boolean {
+  return recorded !== null ? raw === recorded : managedBlockProved(raw.replace(/\r\n/g, '\n'), sourceRoot);
+}
+
 /**
  * Repo-harness rules are overwritten; user rules are kept. Outside the markers,
  * a shipped section leaves only when its text equals a released section. An
- * existing block is refreshed in place only when it is proved managed; an
+ * existing block is refreshed in place only when it is proved rh's; an
  * edited block keeps the whole file unchanged. Otherwise the block goes where
- * the legacy H1 was, or at the end of a file without a legacy span. Every
- * other line keeps its bytes and order.
+ * the legacy H1 was, or at the end of a file without a legacy span
+ * (`insertMarkedBlock`). Every other line keeps its bytes and order.
  */
-export function mergeManagedBlock(current: string, renderedBlock: string, sourceRoot: string): MergedManagedBlock {
+export function mergeManagedBlock(current: string, renderedBlock: string, sourceRoot: string, recorded: GlobalRulesRecord = null): MergedManagedBlock {
   // A CRLF file keeps CRLF: the block is written in the file's line ending,
   // so the current/stale compare is byte-exact and a second sync is a no-op.
   const eol = current.includes('\r\n') ? '\r\n' : '\n';
   const block = eol === '\n' ? renderedBlock : renderedBlock.replace(/\r?\n/g, eol);
-  const layout = markerLayout(current);
+  const layout = markedBlockLayout(current, GLOBAL_RULES_SELECTOR);
   if (layout.kind === 'unbalanced') return { content: current, status: 'blocked-unbalanced', replaced: [], kept: [], edited: [] };
   if (layout.kind === 'balanced') {
-    const existing = current.slice(layout.start, layout.end + GLOBAL_RULES_END.length).replace(/\r\n/g, '\n');
-    if (existing !== renderedBlock.trimEnd() && !managedBlockProved(existing, sourceRoot)) {
+    const raw = current.slice(layout.start, layout.end);
+    if (raw !== block.trimEnd() && !blockProved(raw, recorded, sourceRoot)) {
       return { content: current, status: 'kept-edited', replaced: [], kept: [], edited: [] };
     }
     const beforeLines = splitLines(current.slice(0, layout.start));
-    const afterLines = splitLines(current.slice(layout.end + GLOBAL_RULES_END.length));
+    const afterLines = splitLines(current.slice(layout.end));
     const before = scanLegacySpan(beforeLines);
     const after = scanLegacySpan(afterLines);
     const merged = `${keptText(beforeLines, before, 0, beforeLines.length)}${block.trimEnd()}${
@@ -339,8 +330,8 @@ export function mergeManagedBlock(current: string, renderedBlock: string, source
   const lines = splitLines(current);
   const scan = scanLegacySpan(lines);
   if (scan.anchor === null) {
-    const trimmed = current.trimEnd();
-    return { content: `${trimmed}${trimmed ? eol + eol : ''}${block}`, status: 'written', replaced: [], kept: scan.kept, edited: scan.edited };
+    const edit = insertMarkedBlock(current, block.trimEnd());
+    return { content: applyEdit(current, edit), status: 'written', replaced: [], kept: scan.kept, edited: scan.edited };
   }
   const before = keptText(lines, scan, 0, scan.anchor);
   const after = keptText(lines, scan, scan.anchor, lines.length);
@@ -353,12 +344,17 @@ export function mergeManagedBlock(current: string, renderedBlock: string, source
   };
 }
 
+function applyEdit(content: string, edit: FragmentEdit): string {
+  return content.slice(0, edit.at) + edit.inserted + content.slice(edit.at + edit.removed.length);
+}
+
 /** True when text outside the markers holds a legacy repo-harness span. */
-function hasLegacySpan(content: string, layout: MarkerLayout): boolean {
+function hasLegacySpan(content: string): boolean {
+  const layout = markedBlockLayout(content, GLOBAL_RULES_SELECTOR);
   if (layout.kind === 'unbalanced') return false;
   if (layout.kind === 'none') return scanLegacySpan(splitLines(content)).anchor !== null;
   return scanLegacySpan(splitLines(content.slice(0, layout.start))).anchor !== null
-    || scanLegacySpan(splitLines(content.slice(layout.end + GLOBAL_RULES_END.length))).anchor !== null;
+    || scanLegacySpan(splitLines(content.slice(layout.end))).anchor !== null;
 }
 
 export function formatMigratedLegacy(path: string, merged: MergedManagedBlock): string {
@@ -381,29 +377,32 @@ export interface GlobalContextInspection {
  * there propagates to the caller. A balanced block with a legacy span outside
  * it is managed; the span makes a recorded block stale.
  */
-export function inspectGlobalContext(content: string | null, sourceRoot: string): GlobalContextInspection {
+export function inspectGlobalContext(content: string | null, sourceRoot: string, recorded: GlobalRulesRecord = null): GlobalContextInspection {
   if (content === null) return { state: 'missing-file', language: null, legacySpan: false, synced: null };
-  const layout = markerLayout(content);
-  const legacySpan = hasLegacySpan(content, layout);
+  const layout = markedBlockLayout(content, GLOBAL_RULES_SELECTOR);
+  const legacySpan = hasLegacySpan(content);
   const unsynced = (state: GlobalContextState): GlobalContextInspection => ({ state, language: null, legacySpan, synced: null });
   if (layout.kind === 'unbalanced') return unsynced('unbalanced');
   if (layout.kind === 'none') return unsynced(legacySpan ? 'legacy-unmanaged' : 'no-rules');
   const blockLines = content.slice(layout.start, layout.end).split(/\r?\n/);
   const language = isSelfNote(blockLines[1]) ? decodeReportingLanguage(blockLines[2]) : null;
   if (language === null) return unsynced('managed-unrecorded');
-  const synced = mergeManagedBlock(content, renderGlobalRulesBlock(sourceRoot, language), sourceRoot);
+  const synced = mergeManagedBlock(content, renderGlobalRulesBlock(sourceRoot, language), sourceRoot, recorded);
   const current = synced.status !== 'kept-edited' && synced.content === content;
   return { state: current ? 'managed-current' : 'managed-stale', language, legacySpan, synced };
 }
 
 export interface GlobalContextFilePlan {
   readonly path: string;
-  readonly state: GlobalContextState | 'unsafe' | 'unreadable';
+  readonly state: GlobalContextState | 'unreadable';
   readonly outcome: 'write' | 'unchanged' | 'skipped';
   /** The file content at preflight; null when the file did not exist. */
   readonly current: string | null;
-  /** The content to write; set only when `outcome` is `write`. */
-  readonly next: string | null;
+  readonly recorded: GlobalRulesRecord;
+  /** The rendered block to write; set only when `outcome` is `write`. */
+  readonly block: string | null;
+  /** True when the write also takes out legacy sections outside the markers. */
+  readonly legacy: boolean;
   readonly detail: string;
   /** True when the managed block differs from every released block and sync keeps it. */
   readonly edited?: true;
@@ -424,23 +423,6 @@ export function formatGlobalContextWrite(path: string, current: string | null, m
 
 export const GLOBAL_RULES_EDITED = 'the managed block differs from every released block, so sync keeps it; move personal rules outside the markers, then delete the block with both markers and run `rh update --report-language follow|zh-CN|en` to get the current one';
 
-/**
- * The instruction file must be reached without a symlink under HOME. The
- * install transaction backs up the link itself, so a write through a link has
- * no rollback. Returns the refusal message, or null. A path that is not a
- * regular file fails the read and is reported as unreadable.
- */
-export function globalContextPathRefusal(path: string, home: string): string | null {
-  try {
-    assertConfigurationPath(path, home);
-    return null;
-  } catch (error) {
-    // The guard names the refused component: the file, a linked parent such
-    // as ~/.codex, or a path outside HOME.
-    return `${path} is a symlink or not a regular file (${(error as Error).message}); replace it with a regular file to enable managed sync`;
-  }
-}
-
 function lstatOrNull(path: string): Stats | null {
   try {
     return lstatSync(path);
@@ -451,22 +433,26 @@ function lstatOrNull(path: string): Stats | null {
 }
 
 /**
- * True for a readable regular file, false for a missing one. Throws for any
- * other entry, so a FIFO or special file is never opened for reading.
+ * True for a readable regular file, false for a missing one; the user's links
+ * are followed (#2841 Part B). Throws for any other entry, so a FIFO or
+ * special file is never opened for reading.
  */
 function readableGlobalContextFile(path: string): boolean {
-  const stat = lstatOrNull(path);
-  if (stat === null) return false;
+  const stat = statSync(path, { throwIfNoEntry: false });
+  if (!stat) return false;
   if (!stat.isFile()) throw new Error('not a regular file');
   accessSync(path, constants.R_OK);
   return true;
 }
 
+function readGlobalContextFile(path: string): string | null {
+  return readableGlobalContextFile(path) ? readFileSync(path, 'utf-8') : null;
+}
+
 /**
  * The host transaction backs up a rules path only when the copy cannot fail:
- * a missing path, a symlink (copied verbatim; the plan refuses it), or a
- * readable regular file. Any other path is left out of the backup, and the
- * plan never writes it.
+ * a missing path, a symlink (copied verbatim), or a readable regular file.
+ * Any other path is left out of the backup, and the plan never writes it.
  */
 export function globalContextBackupEligible(path: string): boolean {
   try {
@@ -476,6 +462,15 @@ export function globalContextBackupEligible(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The gate reads its ledger under HOME; the rules writers know only HOME. */
+function rulesGate(home: string): HostConfigGate {
+  return openHostConfigGate({ env: { ...process.env, HOME: home } });
+}
+
+function recordedBlock(gate: HostConfigGate, path: string): GlobalRulesRecord {
+  return gate.recorded(path).find((record) => record.selector === GLOBAL_RULES_SELECTOR)?.inserted ?? null;
 }
 
 /**
@@ -490,65 +485,59 @@ export function planGlobalContextFile(
   sourceRoot: string,
   flag: ReportLanguageFlag | undefined,
 ): GlobalContextFilePlan {
-  const refusal = globalContextPathRefusal(path, home);
-  if (refusal) return { path, state: 'unsafe', outcome: 'skipped', current: null, next: null, detail: `skipped-unsafe:${path} (${refusal})` };
+  const unreadable = (current: string | null, detail: string): GlobalContextFilePlan => (
+    { path, state: 'unreadable', outcome: 'skipped', current, recorded: null, block: null, legacy: false, detail }
+  );
   let current: string | null;
+  let recorded: GlobalRulesRecord;
   try {
-    current = readableGlobalContextFile(path) ? readFileSync(path, 'utf-8') : null;
+    current = readGlobalContextFile(path);
+    recorded = recordedBlock(rulesGate(home), path);
   } catch (error) {
-    return {
-      path,
-      state: 'unreadable',
-      outcome: 'skipped',
-      current: null,
-      next: null,
-      detail: `skipped-unreadable:${path} (${(error as Error).message}; make it a readable regular file to enable managed sync)`,
-    };
+    return unreadable(null, `skipped-unreadable:${path} (${(error as Error).message}; make it a readable regular file to enable managed sync)`);
   }
   let inspection: GlobalContextInspection;
   try {
-    inspection = inspectGlobalContext(current, sourceRoot);
+    inspection = inspectGlobalContext(current, sourceRoot, recorded);
   } catch (error) {
-    return {
-      path,
-      state: 'unreadable',
-      outcome: 'skipped',
-      current,
-      next: null,
-      detail: `skipped-template:${path} (cannot render the Global Working Rules template: ${(error as Error).message}; reinstall repo-harness)`,
-    };
+    return unreadable(current, `skipped-template:${path} (cannot render the Global Working Rules template: ${(error as Error).message}; reinstall repo-harness)`);
   }
-  const plan = (outcome: GlobalContextFilePlan['outcome'], detail: string, next: string | null = null): GlobalContextFilePlan => (
-    { path, state: inspection.state, outcome, current, next, detail }
+  const plan = (outcome: GlobalContextFilePlan['outcome'], detail: string): GlobalContextFilePlan => (
+    { path, state: inspection.state, outcome, current, recorded, block: null, legacy: false, detail }
   );
-  const write = (merged: MergedManagedBlock): GlobalContextFilePlan => merged.status === 'kept-edited'
+  const write = (merged: MergedManagedBlock, block: string): GlobalContextFilePlan => merged.status === 'kept-edited'
     ? { ...plan('skipped', `skipped-edited:${path} (${GLOBAL_RULES_EDITED})`), edited: true }
-    : plan('write', formatGlobalContextWrite(path, current, merged), merged.content);
-  const withFlag = (): MergedManagedBlock => mergeManagedBlock(current ?? '', renderGlobalRulesBlock(sourceRoot, reportLanguageFromFlag(flag!)), sourceRoot);
+    : { ...plan('write', formatGlobalContextWrite(path, current, merged)), block, legacy: merged.replaced.length > 0 };
+  const withFlag = (): GlobalContextFilePlan => {
+    const block = renderGlobalRulesBlock(sourceRoot, reportLanguageFromFlag(flag!));
+    return write(mergeManagedBlock(current ?? '', block, sourceRoot, recorded), block);
+  };
   switch (inspection.state) {
     case 'managed-current':
       return plan('unchanged', formatGlobalContextWrite(path, current, inspection.synced!));
     case 'managed-stale':
-      return write(inspection.synced!);
+      return write(inspection.synced!, renderGlobalRulesBlock(sourceRoot, inspection.language!));
     case 'unbalanced':
       return plan('skipped', `skipped-unbalanced:${path} (${GLOBAL_RULES_UNBALANCED})`);
     case 'managed-unrecorded':
       return flag
-        ? write(withFlag())
+        ? withFlag()
         : plan('skipped', `skipped-unrecorded:${path} (managed block has no recorded reporting language; ${GLOBAL_RULES_FLAG_HINT})`);
     case 'legacy-unmanaged':
       return flag
-        ? write(withFlag())
+        ? withFlag()
         : plan('skipped', `skipped-legacy:${path} (legacy repo-harness rules without markers; ${GLOBAL_RULES_FLAG_HINT}; user sections are kept)`);
     case 'no-rules':
     case 'missing-file':
       return flag
-        ? write(withFlag())
+        ? withFlag()
         : plan('skipped', `skipped-not-opted-in:${path} (not opted in; ${GLOBAL_RULES_FLAG_HINT} to install the rules)`);
   }
 }
 
 export interface GlobalContextRefreshPlan {
+  /** The package whose template and released values prove an unrecorded block. */
+  readonly sourceRoot: string;
   readonly files: readonly GlobalContextFilePlan[];
 }
 
@@ -559,7 +548,7 @@ export function preflightGlobalContextRefresh(
   hosts: readonly GlobalContextHost[],
   flag: ReportLanguageFlag | undefined,
 ): GlobalContextRefreshPlan {
-  return { files: hosts.map((host) => planGlobalContextFile(globalContextPath(home, host), home, sourceRoot, flag)) };
+  return { sourceRoot, files: hosts.map((host) => planGlobalContextFile(globalContextPath(home, host), home, sourceRoot, flag)) };
 }
 
 /** Explicit owner change: recorded presets do not override this request. */
@@ -573,12 +562,13 @@ export function setReportingLanguage(
   const refused = plan.files.find(file => file.outcome === 'skipped');
   if (refused) return { status: 'skipped', detail: refused.detail, changed_hosts: [], ...(refused.edited && { edited: true as const }) };
   const block = renderGlobalRulesBlock(sourceRoot, reportLanguageFromFlag(preset));
-  const files = plan.files.map(file => {
-    const merged = mergeManagedBlock(file.current ?? '', block, sourceRoot);
-    return { ...file, next: merged.content, outcome: merged.content === file.current ? 'unchanged' as const : 'write' as const,
+  const files = plan.files.map((file): GlobalContextFilePlan => {
+    const merged = mergeManagedBlock(file.current ?? '', block, sourceRoot, file.recorded);
+    const changed = merged.content !== file.current;
+    return { ...file, outcome: changed ? 'write' : 'unchanged', block: changed ? block : null, legacy: merged.replaced.length > 0,
       detail: formatGlobalContextWrite(file.path, file.current, merged) };
   });
-  const result = applyGlobalContextRefresh({ files }, home);
+  const result = applyGlobalContextRefresh({ sourceRoot, files }, home);
   return { ...result, changed_hosts: result.status === 'ok' ? hosts.filter((_, index) => files[index]!.outcome === 'write') : [] };
 }
 
@@ -588,78 +578,150 @@ export interface GlobalContextRefresh {
 }
 
 /**
- * Keeps the bytes and mode that a changed write replaces, under one fixed
- * directory. The install transaction deletes its own snapshot on success, so
- * this copy is the only one left after an update. A failed copy throws, and
- * the caller then does not write the target. Nothing deletes these copies.
- * The directory is outside `~/.repo-harness/backups/`: the upgrade inventory
- * reports each child there without a package version as a retired leftover.
+ * The gate's strategy for the rules block. `locate` is the shared marked-block
+ * boundary, so the ledger records the block text that a revert compares.
+ * `apply` makes the `mergeManagedBlock` decision on the bytes that the gate
+ * read and returns one edit: a plain refresh replaces exactly the old block,
+ * so the edit removes the recorded text; a legacy migration spans every
+ * changed byte. A block that is now edited or unbalanced fails: the file
+ * changed after preflight.
  */
-function backupGlobalContextFile(path: string, home: string): string {
-  const dir = join(home, '.repo-harness', 'global-context-backups');
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const host = basename(dirname(path)).replace(/^\./, '');
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backup = join(dir, `${host}-${basename(path)}.${stamp}-${process.pid}.bak`);
-  writeFileSync(backup, readFileSync(path), { flag: 'wx', mode: lstatSync(path).mode & 0o777 });
-  return backup;
+function globalRulesStrategy(sourceRoot: string, recorded: GlobalRulesRecord): HostConfigStrategy<string> {
+  return {
+    locate: markedBlock.locate,
+    apply(content, selector, block) {
+      const merged = mergeManagedBlock(content, block, sourceRoot, recorded);
+      if (merged.status !== 'written') throw new HostConfigError('host_config_target_changed', `the ${selector} block changed after preflight; re-run`);
+      const old = markedBlockLayout(content, selector);
+      let prefix = 0;
+      const shorter = Math.min(content.length, merged.content.length);
+      while (prefix < shorter && content[prefix] === merged.content[prefix]) prefix += 1;
+      let suffix = 0;
+      while (suffix < shorter - prefix && content[content.length - 1 - suffix] === merged.content[merged.content.length - 1 - suffix]) suffix += 1;
+      if (old.kind === 'balanced') {
+        prefix = Math.min(prefix, old.start);
+        suffix = Math.min(suffix, content.length - old.end);
+      }
+      return { at: prefix, removed: content.slice(prefix, content.length - suffix), inserted: merged.content.slice(prefix, merged.content.length - suffix) };
+    },
+  };
 }
 
 /**
- * Writes the preflight plan. Status is ok only when every file is current or
- * written, skipped when a file was not synced, and failed only for an error
- * here: a file that changed after preflight, or a write error.
+ * Writes the preflight plan through the host-config gate. rh's own add and
+ * refresh keep no whole-file copy (`overrides-only`, owner C1 on #2849); a
+ * legacy migration takes out text that the ledger does not hold, so the gate
+ * keeps the file in its vault first. Two host paths that name one file are
+ * written once. Status is ok only when every file is current or written,
+ * skipped when a file was not synced, and failed only for an error here.
  */
 export function applyGlobalContextRefresh(plan: GlobalContextRefreshPlan, home: string): GlobalContextRefresh {
   const details: string[] = [];
   let failed = false;
+  let skipped = plan.files.some((file) => file.outcome === 'skipped');
+  const gate = rulesGate(home);
+  const paths = hostConfigPaths({ ...process.env, HOME: home });
+  const written = new Map<string, string>();
   for (const file of plan.files) {
     if (file.outcome !== 'write') {
       details.push(file.detail);
       continue;
     }
     try {
-      // The plan wrote only a missing path or a readable regular file; the
-      // same entry type and bytes must still be there.
-      const now = readableGlobalContextFile(file.path) ? readFileSync(file.path, 'utf-8') : null;
-      if (globalContextPathRefusal(file.path, home) !== null || now !== file.current) {
+      const target = resolveHostPath(paths, file.path);
+      const first = written.get(target);
+      if (first !== undefined) {
+        details.push(`${file.detail} (same file as ${first})`);
+        continue;
+      }
+      written.set(target, file.path);
+      // The write detail describes the preflight bytes; other bytes need a new plan.
+      if (readGlobalContextFile(file.path) !== file.current) {
         failed = true;
         details.push(`failed:${file.path} (changed after preflight; re-run)`);
         continue;
       }
-      const backup = file.current !== null && file.next !== file.current ? backupGlobalContextFile(file.path, home) : null;
-      mkdirSync(dirname(file.path), { recursive: true });
-      writeFileSync(file.path, file.next!, 'utf-8');
-      details.push(backup === null
-        ? file.detail
-        : `${file.detail} (backup: ${backup}; restore: cp ${shellQuote(backup)} ${shellQuote(file.path)})`);
+      adoptGlobalRulesBlock(gate, file.path, plan.sourceRoot);
+      const recorded = recordedBlock(gate, file.path);
+      const kind = file.current !== null && markedBlockLayout(file.current, GLOBAL_RULES_SELECTOR).kind === 'balanced' ? 'refresh' : 'add';
+      const result = gate.apply([{
+        path: file.path,
+        backup: 'overrides-only',
+        fragments: [{
+          owner: GLOBAL_RULES_OWNER,
+          selector: GLOBAL_RULES_SELECTOR,
+          kind,
+          strategy: globalRulesStrategy(plan.sourceRoot, recorded),
+          value: file.block!,
+          // Selected: released rh sections outside the markers, which the plan proved but the ledger does not hold; or
+          // a block that the user deleted after rh recorded it, which only the --report-language flag writes again.
+          ...(file.legacy || (kind === 'add' && recorded !== null) ? { selected: true } : {}),
+        }],
+      }]);
+      if (result.skipped.length) {
+        skipped = true;
+        details.push(`skipped-edited:${file.path} (${GLOBAL_RULES_EDITED})`);
+      } else details.push(file.detail);
     } catch (error) {
       failed = true;
       details.push(`failed:${file.path} (${(error as Error).message})`);
     }
   }
-  const skipped = plan.files.some((file) => file.outcome === 'skipped');
   return { status: failed ? 'failed' : skipped ? 'skipped' : 'ok', detail: details.join(', ') };
 }
 
-export type ManagedBlockRemoval =
-  | { readonly status: 'none' }
-  | { readonly status: 'unbalanced' }
-  | { readonly status: 'edited' }
-  | { readonly status: 'removed'; readonly content: string };
-
 /**
- * Uninstall: removes only the marked block, and only when install would prove
- * it managed; an edited block holds user text, so the file is left unchanged.
- * The rest of the file keeps its bytes.
+ * One-shot migration (#2849): an rh version before the ledger wrote the block
+ * with no record. A proved block becomes an `add` fragment; the file is
+ * `created` when nothing but the block is in it. No whole-file copy is kept
+ * (owner C1). Null for a file with no proved block.
  */
-export function removeManagedBlock(content: string, sourceRoot: string): ManagedBlockRemoval {
-  const layout = markerLayout(content);
-  if (layout.kind !== 'balanced') return { status: layout.kind };
-  const existing = content.slice(layout.start, layout.end + GLOBAL_RULES_END.length).replace(/\r\n/g, '\n');
-  if (!managedBlockProved(existing, sourceRoot)) return { status: 'edited' };
+export function planGlobalRulesAdoption(content: string | null, sourceRoot: string): HostConfigAdoption | null {
+  if (content === null) return null;
+  const layout = markedBlockLayout(content, GLOBAL_RULES_SELECTOR);
+  if (layout.kind !== 'balanced') return null;
+  const inserted = content.slice(layout.start, layout.end);
+  if (!managedBlockProved(inserted.replace(/\r\n/g, '\n'), sourceRoot)) return null;
+  const rest = applyEdit(content, removeMarkedBlock(content, GLOBAL_RULES_SELECTOR));
   return {
-    status: 'removed',
-    content: content.slice(0, layout.start) + content.slice(layout.end + GLOBAL_RULES_END.length),
+    kind: rest.trim() === '' ? 'created' : 'text_block',
+    backup: null,
+    // The preimage lets a failed install put back the block that it adopted and then refreshed.
+    fragments: [{ owner: GLOBAL_RULES_OWNER, selector: GLOBAL_RULES_SELECTOR, kind: 'add', inserted, preimage: inserted }],
+    externalChange: false,
   };
+}
+
+/** Adopts the block of one rules file that the ledger does not hold yet; a recorded file keeps its record. */
+function adoptGlobalRulesBlock(gate: HostConfigGate, path: string, sourceRoot: string): void {
+  const adoption = planGlobalRulesAdoption(readGlobalContextFile(path), sourceRoot);
+  if (adoption) gate.adopt(path, adoption);
+}
+
+/** What uninstall does with a rules file that the ledger does not hold. */
+export type UnrecordedGlobalRules =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'adopt'; readonly adoption: HostConfigAdoption }
+  | { readonly kind: 'preserved'; readonly reason: string };
+
+export function inspectUnrecordedGlobalRules(path: string, sourceRoot: string): UnrecordedGlobalRules {
+  const content = readGlobalContextFile(path);
+  if (content === null) return { kind: 'none' };
+  const layout = markedBlockLayout(content, GLOBAL_RULES_SELECTOR);
+  if (layout.kind === 'none') return { kind: 'none' };
+  if (layout.kind === 'unbalanced') return { kind: 'preserved', reason: 'unbalanced managed global rules; preserved' };
+  const adoption = planGlobalRulesAdoption(content, sourceRoot);
+  return adoption
+    ? { kind: 'adopt', adoption }
+    : { kind: 'preserved', reason: 'managed rules block was edited; preserved. Move your rules outside the markers, then delete the block.' };
+}
+
+/** The revert of an adoption that a dry run has not written: the same plan as `revert` after the migration. */
+export function previewGlobalRulesAdoptedRevert(path: string, adoption: HostConfigAdoption): HostConfigRevertEntry {
+  const bytes = readFileSync(path);
+  const records = adoption.fragments.map((fragment) => ({ file: path, ...fragment }));
+  return planFileRevert({
+    path, kind: adoption.kind ?? 'text_block', hasBackup: false, externalChange: false,
+    committed: true, existed: true, bytes, backup: () => { throw new Error('an adopted rules file has no backup'); }, own: records, all: records, filtered: false,
+  }).entry;
 }

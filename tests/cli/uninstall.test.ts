@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { versions } from '../../src/cli/installer/install-profile';
 import { beforeAll, test, expect } from 'bun:test';
 import { installStateFixturePath, seedGlobalPackageFixture } from '../helpers/install-ownership';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync, symlinkSync, lstatSync } from 'fs';
+import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync, symlinkSync, lstatSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, relative } from 'path';
 import { spawnSync } from 'child_process';
@@ -12,7 +12,7 @@ import { requestUserInputFragment } from '../../src/cli/installer/targets/codex'
 import { tomlFragment } from '../../src/core/host-config/toml-fragment';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
 import { buildManagedHooks } from '../../src/cli/installer/managed-entries';
-import { renderGlobalRulesBlock } from '../../src/cli/installer/global-context';
+import { applyGlobalContextRefresh, preflightGlobalContextRefresh, renderGlobalRulesBlock } from '../../src/cli/installer/global-context';
 const CLI = join(import.meta.dir, '../../src/cli/index.ts');
 beforeAll(() => { seedGlobalPackageFixture(); });
 function fixture(run: (home: string, env: NodeJS.ProcessEnv) => void) {
@@ -192,7 +192,24 @@ test.skipIf(process.platform==='win32'||process.getuid?.()===0)('a failed provid
 const RULES_BLOCK=renderGlobalRulesBlock(join(import.meta.dir,'../..'),{preset:'en',instruction:'Use English to report to user.'}).trimEnd();
 test('managed context block cleanup keeps user prose',()=>fixture((home,env)=>{
  put(home,'.codex/AGENTS.md',`user-before\n${RULES_BLOCK}\nuser-after\n`);
- expect(runUserUninstall({target:'codex',env}).status).toBe('complete');expect(readFileSync(join(home,'.codex/AGENTS.md'),'utf8')).toBe('user-before\n\nuser-after\n');
+ expect(runUserUninstall({target:'codex',env}).status).toBe('complete');expect(readFileSync(join(home,'.codex/AGENTS.md'),'utf8')).toBe('user-before\nuser-after\n');
+}));
+test('rules blocks revert to the original bytes, keep a later user line and an edited block, and a shared link is one file',()=>fixture((home,env)=>{
+ const root=join(import.meta.dir,'../..');const claude=join(home,'.claude/CLAUDE.md');const codex=join(home,'.codex/AGENTS.md');
+ const install=()=>expect(applyGlobalContextRefresh(preflightGlobalContextRefresh(root,home,['codex','claude'],'en'),home).status).toBe('ok');
+ put(home,'.claude/CLAUDE.md','claude notes');put(home,'.codex/AGENTS.md','codex notes\n');
+ install();expect(readFileSync(claude,'utf8')).toBe(`claude notes\n\n${RULES_BLOCK}`);
+ expect(runUserUninstall({target:'both',env}).status).toBe('complete');
+ expect([readFileSync(claude,'utf8'),readFileSync(codex,'utf8')]).toEqual(['claude notes','codex notes\n']);
+ expect(existsSync(join(home,'.repo-harness/global-context-backups'))).toBe(false);
+ install();appendFileSync(codex,'later\n');writeFileSync(claude,readFileSync(claude,'utf8').replace('## Reporting','- My own rule.\n\n## Reporting'));
+ const edited=readFileSync(claude,'utf8');const result=runUserUninstall({target:'both',env});
+ expect(readFileSync(codex,'utf8')).toBe('codex notes\nlater\n');expect(readFileSync(claude,'utf8')).toBe(edited);
+ expect(result.lines).toContain(`[unresolved] ${claude}: changed since rh wrote it; preserved: global-working-rules`);
+ rmSync(claude);symlinkSync(codex,claude);install();
+ expect(readFileSync(codex,'utf8').split(RULES_BLOCK)).toHaveLength(2);
+ expect(runUserUninstall({target:'both',env}).status).toBe('complete');
+ expect(readFileSync(codex,'utf8')).toBe('codex notes\nlater\n');expect(lstatSync(claude).isSymbolicLink()).toBe(true);
 }));
 test.each([
  ['.claude/CLAUDE.md',`user-before\n${RULES_BLOCK.replace('## Reporting','- My own rule.\n\n## Reporting')}\n`,'managed rules block'],

@@ -759,10 +759,10 @@ describe('upgrade with real release bytes', () => {
     for (const path of kept) expect([existsSync(path), applied.items.find((item) => item.path === path)]).toMatchObject([true, { ownership: 'unowned', action: 'report' }]);
   }, false));
 
-  test('a global rules copy adds no upgrade leftover', () => sandbox((opts) => {
+  test('a global rules refresh adds no upgrade leftover', () => sandbox((opts) => {
     put(join(opts.home, '.codex/AGENTS.md'), '# Notes\n');
     const refresh = applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, opts.home, ['codex'], 'en'), opts.home);
-    expect(refresh.detail).toContain(' (backup: ');
+    expect(refresh.status).toBe('ok');
     const check = runUpgrade({ ...opts, scope: 'global' });
     expect(check.items).toEqual([]);
     expect(check.exitCode).toBe(0);

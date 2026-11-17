@@ -5,13 +5,14 @@ import {
   formatGlobalContextWrite,
   inspectGlobalContext,
   mergeManagedBlock,
-  removeManagedBlock,
+  planGlobalRulesAdoption,
   renderGlobalRulesBlock,
   SHIPPED_GLOBAL_RULES_H1,
   SHIPPED_GLOBAL_RULES_SECTIONS,
   type ReportingLanguagePreset,
 } from "../src/cli/installer/global-context";
 import { legacySections } from "../scripts/check-released-managed-values";
+import { insertMarkedBlock, removeMarkedBlock } from "../src/core/host-config/marked-block";
 
 const ROOT = join(import.meta.dir, "..");
 const ASSETS_TEMPLATE = join(ROOT, "assets/reference-configs/global-working-rules.md");
@@ -212,10 +213,22 @@ describe("global working rules distribution", () => {
     const content = `user content\n\n${edited}`;
     expect(mergeManagedBlock(content, zhBlock(), ROOT)).toMatchObject({ status: "kept-edited", content });
     expect(inspectGlobalContext(content, ROOT).state).toBe("managed-stale");
-    expect(removeManagedBlock(content, ROOT)).toEqual({ status: "edited" });
+    expect(planGlobalRulesAdoption(content, ROOT)).toBeNull();
     // A released block needs no template: a missing package root still proves it.
-    expect(removeManagedBlock(zhBlock(), join(ROOT, "missing-package-root"))).toEqual({ status: "removed", content: "\n" });
-    expect(removeManagedBlock(`user content\r\n\r\n${zhBlock().replace(/\n/g, "\r\n")}`, ROOT)).toEqual({ status: "removed", content: "user content\r\n\r\n\r\n" });
+    expect(planGlobalRulesAdoption(zhBlock(), join(ROOT, "missing-package-root"))).toMatchObject({ kind: "created", backup: null });
+    const crlf = `user content\r\n\r\n${zhBlock().replace(/\n/g, "\r\n")}`;
+    const removal = removeMarkedBlock(crlf, "global-working-rules");
+    expect(crlf.slice(0, removal.at) + crlf.slice(removal.at + removal.removed.length)).toBe("user content\r\n");
+  });
+
+  test("a marked block insert and its removal give back the original bytes", () => {
+    const block = zhBlock().trimEnd();
+    for (const original of ["", "abc", "abc\n", "abc\n\n\n", "\n", "# me\r\nline\r\n", "x\n  \n"]) {
+      const insert = insertMarkedBlock(original, block);
+      const written = original.slice(0, insert.at) + insert.inserted + original.slice(insert.at);
+      const removal = removeMarkedBlock(written, "global-working-rules");
+      expect(written.slice(0, removal.at) + written.slice(removal.at + removal.removed.length)).toBe(original);
+    }
   });
 
   test("migrates a mixed legacy file and keeps a custom sentence refreshable", () => {

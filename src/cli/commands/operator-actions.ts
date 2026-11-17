@@ -135,7 +135,7 @@ export function createOperatorLanguageSettings(
       const plan = preflightGlobalContextRefresh(sourceRoot, home, hosts, undefined);
       return { hosts: plan.files.map((file, index) => ({
         host: hosts[index]!, state: file.state,
-        preset: file.state === 'unsafe' || file.state === 'unreadable' || file.current === null
+        preset: file.state === 'unreadable' || file.current === null
           ? null : inspectGlobalContext(file.current, sourceRoot).language?.preset ?? null,
       })) };
     },

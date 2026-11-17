@@ -8,7 +8,7 @@ import { MANAGED_TAG } from '../../core/adoption/managed-hook-config';
 import { stagedSkillRoot, hostSkillRoot, providerSkillLock, type ProviderSkillLock } from '../../effects/host-skill-roots';
 import { piPackagePresent, removePiPackage } from './pi-package';
 import { piExecutable } from '../../effects/pi-executable';
-import { globalContextPath, removeManagedBlock } from './global-context';
+import { globalContextPath, inspectUnrecordedGlobalRules, previewGlobalRulesAdoptedRevert } from './global-context';
 import { removeRuntimeStateIgnoreBlock } from '../../effects/adoption/gitignore-plan';
 import { readRepositoryExcludes, repositoryCommonDirectory, repositoryExcludesLedgerPath, repositoryExcludeTarget, serializeRepositoryExcludes, type RepositoryExclude } from './repository-excludes';
 import { CODEGRAPH_CONFIG_MARKER, managedInstallSurfaceIsCurrent, readInstallState, type ManagedInstallSurface } from './install-profile';
@@ -16,7 +16,8 @@ import { installProfileStatePath } from './install-state';
 import { assertConfigurationPath, configurationReceiptPath, hostConfigurationRoot, writePrivateConfiguration } from './configuration-ownership';
 import { migrateCodexConfigRecords, planCodexConfigMigration, previewAdoptedRevert } from './codex-config-migration';
 import { migrateJsonConfigRecords, planJsonConfigMigration, previewJsonAdoptedRevert } from './json-config-migration';
-import { openHostConfigGate, type HostConfigRevertEntry } from '../../effects/host-config/gate';
+import { openHostConfigGate, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
+import { hostConfigPaths, resolveHostPath } from '../../effects/host-config/store';
 
 export interface UninstallOptions { target: 'codex' | 'claude' | 'both'; dryRun?: boolean; env?: NodeJS.ProcessEnv; runtimeLock?: RuntimeTransactionContext }
 export interface UninstallItem { path: string; action: 'remove' | 'restore' | 'preserve' | 'unresolved' | 'note'; reason: string }
@@ -137,7 +138,30 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
 
   const gate = openHostConfigGate({ env });
   const hostPaths = [...(files.codex ? [files.codex] : []), ...files.json];
+  // The Global Working Rules files go by the ledger too. Two host paths that name one file are one revert.
+  const rulesAdoptions = new Map<string, HostConfigAdoption>();
+  const resolvedHostPaths = new Set<string>();
+  for (const host of ['codex', 'claude'] as const) {
+    if (opts.target !== 'both' && opts.target !== host) continue;
+    const contextPath = globalContextPath(home, host);
+    try {
+      const resolved = resolveHostPath(hostConfigPaths(env), contextPath);
+      if (resolvedHostPaths.has(resolved)) continue;
+      resolvedHostPaths.add(resolved);
+      if (!gate.recorded(contextPath).length) {
+        const unrecorded = inspectUnrecordedGlobalRules(contextPath, SOURCE_ROOT);
+        if (unrecorded.kind === 'none') continue;
+        if (unrecorded.kind === 'preserved') { unresolved(contextPath, unrecorded.reason); continue; }
+        // The one-shot migration: a dry run plans it in memory.
+        if (opts.dryRun) rulesAdoptions.set(contextPath, unrecorded.adoption);
+        else gate.adopt(contextPath, unrecorded.adoption);
+      }
+      hostPaths.push(contextPath);
+    } catch (error) { unresolved(contextPath, String((error as Error).message)); }
+  }
   const previewOf = (path: string): readonly HostConfigRevertEntry[] => {
+    const rules = rulesAdoptions.get(path);
+    if (rules) return [previewGlobalRulesAdoptedRevert(path, rules)];
     if (path === files.codex && codexMigration?.adoption) return previewAdoptedRevert(codexMigration);
     const planned = jsonMigration?.files.find((file) => file.path === path);
     return planned ? previewJsonAdoptedRevert({ ...jsonMigration!, files: [planned] }) : gate.revert([path], { dryRun: true });
@@ -156,20 +180,6 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
       // Codex writes these after the user trusts the hooks; they never block completion.
       if (parsed.hooks?.state && Object.keys(parsed.hooks.state).length) items.push({ path: files.codex, action: 'note', reason: 'Codex keeps its hook trust entries in [hooks.state]; rh does not remove them.' });
     } catch (error) { unresolved(files.codex, String((error as Error).message)); }
-  }
-
-  for (const host of ['codex', 'claude'] as const) {
-    if (opts.target !== 'both' && opts.target !== host) continue;
-    const contextPath = globalContextPath(home, host);
-    try {
-      if (!existsSync(contextPath)) continue;
-      assertConfigurationPath(contextPath, home);
-      const removal = removeManagedBlock(read(contextPath), SOURCE_ROOT);
-      if (removal.status === 'none') continue;
-      if (removal.status === 'unbalanced') throw new Error('unbalanced managed global rules; preserved');
-      if (removal.status === 'edited') throw new Error('managed rules block was edited; preserved. Move your rules outside the markers, then delete the block.');
-      change(contextPath, removal.content.trim() ? removal.content : null, 'managed global working rules');
-    } catch (error) { unresolved(contextPath, String((error as Error).message)); }
   }
 
   for (const surface of state?.ownership_manifest ?? []) {

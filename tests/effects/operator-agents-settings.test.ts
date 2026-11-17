@@ -131,7 +131,7 @@ describe('language settings routes', () => {
     expect(await (await fetch(`${h.server.url}${reportPath}`)).json()).toEqual({ hosts: [
       { host: 'claude', state: 'managed-current', preset: 'en' }, { host: 'codex', state: 'managed-current', preset: 'en' },
     ] });
-    expect(readdirSync(join(h.home, '.repo-harness', 'global-context-backups'))).toHaveLength(2);
+    expect(existsSync(join(h.home, '.repo-harness', 'global-context-backups'))).toBe(false);
     writeFileSync(join(h.home, '.codex', 'AGENTS.md'), '<!-- BEGIN: repo-harness global-working-rules -->');
     const refused = await send(h, reportPath, { preset: 'zh-CN' });
     expect([refused.status, (await refused.json()).error.code]).toEqual([409, 'report_language_refused']);
@@ -175,7 +175,7 @@ describe('language settings routes', () => {
     expect(JSON.parse(readFileSync(repo.policy, 'utf8'))).toEqual({ other: 1, documentation: { language: 'follow-user' } });
   });
 
-  test('GET returns null presets for unsafe paths and an unreadable rules template', async () => {
+  test('GET follows a linked rules file and returns null presets for an unreadable rules template', async () => {
     const h = await startHarness(undefined, undefined, join(tmpdir(), randomUUID()));
     mkdirSync(join(h.home, '.codex'), { recursive: true });
     mkdirSync(join(h.home, '.claude'), { recursive: true });
@@ -184,7 +184,7 @@ describe('language settings routes', () => {
     symlinkSync(codex, join(h.home, '.claude', 'CLAUDE.md'));
     const response = await fetch(`${h.server.url}${reportPath}`);
     expect([response.status, await response.json()]).toEqual([200, { hosts: [
-      { host: 'claude', state: 'unsafe', preset: null }, { host: 'codex', state: 'unreadable', preset: null },
+      { host: 'claude', state: 'unreadable', preset: null }, { host: 'codex', state: 'unreadable', preset: null },
     ] }]);
   });
 

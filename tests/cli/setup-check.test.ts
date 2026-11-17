@@ -289,7 +289,7 @@ describe('setup check command', () => {
     });
   });
 
-  test('reports a symlinked instruction file as a warning', () => {
+  test('follows a symlinked instruction file and reports its current block as ok', () => {
     withTempHome((home, repo) => {
       const target = join(home, 'dotfiles-AGENTS.md');
       writeFileSync(target, currentRulesBlock());
@@ -304,11 +304,7 @@ describe('setup check command', () => {
         toolingReport: baseToolingReport(),
       });
       const check = report.checks.find((entry) => entry.id === 'global-rules.codex');
-      expect(check?.status).toBe('warn');
-      const link = join(home, '.codex', 'AGENTS.md');
-      expect(check?.detail).toBe(
-        `${link} is a symlink or not a regular file (refusing symlink configuration path: ${link}); replace it with a regular file to enable managed sync`,
-      );
+      expect(check?.status).toBe('ok');
     });
   });
 

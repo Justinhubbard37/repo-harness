@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'fs';
 import * as os from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -33,7 +33,6 @@ import {
   GLOBAL_RULES_EDITED,
   GLOBAL_RULES_UNBALANCED,
   globalContextPath,
-  globalContextPathRefusal,
   inspectGlobalContext,
   type GlobalContextInspection,
 } from '../installer/global-context';
@@ -512,16 +511,11 @@ function globalRulesChecks(
         detail,
       });
     };
-    const refusal = globalContextPathRefusal(filePath, home);
-    if (refusal) {
-      check('warn', refusal);
-      continue;
-    }
     let content: string | null = null;
     if (exists) {
       try {
-        // A FIFO or special file would block or fail the read; never open it.
-        if (!lstatSync(filePath).isFile()) throw new Error('not a regular file');
+        // A FIFO or special file would block or fail the read; never open it. User links are followed.
+        if (!statSync(filePath).isFile()) throw new Error('not a regular file');
         content = readFileSync(filePath, 'utf-8');
       } catch (error) {
         check('needs_agent', `unreadable (${(error as Error).message}): ${filePath}`);

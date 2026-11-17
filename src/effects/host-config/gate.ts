@@ -170,10 +170,13 @@ function nextFileRecord(previous: FileRecord | undefined, first: { kind: FileRec
       external_change: false,
     };
   }
-  // The first backup stays the restore target; a later copy of an outside edit is kept apart for the report.
-  const externalBackup = first.backup ?? previous.external_backup;
+  // The first backup stays the restore target; a later copy of an outside edit is kept apart for the report. A file
+  // that rh adopted has no backup: its first copy, taken while it holds what rh recorded, becomes the restore target.
+  const adopted = previous.backup === null && isCommitted(previous, preimage) ? first.backup : null;
+  const externalBackup = adopted ? previous.external_backup : first.backup ?? previous.external_backup;
   return {
     ...previous,
+    backup: previous.backup ?? adopted,
     committed: committedOf(written),
     ...(externalBackup ? { external_backup: externalBackup } : {}),
     external_change: previous.external_change || !isCommitted(previous, preimage),
@@ -198,9 +201,16 @@ function keepsUserBytes(fragment: PlannedFragment): boolean {
   return fragment.edit.removed === '' || fragment.previous?.inserted === fragment.edit.removed;
 }
 
-/** The whole file goes to the vault before rh writes over bytes that rh did not write. */
-function backupUserBytes(paths: HostConfigPaths, previous: FileRecord | undefined, preimage: ExpectedFile, bytes: Buffer | null): Sha256 | null {
-  return bytes !== null && (!previous || !isCommitted(previous, preimage)) ? putVault(paths, bytes) : null;
+/**
+ * The whole file goes to the vault before rh writes over bytes that rh did not
+ * write. A file as rh recorded it needs no copy when its backup already holds
+ * those bytes or when rh wrote all of it (`created`); an adopted file has
+ * neither, so an edit that removes user bytes copies it.
+ */
+function backupUserBytes(paths: HostConfigPaths, previous: FileRecord | undefined, preimage: ExpectedFile, bytes: Buffer | null, removesUserBytes: boolean): Sha256 | null {
+  if (bytes === null) return null;
+  const copied = previous && isCommitted(previous, preimage) && (!removesUserBytes || previous.backup !== null || previous.kind === 'created');
+  return copied ? null : putVault(paths, bytes);
 }
 
 /**
@@ -247,7 +257,8 @@ function applyChanges(paths: HostConfigPaths, changes: readonly HostConfigFileCh
     const before = { fragments, directories };
     const result = Buffer.from(plan.result, 'utf8');
     const createdDirs = unchanged ? [] : missingDirectories(path);
-    const backup = change.backup === 'overrides-only' && plan.fragments.every(keepsUserBytes) ? null : backupUserBytes(paths, previous, preimage, bytes);
+    const removesUserBytes = !plan.fragments.every(keepsUserBytes);
+    const backup = change.backup === 'overrides-only' && !removesUserBytes ? null : backupUserBytes(paths, previous, preimage, bytes, removesUserBytes);
     fragments = [...fragments.filter((entry) => entry.file !== path), ...fileFragments(plan, recorded)];
     directories = [...directories, ...createdDirs];
     files[path] = nextFileRecord(previous, { kind: preimage.existed ? 'text_block' : 'created', backup, baselineUnknown: change.baselineUnknown === true },
@@ -280,7 +291,7 @@ function delegateWrite(paths: HostConfigPaths, declaredPaths: readonly string[],
     if (previous?.kind === 'text_block') throw new HostConfigError('host_config_invalid_state', `rh text blocks are recorded in this file, so a delegated writer may not replace it: ${path}`);
     const { observation, bytes } = observeFile(path);
     const preimage = expectedOf(observation, path);
-    const backup = backupUserBytes(paths, previous, preimage, bytes);
+    const backup = backupUserBytes(paths, previous, preimage, bytes, true);
     const provisional = nextFileRecord(previous, { kind: preimage.existed ? 'replaced' : 'created', backup, baselineUnknown: false }, preimage, preimage);
     return { path, preimage, previous, provisional };
   });
@@ -324,10 +335,10 @@ interface FragmentRevert {
  * that a removal empties goes only when one of them proves that rh created it.
  */
 function revertFragments(path: string, content: string, records: readonly FragmentRecord[], all: readonly FragmentRecord[], backup: string | null): FragmentRevert {
-  const format = fragmentFormat(path);
   const removed: FragmentRecord[] = [];
   const kept: string[] = [];
   for (const record of records) {
+    const format = fragmentFormat(path, record.selector);
     let range: TextRange | null = null;
     // A file that the strategy can no longer read keeps every fragment.
     try { range = format?.strategy.locate(content, record.selector) ?? null; } catch (error) { if (!(error instanceof HostConfigError)) throw error; }
@@ -396,7 +407,7 @@ export function planFileRevert(input: FileRevertInput): FileRevertPlan {
   }
   // A changed file with no fragment to take out (a created or replaced file) stays with its record.
   if (!removed.size && !(kind === 'text_block' && !input.hasBackup)) return { entry: withKept('kept_edited'), write: null, record: 'keep', removed: [] };
-  const empty = kind === 'created' && fragmentFormat(path)?.empty(result.content) === true;
+  const empty = kind === 'created' && all.some((record) => fragmentFormat(path, record.selector)?.empty(result.content) === true);
   const write = empty ? { kind: 'remove' as const } : removed.size ? { kind: 'replace' as const, content } : null;
   return { entry: withKept(empty ? 'removed' : removed.size ? 'text_removed' : 'released'), write, record: 'drop', removed: result.removed };
 }
@@ -494,7 +505,8 @@ const fragmentKey = (record: FragmentRecord): string => `${record.owner}\0${reco
  * state before the transaction: to its snapshot text after a refresh, to its
  * adopted text when the transaction adopted it, out when the transaction
  * added it, and to its backup text when the transaction overrode a user
- * value. A file that the transaction created goes only when the file did not
+ * value. A file of which the transaction took a whole copy goes back to that
+ * copy first. A file that the transaction created goes only when the file did not
  * exist before it and still holds exactly what it wrote. Every other entry
  * stays and is returned.
  */
@@ -514,19 +526,25 @@ export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer 
     if (!changed.length) continue;
     const { observation, bytes } = observeFile(path);
     const current = expectedOf(observation, path);
-    const format = fragmentFormat(path);
-    if (!format || bytes === null || !isCommitted(record, current)) {
+    if (bytes === null || !isCommitted(record, current)) {
       unresolved.push(...changed.map((entry) => `${path}: ${entry.selector}`));
       continue;
     }
     // The bytes before an override in this transaction: the copy that it took of an outside edit, or the first backup.
     const source = previous && record.external_backup !== previous.external_backup ? record.external_backup : record.backup;
     const backup = source ? decode(readVault(paths, source), path) : null;
-    let content = decode(bytes, path);
+    // A whole-file copy that this transaction took holds every byte that its later writes changed, also outside the
+    // fragments (a legacy migration): the file goes back to it, and only a fragment that it still shows as written,
+    // by an earlier write of this transaction, gets its own edit.
+    const copy = !previous || record.backup !== previous.backup ? record.backup
+      : record.external_backup !== previous.external_backup ? record.external_backup ?? null : null;
+    let content = decode(copy ? readVault(paths, copy) : bytes, path);
     for (const entry of [...changed].reverse()) {
-      const range = format.strategy.locate(content, entry.selector);
+      const format = fragmentFormat(path, entry.selector);
+      const range = format?.strategy.locate(content, entry.selector) ?? null;
       const old = earlier.find((candidate) => fragmentKey(candidate) === fragmentKey(entry));
-      if (!range || content.slice(range.start, range.end) !== entry.inserted || (!old && entry.preimage === undefined && entry.kind !== 'add' && backup === null)) {
+      if (copy && (!range || content.slice(range.start, range.end) !== entry.inserted)) continue;
+      if (!format || !range || content.slice(range.start, range.end) !== entry.inserted || (!old && entry.preimage === undefined && entry.kind !== 'add' && backup === null)) {
         unresolved.push(`${path}: ${entry.selector}`);
         continue;
       }
@@ -537,7 +555,7 @@ export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer 
       content = content.slice(0, edit.at) + edit.inserted + content.slice(edit.at + edit.removed.length);
     }
     const created = !previous && record.kind === 'created' && record.baseline.state === 'known' && record.baseline.existed === false;
-    if (created && format.empty(content)) removeTarget(path, current);
+    if (created && all.some((entry) => fragmentFormat(path, entry.selector)?.empty(content) === true)) removeTarget(path, current);
     else if (content !== decode(bytes, path)) replaceTarget(path, Buffer.from(content, 'utf8'), current);
   }
   removeCreatedDirectories(now.directories.filter((directory) => !before.directories.includes(directory)));

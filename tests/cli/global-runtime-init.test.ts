@@ -22,6 +22,7 @@ import { MANAGED_AGENTS } from '../../src/effects/terminal/task-role-profiles';
 import { applyGlobalContextRefresh, GLOBAL_RULES_EDITED, GLOBAL_RULES_END, inspectGlobalContext, preflightGlobalContextRefresh, renderGlobalRulesBlock, setReportingLanguage } from '../../src/cli/installer/global-context';
 import { CandidateRequestProtocolRetiredError, encodeCandidateRequest, parseCandidateRequest, type CandidateReconciliationRequest } from '../../src/cli/commands/candidate-reconciliation';
 import type { PluginId } from '../../src/core/skill-surface/plugin-manifest';
+import { openHostConfigGate } from '../../src/effects/host-config/gate';
 
 const ROOT = join(import.meta.dir, '..', '..');
 beforeAll(() => { seedGlobalPackageFixture(); });
@@ -3371,8 +3372,9 @@ describe('Global Working Rules refresh during install and update', () => {
   const rulesStep = (result: ReturnType<typeof runGlobalRuntimeSetup>) =>
     result.steps.find((step) => step.step === 'refresh global working rules');
   const backupDir = (home: string) => join(home, '.repo-harness', 'global-context-backups');
+  const vaultDir = (home: string) => join(home, '.repo-harness', 'config', 'vault');
 
-  test('setting the language replaces both recorded presets, keeps user text and backs up each host', () => withRulesRuntime(({ home, path }) => {
+  test('setting the language replaces both recorded presets, keeps user text and keeps no whole-file copy', () => withRulesRuntime(({ home, path }) => {
     const claudePath = join(home, '.claude', 'CLAUDE.md');
     mkdirSync(dirname(claudePath), { recursive: true });
     const codex = `${userBefore}${renderGlobalRulesBlock(ROOT, { preset: 'en', instruction: 'Use English to report to user.' })}`;
@@ -3386,12 +3388,12 @@ describe('Global Working Rules refresh during install and update', () => {
       expect(saved).toStartWith(userBefore);
       expect(inspectGlobalContext(saved, ROOT).language?.preset).toBe('zh-CN');
     }
-    expect(readdirSync(backupDir(home)).map(file => readFileSync(join(backupDir(home), file), 'utf8')).sort()).toEqual([codex, claude].sort());
     expect(setReportingLanguage(home, ROOT, ['codex', 'claude'], 'zh-CN').changed_hosts).toEqual([]);
-    expect(readdirSync(backupDir(home))).toHaveLength(2);
+    expect(existsSync(backupDir(home))).toBe(false);
+    expect(readdirSync(vaultDir(home))).toEqual([]);
   }));
 
-  test('an unbalanced or linked second host refuses the whole language change before writing', () => withRulesRuntime(({ home, path }) => {
+  test('an unbalanced second host refuses the whole language change before writing; a linked one is the same file', () => withRulesRuntime(({ home, path }) => {
     const claudePath = join(home, '.claude', 'CLAUDE.md');
     mkdirSync(dirname(claudePath), { recursive: true });
     writeFileSync(path, userBefore);
@@ -3401,9 +3403,11 @@ describe('Global Working Rules refresh during install and update', () => {
     expect(readFileSync(claudePath, 'utf8')).toBe(broken);
     rmSync(claudePath);
     symlinkSync(path, claudePath);
-    expect(setReportingLanguage(home, ROOT, ['codex', 'claude'], 'en').status).toBe('skipped');
-    expect(readFileSync(path, 'utf8')).toBe(userBefore);
-    expect(existsSync(backupDir(home))).toBe(false);
+    expect(setReportingLanguage(home, ROOT, ['codex', 'claude'], 'en')).toMatchObject({ status: 'ok', changed_hosts: ['codex', 'claude'] });
+    const saved = readFileSync(path, 'utf8');
+    expect(saved.split(GLOBAL_RULES_END)).toHaveLength(2);
+    expect(saved).toStartWith(userBefore);
+    expect(lstatSync(claudePath).isSymbolicLink()).toBe(true);
   }));
 
   test('setting the language installs missing, unmanaged and unrecorded rules through the existing merge', () => {
@@ -3418,14 +3422,6 @@ describe('Global Working Rules refresh during install and update', () => {
       });
     }
   });
-
-  /** The write detail with the backup suffix, after a check that the named copy holds the replaced bytes. */
-  const backedUp = (home: string, path: string, write: string, replaced: string, detail: string | undefined): string => {
-    const backup = detail?.match(/ \(backup: (.+?); restore: /)?.[1] ?? '';
-    expect(dirname(backup)).toBe(backupDir(home));
-    expect(readFileSync(backup, 'utf-8')).toBe(replaced);
-    return `${write} (backup: ${backup}; restore: cp '${backup}' '${path}')`;
-  };
 
   // An older parent CLI hands update to the candidate without a report language.
   test('a candidate-style update without a language skips legacy and unrecorded files and exits 0', () => withRulesRuntime(({ home, path, run }) => {
@@ -3444,17 +3440,15 @@ describe('Global Working Rules refresh during install and update', () => {
     expect(readFileSync(claudePath, 'utf-8')).toBe(unrecorded);
   }), 30_000);
 
-  test('a symlinked instruction file is skipped and its target is not written', () => withRulesRuntime(({ home, path, run }) => {
+  test('a symlinked instruction file is followed: the target gets the block and the link stays', () => withRulesRuntime(({ home, path, run }) => {
     const target = join(home, 'dotfiles-AGENTS.md');
-    writeFileSync(target, mixedLegacy);
+    writeFileSync(target, userBefore);
     symlinkSync(target, path);
     const result = run('zh-CN');
     expect(result.exitCode).toBe(0);
-    expect(rulesStep(result)).toMatchObject({
-      status: 'skipped',
-      detail: `skipped-unsafe:${path} (${path} is a symlink or not a regular file (refusing symlink configuration path: ${path}); replace it with a regular file to enable managed sync)`,
-    });
-    expect(readFileSync(target, 'utf-8')).toBe(mixedLegacy);
+    expect(rulesStep(result)).toMatchObject({ status: 'ok', detail: `appended:${path}` });
+    expect(inspectGlobalContext(readFileSync(target, 'utf-8'), ROOT).state).toBe('managed-current');
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
   }), 30_000);
 
   test.skipIf(process.getuid?.() === 0)('an unreadable rules file stays out of the backup and is skipped inside the update transaction', () => withRulesRuntime(({ home, path }) => {
@@ -3498,11 +3492,10 @@ describe('Global Working Rules refresh during install and update', () => {
     const stale = crlf(`${userBefore}${releasedUnrecorded}\n${userAfter}`);
     writeFileSync(path, stale);
     const refreshed = run('en');
-    const detail = rulesStep(refreshed)?.detail;
-    expect(rulesStep(refreshed)).toMatchObject({ status: 'ok', detail: backedUp(home, path, `updated:${path}`, stale, detail) });
+    expect(rulesStep(refreshed)).toMatchObject({ status: 'ok', detail: `updated:${path}` });
     expect(readFileSync(path, 'utf-8')).toBe(expected);
     expect(rulesStep(run())).toMatchObject({ status: 'ok', detail: `unchanged:${path}` });
-    expect(readdirSync(backupDir(home))).toHaveLength(1);
+    expect(existsSync(backupDir(home))).toBe(false);
   }), 60_000);
 
   test('a file that changes between preflight and apply fails with the re-run message', () => withRulesRuntime(({ home, path }) => {
@@ -3517,10 +3510,10 @@ describe('Global Working Rules refresh during install and update', () => {
     expect(readFileSync(path, 'utf-8')).toBe(`${mixedLegacy}\n## Added later\n`);
   }));
 
-  test.skipIf(process.getuid?.() === 0)('a failed backup copy leaves the rules file unwritten and stops update', () => withRulesRuntime(({ home, path, run }) => {
+  test.skipIf(process.getuid?.() === 0)('a failed vault copy before a legacy migration leaves the rules file unwritten and stops update', () => withRulesRuntime(({ home, path, run }) => {
     writeFileSync(path, mixedLegacy);
-    mkdirSync(backupDir(home), { recursive: true });
-    chmodSync(backupDir(home), 0o500);
+    mkdirSync(vaultDir(home), { recursive: true });
+    chmodSync(vaultDir(home), 0o500);
     try {
       const applied = applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, home, ['codex'], 'en'), home);
       expect(applied.status).toBe('failed');
@@ -3530,34 +3523,79 @@ describe('Global Working Rules refresh during install and update', () => {
       expect(update.exitCode).toBe(1);
       expect(update.steps.at(-1)).toMatchObject({ step: 'refresh global working rules', status: 'failed' });
     } finally {
-      chmodSync(backupDir(home), 0o700);
+      chmodSync(vaultDir(home), 0o700);
     }
     expect(readFileSync(path, 'utf-8')).toBe(mixedLegacy);
   }));
 
-  test('a failed install transaction restores both rules files from the backup', () => withRulesRuntime(({ home, path }) => {
+  test('a failed install transaction restores both rules files, also a linked target with an adopted block', () => withRulesRuntime(({ home, path }) => {
     const env = { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun') };
     const claudePath = join(home, '.claude', 'CLAUDE.md');
+    const target = join(home, 'dotfiles-CLAUDE.md');
+    const claude = `${userBefore}${releasedUnrecorded}`;
     mkdirSync(join(home, '.claude'), { recursive: true });
     writeFileSync(path, mixedLegacy);
-    writeFileSync(claudePath, 'claude user notes\n');
+    writeFileSync(target, claude);
+    symlinkSync(target, claudePath);
     const transaction = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
     const applied = applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, home, ['codex', 'claude'], 'en'), home);
     expect(applied.status).toBe('ok');
     expect(readFileSync(path, 'utf-8')).not.toBe(mixedLegacy);
+    expect(readFileSync(target, 'utf-8')).not.toBe(claude);
     rollbackInstallHostTransaction(transaction);
     expect(readFileSync(path, 'utf-8')).toBe(mixedLegacy);
-    expect(readFileSync(claudePath, 'utf-8')).toBe('claude user notes\n');
+    expect(readFileSync(target, 'utf-8')).toBe(claude);
+    expect(lstatSync(claudePath).isSymbolicLink()).toBe(true);
+
+    // A linked target with legacy sections only: the rollback puts back the vault copy that the migration took.
+    const legacyTarget = join(home, 'dotfiles-AGENTS.md');
+    rmSync(path);
+    writeFileSync(legacyTarget, mixedLegacy);
+    symlinkSync(legacyTarget, path);
+    const linked = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
+    expect(applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, home, ['codex'], 'en'), home).status).toBe('ok');
+    expect(readFileSync(legacyTarget, 'utf-8')).not.toBe(mixedLegacy);
+    rollbackInstallHostTransaction(linked);
+    expect(readFileSync(legacyTarget, 'utf-8')).toBe(mixedLegacy);
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+  }));
+
+  test('a valid block with a released section outside it: the whole file goes to the vault before the migration, and a revert gives it back', () => withRulesRuntime(({ home, path }) => {
+    const block = renderGlobalRulesBlock(ROOT, { preset: 'en', instruction: 'Use English to report to user.' });
+    const original = `${userBefore}${block}\n${released.get('## Progressive Due Diligence')}\n\n${userAfter}`;
+    const claudePath = join(home, '.claude', 'CLAUDE.md');
+    const target = join(home, 'dotfiles-CLAUDE.md');
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(path, original);
+    writeFileSync(target, original);
+    symlinkSync(target, claudePath);
+    expect(applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, home, ['codex', 'claude'], 'en'), home).status).toBe('ok');
+    const ledger = JSON.parse(readFileSync(join(home, '.repo-harness', 'config', 'ledger.json'), 'utf8'));
+    for (const file of [path, target]) {
+      expect(readFileSync(file, 'utf8'), file).not.toBe(original);
+      const backup = String(ledger.files[realpathSync(file)].backup).replace('sha256:', '');
+      expect(readFileSync(join(vaultDir(home), backup), 'utf8'), file).toBe(original);
+    }
+    expect(openHostConfigGate({ env: { HOME: home } }).revert([path, claudePath]).map((entry) => entry.action)).toEqual(['text_removed', 'text_removed']);
+    for (const file of [path, target]) expect(readFileSync(file, 'utf8'), file).toBe(original);
+    expect(lstatSync(claudePath).isSymbolicLink()).toBe(true);
+    if (process.getuid?.() === 0) return;
+    // No vault copy, no migration.
+    const other = `${original}## Later\n`;
+    writeFileSync(path, other);
+    chmodSync(vaultDir(home), 0o500);
+    try { expect(applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, home, ['codex'], 'en'), home).status).toBe('failed'); }
+    finally { chmodSync(vaultDir(home), 0o700); }
+    expect(readFileSync(path, 'utf8')).toBe(other);
   }));
 
   test('a flag migrates the legacy span, keeps every user section, and a second update is a no-op', () => withRulesRuntime(({ home, path, run }) => {
     writeFileSync(path, mixedLegacy);
     const migrated = run('zh-CN');
     expect(migrated.exitCode).toBe(0);
-    const migratedDetail = rulesStep(migrated)?.detail;
     expect(rulesStep(migrated)).toMatchObject({
       status: 'ok',
-      detail: backedUp(home, path, `migrated-legacy:${path} (replaced: Global Working Rules, Sufficiency and Stop Boundaries, Progressive Due Diligence; kept user sections: Model Routing, Herdr 跨 harness 协作, Disk hygiene on the Mac mini)`, mixedLegacy, migratedDetail),
+      detail: `migrated-legacy:${path} (replaced: Global Working Rules, Sufficiency and Stop Boundaries, Progressive Due Diligence; kept user sections: Model Routing, Herdr 跨 harness 协作, Disk hygiene on the Mac mini)`,
     });
     const block = renderGlobalRulesBlock(ROOT, { preset: 'zh-CN', instruction: 'Use Chinese to report to user.' });
     const expected = `${userBefore}${block}\n${userBetween}${userAfter}`;
@@ -3578,9 +3616,9 @@ describe('Global Working Rules refresh during install and update', () => {
     expect(rulesStep(run('en'))).toMatchObject({ status: 'skipped', detail: `skipped-edited:${path} (${GLOBAL_RULES_EDITED})` });
     expect(readFileSync(path, 'utf-8')).toBe(edited);
 
-    // The printed restore command puts the user's pre-migration file back.
-    const restore = migratedDetail?.match(/; restore: (.+)\)$/)?.[1] ?? '';
-    expect(spawnSync('sh', ['-c', restore]).status).toBe(0);
+    // The migration took out text with no ledger record, so the vault holds the file before it and a revert puts it back.
+    writeFileSync(path, expected);
+    expect(openHostConfigGate({ env: { ...process.env, HOME: home } }).revert([path])).toEqual([{ path, action: 'text_removed' }]);
     expect(readFileSync(path, 'utf-8')).toBe(mixedLegacy);
   }), 60_000);
 
@@ -3595,8 +3633,7 @@ describe('Global Working Rules refresh during install and update', () => {
 
     const recorded = run('en', false);
     expect(recorded.exitCode).toBe(0);
-    const recordedDetail = rulesStep(recorded)?.detail;
-    expect(rulesStep(recorded)).toMatchObject({ status: 'ok', detail: backedUp(home, path, `updated:${path}`, unrecorded, recordedDetail) });
+    expect(rulesStep(recorded)).toMatchObject({ status: 'ok', detail: `updated:${path}` });
     expect(readFileSync(path, 'utf-8'))
       .toBe(`${userBefore}${renderGlobalRulesBlock(ROOT, { preset: 'en', instruction: 'Use English to report to user.' })}`);
   }), 60_000);
