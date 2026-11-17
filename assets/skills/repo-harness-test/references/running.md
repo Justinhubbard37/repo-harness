@@ -39,7 +39,7 @@ and keeps going after a failure, then prints `[ci] failed test files (N):`.
 
 ## The gate lanes
 
-`scripts/check-ci.sh [affected|all|governance|functional|architecture]` defaults to `affected`.
+`scripts/check-ci.sh [affected|all|governance|functional|architecture]` defaults to `affected`. `ledger --base <ref>` runs LedgerEnforcement on `tasks/lessons.md`.
 PR checks select affected tests. Daily CI selects `governance`, `architecture`
 and `functional` as separate jobs. The release gate selects `all`, which runs
 all three.

@@ -28,6 +28,7 @@ source:
     - scripts/replay-ci-coverage.ts
     - scripts/report-ci.ts
     - scripts/check-archimap-links.ts
+    - scripts/check-ledger-enforcement.ts
     - scripts/select-test-suite.ts
     - scripts/ci-documentation-consumers.ts
     - scripts/harness-trace-grade.sh

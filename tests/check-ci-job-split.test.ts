@@ -589,7 +589,10 @@ describe('single affected verification and daily fallback', () => {
     const { jobs } = workflow;
     expect(workflow.on.schedule).toEqual([{ cron: '17 19 * * *' }]);
     expect(jobs.required.name).toBe('Required / CI');
-    expect(jobs.required.needs).toEqual(['selection', 'state-boundaries', 'verify', 'home-isolation', 'native-oar', 'architecture-advisory']);
+    expect(jobs.required.needs).toEqual(['selection', 'state-boundaries', 'verify', 'home-isolation', 'native-oar', 'architecture-advisory', 'ledger-enforcement']);
+    // LedgerEnforcement runs on each PR, a documentation-only PR included.
+    expect(jobs['ledger-enforcement'].if).toBe("github.event_name == 'pull_request'");
+    expect(jobs['ledger-enforcement'].steps.at(-1).run).toBe('bash scripts/check-ci.sh ledger --base "$BASE_SHA"');
     // State boundaries run on every event except a push to main and a documentation-only diff, and Required / CI requires them.
     expect(jobs['state-boundaries'].needs).toBe('selection');
     expect(jobs['state-boundaries'].if).toBe("github.event_name != 'push' && needs.selection.outputs.mode != 'documentation'");
@@ -673,10 +676,11 @@ describe('single affected verification and daily fallback', () => {
 
   test('real aggregate shell rejects failure, cancellation, omission and invalid coverage', () => {
     const command = workflow.jobs.required.steps[0].run;
-    const run = (selection: string, verification: string, mode: string, home: string, native: string, homeFlag: string, nativeFlag: string, boundaries = 'success', architecture = 'success') =>
+    const run = (selection: string, verification: string, mode: string, home: string, native: string, homeFlag: string, nativeFlag: string, boundaries = 'success', architecture = 'success', ledger = 'success') =>
       spawnSync('/bin/bash', ['-c', command], { encoding: 'utf8', env: { ...process.env,
         SELECTION_RESULT: selection, STATE_BOUNDARIES_RESULT: boundaries, COVERAGE_MODE: mode, VERIFY_RESULT: verification,
         HOME_ISOLATION_RESULT: home, NATIVE_OAR_RESULT: native, HOME_ISOLATION: homeFlag, NATIVE_OAR: nativeFlag, ARCHITECTURE_RESULT: architecture,
+        LEDGER_RESULT: ledger,
       } }).status;
     for (const selection of ['success', 'failure', 'cancelled', 'skipped']) {
       for (const verification of ['success', 'failure', 'cancelled', 'skipped']) {
@@ -696,6 +700,11 @@ describe('single affected verification and daily fallback', () => {
     for (const architecture of ['success', 'failure', 'cancelled', 'skipped', '']) {
       expect(run('success', 'success', 'affected', 'success', 'success', 'true', 'true', 'success', architecture) === 0).toBe(architecture === 'success');
       expect(run('success', 'skipped', 'documentation', 'skipped', 'skipped', 'false', 'false', 'success', architecture) === 0).toBe(architecture === 'success' || architecture === 'skipped');
+    }
+    // LedgerEnforcement must succeed in each mode, a documentation-only diff included.
+    for (const ledger of ['success', 'failure', 'cancelled', 'skipped', '']) {
+      expect(run('success', 'success', 'affected', 'success', 'success', 'true', 'true', 'success', 'success', ledger) === 0).toBe(ledger === 'success');
+      expect(run('success', 'skipped', 'documentation', 'skipped', 'skipped', 'false', 'false', 'skipped', 'skipped', ledger) === 0).toBe(ledger === 'success');
     }
     for (const home of ['success', 'failure', 'cancelled', 'skipped', '']) {
       for (const native of ['success', 'failure', 'cancelled', 'skipped', '']) {

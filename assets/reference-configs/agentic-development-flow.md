@@ -68,10 +68,10 @@ Manual probe: to see what named test files do on one runner for a branch head, d
 - Seen: <N>×
 ```
 
-- For a repeat, copy the `Name` and `Mistake pattern` text exactly. Maintenance triage groups entries by `Mistake pattern`. `Seen` is the cumulative event count of the theme, up to and including this entry. Do not edit `Seen` on older entries.
+- `Mistake pattern` is the immutable theme key: lowercase words joined by `-`. For a repeat, copy the key exactly; `Name` can change. Maintenance triage and the `LedgerEnforcement` check group entries by the key. `Seen` is the cumulative event count of the theme, up to and including this entry. Do not edit `Seen` on older entries.
 - A new correction event adds 1 to the last valid cumulative `Seen` value of the theme. A change of format, classification or enforcement adds nothing.
-- A merge of one cumulative series keeps the maximum `Seen` value and every `Triggered by correction` reference of the entries it replaces. Add the consolidating PR to that list; never substitute it for the earlier references. Maintenance triage reads the ledger history and fails an entry whose only reference is a consolidation commit.
-- A merge of different themes is a reclassification. A person checks the events of the themes for overlap and sets `Seen` from that check.
+- A theme key never leaves the ledger. A rename changes only `Name`. A split keeps the key and its maximum `Seen` on the existing theme and starts a new key for the other part.
+- A merge of one cumulative series keeps its key, the maximum `Seen` value, the `Promoted` and `Enforced by` values and every `Triggered by correction` reference of the entries it replaces. Add the consolidating PR to that list; never substitute it for the earlier references. Maintenance triage reads the ledger history and fails an entry whose only reference is a consolidation commit.
 - A history migration sets the start value of `Seen` from the history evidence, not from the number of references.
 - `Enforced by` names the file that fails when the mistake comes back. For an architecture or type fix, name the file that makes the mistake impossible. `judgment` means that no file catches the mistake.
 - `Missed by` names the check layer that should have caught the mistake before merge. `unknown` means that the evidence does not show the missed layer; the entry's `Why` says which evidence is missing. `none` means that no layer applies and that this was checked.
@@ -83,7 +83,7 @@ Manual probe: to see what named test files do on one runner for a branch head, d
   4. A test.
   If no level works, write `Enforced by: judgment`.
 - A new check or test must fail on the real commit that had the mistake and pass after the fix. Put both results in the PR.
-- At `Seen: 3×` with `Enforced by: judgment`, promote the prevention rule into root `AGENTS.md` and root `CLAUDE.md` in the same PR. Add `- Promoted: <PR>` to that entry. A rule with a structural enforcer does not go into the root files.
+- At `Seen: 3×` with `Enforced by: judgment`, promote the prevention rule into root `AGENTS.md` and root `CLAUDE.md` in the same PR. Add `- Promoted: <PR>` to that entry. A consolidated entry lists every `Promoted` reference of the entries it replaces, separated by `, `. A rule with a structural enforcer does not go into the root files.
 - When the mistake can no longer occur, delete its text rule from the agent instruction files. Keep its ledger entries.
 - Each retro advances the watermark to the last reviewed commit, also when it finds no lesson. If an earlier retro PR is still open, update that PR. Do not open a second retro PR.
 - Every change to `tasks/lessons.md` goes through a PR and merges only after GO. GO is an explicit go-ahead from the repository owner (Aimpact for repo-harness) for one reviewed head SHA. Task-level publication authorization does not replace it. Merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-sha>`. Lessons are not task logs. Ordinary tasks record a one-time decision in the issue or PR. A correction in a task can add an entry; that entry follows the same PR and GO rule.

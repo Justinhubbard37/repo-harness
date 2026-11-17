@@ -30,4 +30,13 @@ export const RULES = {
       + '"Added test lines: <n>", "Added product lines: <n>" and "Added test files: <n>" (the measured numbers) and the reason '
       + 'that no existing test can cover the behavior.',
   },
-} as const satisfies { readonly TestBudget: RuleEntry<keyof TestBudgetParameters> };
+  LedgerEnforcement: {
+    id: 'LedgerEnforcement',
+    parameters: {},
+    repair: 'Change each named tasks/lessons.md entry as its finding states. The Lessons Retro section of '
+      + 'docs/reference-configs/agentic-development-flow.md is the contract for the fields and the Seen count.',
+  },
+} as const satisfies {
+  readonly TestBudget: RuleEntry<keyof TestBudgetParameters>;
+  readonly LedgerEnforcement: RuleEntry<never>;
+};

@@ -11,6 +11,7 @@ responsibilities:
   - "Plan the affected-test shards once in the selection job, weighted by the durations that the daily run on main caches."
   - "Run the affected, governance, functional and daily architecture lanes and report CI results."
   - "Check that the archimap module document links match the measured modules[].docs paths."
+  - "Check tasks/lessons.md and its PR change against the Lessons Retro contract (LedgerEnforcement)."
 source:
   include:
     - scripts/ci-edge-audit.ts
@@ -18,6 +19,7 @@ source:
     - .github/**
     - scripts/check-ci.sh
     - scripts/check-changelog-released-sections.ts
+    - scripts/check-ledger-enforcement.ts
     - scripts/changelog-fragments.ts
     - scripts/check-protected-paths.ts
     - scripts/select-*.ts

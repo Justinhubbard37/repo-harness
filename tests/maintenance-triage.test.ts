@@ -128,7 +128,7 @@ describe("maintenance triage judgment themes", () => {
     try {
       const res = triage(repo, ["--json"]);
       expect(res.status).toBe(0);
-      const report = JSON.parse(res.stdout) as { judgment: { key: string; seen: number; promoted: string | null }[] };
+      const report = JSON.parse(res.stdout) as { judgment: { theme: string; seen: number; promoted: string | null }[] };
       const lines = ledgerLines(repo);
       const themes = [
         ["below-three", "Below three", 2, "judgment", null, [lines[1], lines[2]], ["#11", "#12"]],
@@ -140,9 +140,9 @@ describe("maintenance triage judgment themes", () => {
         prevention_rule: "Keep the failure evidence.", why: "", correction_sources,
       }));
       expect((report as unknown as { themes: unknown }).themes).toEqual(themes);
-      expect(report.judgment.map(({ key, seen, promoted }) => ({ key, seen, promoted }))).toEqual([
-        { key: "counted-by-seen", seen: 4, promoted: "#30" },
-        { key: "repeat-after-promotion", seen: 4, promoted: "#31" },
+      expect(report.judgment.map(({ theme, seen, promoted }) => ({ theme, seen, promoted }))).toEqual([
+        { theme: "counted-by-seen", seen: 4, promoted: "#30" },
+        { theme: "repeat-after-promotion", seen: 4, promoted: "#31" },
       ]);
     } finally {
       rmSync(repo, { recursive: true, force: true });

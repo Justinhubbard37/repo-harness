@@ -13,11 +13,11 @@ if [[ "$#" -eq 2 && "$1" == --base && -n "$2" && "$2" != -* ]]; then
   base="$2"
   shift 2
 fi
-# Only the affected lane takes an optional base. The PR architecture advisory needs one.
-if [[ "$#" -gt 0 || ( -n "$base" && "$lane" != affected && "$lane" != architecture-advisory ) || ( -z "$base" && "$lane" == architecture-advisory ) ]] \
-  || [[ "$lane" != all && "$lane" != governance && "$lane" != functional && "$lane" != affected && "$lane" != architecture && "$lane" != architecture-advisory && "$lane" != release ]]; then
+# Only the affected lane takes an optional base. The PR architecture advisory and the ledger lane need one.
+if [[ "$#" -gt 0 || ( -n "$base" && "$lane" != affected && "$lane" != architecture-advisory && "$lane" != ledger ) || ( -z "$base" && ( "$lane" == architecture-advisory || "$lane" == ledger ) ) ]] \
+  || [[ "$lane" != all && "$lane" != governance && "$lane" != functional && "$lane" != affected && "$lane" != architecture && "$lane" != architecture-advisory && "$lane" != ledger && "$lane" != release ]]; then
   echo "Usage: scripts/check-ci.sh [affected|all|governance|functional|architecture|release] [--base <git-ref>]" >&2
-  echo "       scripts/check-ci.sh architecture-advisory --base <git-ref>" >&2
+  echo "       scripts/check-ci.sh architecture-advisory|ledger --base <git-ref>" >&2
   exit 2
 fi
 
@@ -122,8 +122,26 @@ warn() {
   echo "::warning title=$1::$message"
 }
 
+# LedgerEnforcement on tasks/lessons.md of the candidate tree and its change against base $1.
+# Exit 1 is a violation and exit 2 a check error; both fail the lane.
+run_ledger_enforcement() {
+  echo "[ci] LedgerEnforcement"
+  local status=0
+  bun scripts/check-ledger-enforcement.ts --base "$1" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "::error title=LedgerEnforcement::scripts/check-ledger-enforcement.ts exited $status for base $1. Read the [ledger] lines in the job log."
+    return 1
+  fi
+}
+
 echo "[ci] install"
 bun install --frozen-lockfile
+
+if [[ "$lane" == ledger ]]; then
+  run_ledger_enforcement "$base"
+  echo "[ci] OK"
+  exit 0
+fi
 
 if [[ "$lane" == affected ]]; then
   # CI_SHARD=<index>/<total> runs array <index> of the selection job's shard plan; shard 0 also owns typecheck.
@@ -132,6 +150,7 @@ if [[ "$lane" == affected ]]; then
     if [[ -n "${CI_SHARD:-}" ]]; then shard_total="${CI_SHARD#*/}"; fi
     selection="$(CI_SHARD_TOTAL="$shard_total" bun scripts/select-ci-coverage.ts --base "$base")"
     printf '%s\n' "$selection"
+    run_ledger_enforcement "$base"
     if grep -qx 'mode=documentation' <<< "$selection"; then
       echo "[ci] Documentation-only diff: no build or test job."
       echo "[ci] OK"

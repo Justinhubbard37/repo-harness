@@ -310,6 +310,28 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: bash scripts/check-ci.sh architecture-advisory --base "$BASE_SHA"
 
+  # Required / CI reads this job. It runs on each PR, because an `Enforced by`
+  # target can be any file of the tree, documentation included.
+  ledger-enforcement:
+    name: LedgerEnforcement
+    needs: selection
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.selection.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Check the lessons ledger
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/check-ci.sh ledger --base "$BASE_SHA"
+
   governance:
     name: Daily governance
     needs: selection
@@ -494,7 +516,7 @@ jobs:
   required:
     name: Required / CI
     if: always() && github.event_name == 'pull_request'
-    needs: [selection, state-boundaries, verify, home-isolation, native-oar, architecture-advisory]
+    needs: [selection, state-boundaries, verify, home-isolation, native-oar, architecture-advisory, ledger-enforcement]
     runs-on: ubuntu-latest
     steps:
       - name: Consume the single candidate verification
@@ -508,11 +530,14 @@ jobs:
           NATIVE_OAR_RESULT: ${{ needs.native-oar.result }}
           NATIVE_OAR: ${{ needs.selection.outputs.native_oar }}
           ARCHITECTURE_RESULT: ${{ needs.architecture-advisory.result }}
+          LEDGER_RESULT: ${{ needs.ledger-enforcement.result }}
         run: |
           # A documentation-only diff selects no build, test or check job.
+          # LedgerEnforcement runs on each PR.
           [ "$SELECTION_RESULT" = success ] \
             && { [ "$STATE_BOUNDARIES_RESULT" = success ] || { [ "$COVERAGE_MODE" = documentation ] && [ "$STATE_BOUNDARIES_RESULT" = skipped ]; }; } \
             && { { [ "$COVERAGE_MODE" = affected ] && [ "$VERIFY_RESULT" = success ]; } || { [ "$COVERAGE_MODE" = documentation ] && [ "$VERIFY_RESULT" = skipped ]; }; } \
             && { [ "$HOME_ISOLATION_RESULT" = success ] || { [ "$HOME_ISOLATION" = false ] && [ "$HOME_ISOLATION_RESULT" = skipped ]; }; } \
             && { [ "$NATIVE_OAR_RESULT" = success ] || { [ "$NATIVE_OAR" = false ] && [ "$NATIVE_OAR_RESULT" = skipped ]; }; } \
-            && { [ "$ARCHITECTURE_RESULT" = success ] || { [ "$COVERAGE_MODE" = documentation ] && [ "$ARCHITECTURE_RESULT" = skipped ]; }; }
+            && { [ "$ARCHITECTURE_RESULT" = success ] || { [ "$COVERAGE_MODE" = documentation ] && [ "$ARCHITECTURE_RESULT" = skipped ]; }; } \
+            && [ "$LEDGER_RESULT" = success ]

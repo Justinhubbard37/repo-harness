@@ -3,17 +3,27 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE_EOF'
-Usage: scripts/maintenance-triage.sh [--json]
+Usage: scripts/maintenance-triage.sh [--json | --entries <ledger file>]
 USAGE_EOF
 }
 
 output_mode="text"
+entries_file=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --json)
       output_mode="json"
       shift
+      ;;
+    --entries)
+      if [[ $# -lt 2 ]]; then
+        usage >&2
+        exit 1
+      fi
+      output_mode="entries"
+      entries_file="$2"
+      shift 2
       ;;
     --help|-h)
       usage
@@ -27,26 +37,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ledger="tasks/lessons.md"
-
-if [[ ! -f "$ledger" ]]; then
-  if [[ "$output_mode" == "json" ]]; then
-    printf '{"judgment":[],"themes":[],"field_errors":[],"evidence_errors":[]}\n'
-  else
-    echo "[Maintenance] No tasks/lessons.md found."
-  fi
-  exit 0
-fi
-
-if ! command -v jq >/dev/null 2>&1; then
-  echo "[Maintenance] jq is required for maintenance triage." >&2
-  exit 1
-fi
-
 # The one ledger parser. Each entry starts at `- Date:` and becomes
-# {"line": <Date line>, "fields": {"<Field name>": "<value>"}}. An indented or
-# unprefixed line continues the field above it; a blank line ends it.
-entries_json="$(
+# {"line": <Date line>, "fields": {"<Field name>": "<value>"}, "owned": [<line>, ...]}.
+# `owned` lists the lines that the entry holds: its Date line, its field lines
+# and their continuation lines. A repeated field in one entry keeps its first
+# value, and the parser skips the repeat. A field line is exactly
+# "- <Field>: <value>". A continuation line is indented plain prose: it starts
+# with no list marker ("-", "*", "+", "1.", "1)"). Every other line ends the
+# field above it and stays unowned. `--entries` prints the
+# parsed entries of one file for LedgerEnforcement
+# (scripts/check-ledger-enforcement.ts), which fails each line that no entry
+# owns, so the check has no second parser.
+parse_entries() {
   awk '
     function esc(value) {
       gsub(/\\/, "\\\\", value)
@@ -65,42 +67,82 @@ entries_json="$(
         body = body sep "\"" esc(name) "\":\"" esc(fields[name]) "\""
         sep = ","
       }
-      printf "%s{\"line\":%d,\"fields\":{%s}}", (count++ ? "," : ""), start, body
+      printf "%s{\"line\":%d,\"fields\":{%s},\"owned\":[%s]}", (count++ ? "," : ""), start, body, owned
       delete fields
+      owned = ""
       start = 0
       current = ""
     }
     /^- Date:/ {
       emit()
       start = NR
+      owned = NR
+      fields["Date"] = $0
+      sub(/^- Date:[[:space:]]*/, "", fields["Date"])
+      sub(/[[:space:]]+$/, "", fields["Date"])
+      current = "Date"
+      next
     }
     start == 0 {
       next
     }
-    /^- [A-Z][A-Za-z ]*:/ {
+    /^- [A-Z][A-Za-z ]*:([[:space:]]|$)/ {
       current = $0
       sub(/^- /, "", current)
       sub(/:.*/, "", current)
+      if (current in fields) {
+        current = ""
+        next
+      }
       value = $0
       sub(/^- [A-Z][A-Za-z ]*:[[:space:]]*/, "", value)
       sub(/[[:space:]]+$/, "", value)
       fields[current] = value
+      owned = owned "," NR
       next
     }
-    /^- / || /^[[:space:]]*$/ {
-      current = ""
-      next
-    }
-    current != "" {
+    current != "" && /^[[:space:]]+[^[:space:]]/ && !/^[[:space:]]*([-*+]|[0-9]+[.)])([[:space:]]|$)/ {
       line = $0
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
       fields[current] = fields[current] " " line
+      owned = owned "," NR
+      next
+    }
+    {
+      current = ""
     }
     END {
       emit()
     }
-  ' "$ledger"
-)"
+  ' "$1"
+}
+
+if [[ "$output_mode" == "entries" ]]; then
+  if [[ ! -f "$entries_file" ]]; then
+    echo "[Maintenance] Ledger file not found: $entries_file" >&2
+    exit 1
+  fi
+  printf '[%s]\n' "$(parse_entries "$entries_file")"
+  exit 0
+fi
+
+ledger="tasks/lessons.md"
+
+if [[ ! -f "$ledger" ]]; then
+  if [[ "$output_mode" == "json" ]]; then
+    printf '{"judgment":[],"themes":[],"field_errors":[],"evidence_errors":[]}\n'
+  else
+    echo "[Maintenance] No tasks/lessons.md found."
+  fi
+  exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "[Maintenance] jq is required for maintenance triage." >&2
+  exit 1
+fi
+
+entries_json="$(parse_entries "$ledger")"
 
 # A consolidation commit replaces several ledger entries with fewer. An entry that
 # keeps only such a commit as its Triggered by correction has lost the failure
@@ -130,7 +172,6 @@ consolidation_json="$(consolidation_refs | jq -R . | jq -s 'map(select(length > 
 report_json="$(
   jq -nc --argjson entries "[${entries_json}]" --argjson consolidation "${consolidation_json}" '
     def value($entry; $field): $entry.fields[$field] // "";
-    def keyify: ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "");
     def norm:
       ascii_downcase
       | gsub("^[[:space:]#]+|[[:space:]]+$"; "")
@@ -159,10 +200,9 @@ report_json="$(
     | (if ($field_errors | length) > 0 then null else
         reduce $entries[] as $entry ({};
           . as $acc
-          | (value($entry; "Mistake pattern") | keyify) as $key
+          | value($entry; "Mistake pattern") as $key
           | value($entry; "Promoted") as $promoted
           | .[$key] = (($acc[$key] // {lines: []}) + {
-              theme: value($entry; "Mistake pattern"),
               name: (value($entry; "Name") | if . == "" then null else . end),
               prevention_rule: value($entry; "Prevention rule"),
               why: value($entry; "Why"),
@@ -180,12 +220,12 @@ report_json="$(
     | (if $themes == null then null else
         $themes | to_entries
         | map(select(.value.seen >= 3 and .value.enforced_by == "judgment")
-            | {key, theme: .value.theme, name: .value.name, seen: .value.seen, promoted: (.value.promoted // null)})
+            | {theme: .key, name: .value.name, seen: .value.seen, promoted: (.value.promoted // null)})
       end) as $judgment
 
     | (if $themes == null then null else
         $themes | to_entries | sort_by(.key)
-        | map({key, theme: .value.theme, name: .value.name, seen: .value.seen,
+        | map({key, theme: .key, name: .value.name, seen: .value.seen,
                prevention_rule: .value.prevention_rule, why: .value.why, correction_sources: .value.correction_sources,
                enforced_by: .value.enforced_by, promoted: (.value.promoted // null), lines: .value.lines})
       end) as $theme_list
