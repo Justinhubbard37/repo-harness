@@ -1,5 +1,5 @@
 # workflow-engine/contract-assets 架构文档
-<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-contract-assets" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:e7e3897f5edeece1d946ea2f113448b0a463c594081a09ba452b8d8ef51207ce" -->
+<!-- BEGIN ARCHCONTEXT:generated target="projection_target.entity.capability-workflow-engine-contract-assets" rendererVersion="archcontext.docs-renderer/v6" outputDigest="sha256:f341930a68cf9631bc9f3eadd2b4b2e499975b1a9429e7ebfaeda5d494b47a18" -->
 > **狀態**:`active`
 > **Capability ID**:`capability.workflow-engine.contract-assets`(kind `capability`)
 > **Matched Prefixes**:`agents/fleet/**`、`.codex/agents/**`、`scripts/install-agent-fleet.sh`、`assets/workflow-contract.v1.json`、`assets/released-managed-values.v1.json`、`scripts/check-released-managed-values.ts`、`.ai/context/**`、`.archcontext/model/nodes/**`、`scripts/capability-resolver.ts`、`scripts/capability-config.ts`、`scripts/contract-worktree.sh`、`scripts/merge-gate.ts`、`scripts/ship-worktrees.sh`、`assets/templates/**`、`assets/reference-configs/**`、`docs/reference-configs/**`、`assets/AGENTS.md`、`assets/CLAUDE.md`、`.archcontext/**`、`docs/adr/**`、`src/core/capabilities/**`、`assets/project-structures/**`、`assets/plan-map.json`、`assets/versions.json`、`.claude/templates/**`、`scripts/workflow-contract.ts`、`scripts/check-context-map.ts`、`scripts/check-context-files.sh`、`scripts/select-agent-context-blocks.sh`、`scripts/sync-reference-configs.ts`、`scripts/contract-worktree-runtime.ts`、`scripts/worktree-merge-lib.sh`、`scripts/cutover-closure.ts`、`scripts/new-spec.sh`、`scripts/summarize-failures.sh`、`scripts/maintenance-triage.sh`、`scripts/heartbeat-triage.sh`、`scripts/check-deploy-sql-order.sh`、`scripts/factor-lab-new.sh`、`scripts/factor-lab-promote.sh`、`scripts/factor-lab-reject.sh`、`scripts/factor-lab-check.sh`
@@ -171,7 +171,7 @@ flowchart LR
 | `component.contract-assets.cli-layer` | Contract Assets (cli) | `1–2` 個文件 / `100–200` 行 | 未宣告 |
 | `component.contract-assets.contract-worktree-lifecycle` | Worktree Safety and Branch Delivery | `10–20` 個文件 / `2000–5000` 行 | 未宣告 |
 | `component.contract-assets.effects-layer` | Contract Assets (effects) | `1–2` 個文件 / `200–500` 行 | 未宣告 |
-| `component.contract-assets.fleet-role-profiles` | Fleet Role Profiles | `1–2` 個文件 / `100–200` 行 | 未宣告 |
+| `component.contract-assets.fleet-role-profiles` | Fleet Role Profiles | `1–2` 個文件 / `50–100` 行 | 未宣告 |
 | `component.contract-assets.planning-helpers` | Operations Helpers | `5–10` 個文件 / `1000–2000` 行 | 未宣告 |
 | `component.contract-assets.planning-helpers-cli` | Planning Helpers (cli) | `1–2` 個文件 / `100–200` 行 | 未宣告 |
 | `component.contract-assets.planning-helpers-effects` | Planning Helpers (effects) | `1–2` 個文件 / `200–500` 行 | 未宣告 |

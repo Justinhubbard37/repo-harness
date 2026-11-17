@@ -798,7 +798,7 @@
     "projection_target.entity.capability-verification-evals-checks":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.verification.evals-checks","entityKind":"capability"},"path":"docs/architecture/modules/verification/evals-checks.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:44390b27cafad0769252ff8d9a5d4e92178ee0d01989b4be2db71512b3f62347"},
     "projection_target.entity.capability-workflow-engine-contract-assets":
-      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.workflow-engine.contract-assets","entityKind":"capability"},"path":"docs/architecture/modules/workflow-engine/contract-assets.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:e7e3897f5edeece1d946ea2f113448b0a463c594081a09ba452b8d8ef51207ce"},
+      {"type":"entity-summary","scope":{"kind":"entity","id":"capability.workflow-engine.contract-assets","entityKind":"capability"},"path":"docs/architecture/modules/workflow-engine/contract-assets.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:f341930a68cf9631bc9f3eadd2b4b2e499975b1a9429e7ebfaeda5d494b47a18"},
     "projection_target.entity.capability-workflow-engine-execution-primitives":
       {"type":"entity-summary","scope":{"kind":"entity","id":"capability.workflow-engine.execution-primitives","entityKind":"capability"},"path":"docs/architecture/modules/workflow-engine/execution-primitives.md","ownership":"mixed","format":"markdown","outputDigest":"sha256:cc7d57615b9cd4ef580ac6b348eaee7a58e69ff777b89b96e53c62fc5fee1b15"},
     "projection_target.entity.capability-workflow-engine-inspection-migration":
