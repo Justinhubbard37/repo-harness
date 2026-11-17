@@ -195,6 +195,15 @@ describe('safety hook: Bash host route', () => {
       symlinkSync(out, join(repo, 'big/out-dir'));
       // A regular directory that a copy can write into, through a child link to an outside file.
       symlinkSync(join(out, 'victim.txt'), join(repo, 'big/zdir/source.txt'));
+      // A recursive copy of stage into big/zdir writes through this deeper link; big/ydir holds only a link back to itself.
+      for (const dir of ['repo/big/zdir/stage/d', 'repo/big/ydir/d']) mkdirSync(join(root, dir), { recursive: true });
+      symlinkSync(join(out, 'victim.txt'), join(repo, 'big/zdir/stage/d/notes.txt'));
+      symlinkSync(join(repo, 'big/ydir'), join(repo, 'big/ydir/d/up'));
+      // On a case-insensitive volume a copy of source.txt into case writes through this link; on a normalization-insensitive
+      // volume the NFC name café.txt reaches this NFD file.
+      mkdirSync(join(repo, 'case'));
+      symlinkSync(join(out, 'victim.txt'), join(repo, 'case/SOURCE.TXT'));
+      writeFileSync(join(out, 'cafe\u0301.txt'), 'x');
       writeFileSync(join(repo, 'seq/of=1'), 'x');
       symlinkSync(join(out, 'victim.txt'), join(repo, 'seq/1025'));
       for (const link of ['linked', 'stage/linked', 'w/stage/linked']) symlinkSync(out, join(repo, link));
@@ -305,6 +314,18 @@ describe('safety hook: Bash host route', () => {
         // #3054: the output file of -fprint, -fprint0, -fls and -fprintf is an overwrite target, judged as a redirect target is.
         [refuse, `find build -fprint ${out}/notes.txt`], [refuse, `find build -fprint0 ${out}/notes.txt`], [refuse, `find build -fls ${out}/notes.txt`],
         [refuse, `find build -fprintf ${out}/notes.txt %p`], [null, `find build -fprint ${out}/new-list.txt`],
+        // #3055: each output that a copy writes below a possible destination directory (unplaced, -t, recursive) is judged as the kernel resolves it.
+        [refuse, 'cp source.txt big/[1z]*'], [refuse, 'cp source.txt big/[yz]dir/'], [refuse, 'cp -t big/zdir source.txt'], [refuse, 'cp -t big/zdir/ source.txt'],
+        [refuse, 'cp -R stage big/zdir'], [refuse, 'cp -R stage big/zdir/'], [refuse, 'cp -R stage/ big/zdir/stage'], [refuse, 'cp -rT stage big/zdir/stage'],
+        [refuse, 'cp -R stage/. big/zdir/stage'], [null, 'cp -t big/ydir source.txt'], [null, 'cp -R stage big/ydir'],
+        [refuse, 'cp -R stage/d big/ydir'],
+        // The file system decides which entry an output name reaches, so each verdict follows the volume.
+        ...([[repo, 'SOURCE.TXT', 'cp source.txt case'], [out, 'VICTIM.TXT', `cp stage/VICTIM.TXT ${out}`], [out, 'caf\u00e9.txt', `cp caf\u00e9.txt ${out}`],
+          [repo, 'big/zdir/stage/D', 'cp -R stage/D big/zdir/stage'], [out, 'VICTIM.TXT', `ln -sf stage/VICTIM.TXT ${out}`]] as const)
+          .map(([dir, alias, command]): [string | null, string] => [existsSync(join(dir, alias)) ? refuse : null, command]),
+        // The word after a separate -t or --target-directory is its value, also when it starts with `-`.
+        [refuse, `cp -t -archive ${repo}/source.txt`, out], [refuse, `cp --target-directory -archive ${repo}/source.txt`, out],
+        [refuse, `cp -R -t -archive ${repo}/stage`, out], [refuse, `ln -sf --target-directory -archive ${repo}/source.txt`, out],
         // An unknown removal refuses; an unknown overwrite refuses only when its literal directory is outside the roots.
         [refuse, 'rm -rf build/$X'], [refuse, `echo x > ${out}/$X`], [null, 'echo x > "$TARGET"'], [null, 'echo x > build/$X'],
         [null, 'rm -rf build/*'], [null, 'rm -rf build/*/'], [null, 'rm stage/*.json'], [null, 'mv stage/*.json build/'], [null, 'cp stage/*.json build/'],

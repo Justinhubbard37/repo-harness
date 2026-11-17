@@ -61,9 +61,9 @@ export interface WriteTarget {
   /**
    * cp and ln write `<path>/<name>` for each source name when `path` is an existing directory; the directory itself is not
    * written. `names` is null when a source name is not known, and then every existing child can be the target. cp writes
-   * through an existing child link (`follow`); ln replaces the child entry.
+   * through an existing child link (`follow`); ln replaces the child entry. A recursive cp also writes below each child.
    */
-  readonly into?: { readonly names: readonly string[] | null; readonly follow: boolean };
+  readonly into?: { readonly names: readonly string[] | null; readonly follow: boolean; readonly recursive: boolean };
   /**
    * An mv operand that can be the destination. When it resolves to an existing directory, mv moves the sources into that
    * directory, so a directory outside the roots is refused. With `intoRoot` (the last operand of the plain form), an allowed root
@@ -180,6 +180,11 @@ export function ledgerCreated(path: string, env: NodeJS.ProcessEnv): boolean {
 /** The most children that an unknown copy source name is checked against. */
 const CHILD_LIMIT = 1000;
 
+/** The rest of a copy walk's bound, the resolved directories it has listed, and those on the current walk path. */
+interface CopyWalk { left: number; readonly seen: Set<string>; readonly active: Set<string> }
+/** A directory entry as a listing or a lookup reports it. */
+type ChildEntry = Pick<Dirent, 'name' | 'isFile' | 'isDirectory'>;
+
 class TargetJudge {
   private rootsValue: Root[] | undefined;
   constructor(private readonly scope: SafetyScope, private readonly userStep: string) {}
@@ -267,18 +272,55 @@ class TargetJudge {
 
   /** A copy into a directory writes one child per source name; without the names, every existing child is a possible target. */
   private childDenial(target: WriteTarget, into: NonNullable<WriteTarget['into']>, dir: string): Denial | null {
-    let names = into.names;
-    if (names === null) {
-      try { names = readdirSync(dir); } catch { return unknownTargetDenial(target, this.roots, this.userStep); }
-      if (names.length > CHILD_LIMIT) return unknownTargetDenial(target, this.roots, this.userStep);
-    }
-    for (const name of names) {
-      let child = join(dir, name);
-      try { if (into.follow) child = writeThroughPath(child); } catch { return unknownTargetDenial(target, this.roots, this.userStep); }
-      const denial = this.existingDenial(target, child);
+    const unknown = () => unknownTargetDenial(target, this.roots, this.userStep);
+    const entries: ChildEntry[] = [];
+    try {
+      if (into.names === null) entries.push(...readdirSync(dir, { withFileTypes: true }));
+      // The file system decides which entry a name reaches (a case-insensitive volume maps `report.txt` to `REPORT.txt`), so each
+      // known name is looked up, not matched against a listing. A name without an entry is a create.
+      for (const name of new Set(into.names)) {
+        const stats = lstatSync(join(dir, name), { throwIfNoEntry: false });
+        if (stats) entries.push({ name, isFile: () => stats.isFile(), isDirectory: () => stats.isDirectory() });
+      }
+    } catch { return unknown(); }
+    if (into.names === null && entries.length > CHILD_LIMIT) return unknown();
+    return this.entriesDenial(target, into, dir, entries, { left: CHILD_LIMIT, seen: new Set(), active: new Set() });
+  }
+
+  /**
+   * The outputs of a copy at existing entries of a resolved directory. In a directory inside a root, a regular file, and a real
+   * directory that the copy does not descend into, is an entry inside the root; only the other entries are judged. Directories
+   * listed and links resolved share one bound per target.
+   */
+  private entriesDenial(target: WriteTarget, into: NonNullable<WriteTarget['into']>, dir: string, entries: readonly ChildEntry[], walk: CopyWalk): Denial | null {
+    const inRoot = this.roots.some(root => underRoot(root, dir, true));
+    for (const entry of entries) {
+      if (inRoot && (entry.isFile() || (entry.isDirectory() && !into.recursive))) continue;
+      if (!entry.isFile() && !entry.isDirectory() && --walk.left < 0) return unknownTargetDenial(target, this.roots, this.userStep);
+      const denial = this.outputDenial(target, into, join(dir, entry.name), walk);
       if (denial) return denial;
     }
     return null;
+  }
+
+  /** One output path of a copy, resolved as the kernel writes it. A recursive copy also writes below an existing directory. */
+  private outputDenial(target: WriteTarget, into: NonNullable<WriteTarget['into']>, path: string, walk: CopyWalk): Denial | null {
+    const unknown = () => unknownTargetDenial(target, this.roots, this.userStep);
+    let output = path;
+    try { if (into.follow) output = writeThroughPath(path); } catch { return unknown(); }
+    const denial = this.existingDenial(target, output);
+    if (denial || !into.recursive || !statSync(output, { throwIfNoEntry: false })?.isDirectory()) return denial;
+    // A directory on the current walk path is a cycle that the copy keeps writing through; one listed before is already judged.
+    if (walk.active.has(output)) return unknown();
+    if (walk.seen.has(output)) return null;
+    walk.seen.add(output);
+    if (--walk.left < 0) return unknown();
+    let entries: Dirent[];
+    try { entries = readdirSync(output, { withFileTypes: true }); } catch { return unknown(); }
+    walk.active.add(output);
+    const below = this.entriesDenial(target, into, output, entries, walk);
+    walk.active.delete(output);
+    return below;
   }
 
   private existingDenial(target: WriteTarget, path: string): Denial | null {
@@ -756,21 +798,45 @@ function targetOption(arg: Arg, home: string): Arg[] | null {
 }
 
 /**
+ * The value of each target-directory option: the glued value, or else the next word, a dash-prefixed one too, because getopt takes
+ * that word as the value. Null when no word is a target-directory option.
+ */
+function targetValues(args: readonly Arg[], home: string): Arg[] | null {
+  let found = false;
+  const values = args.flatMap((arg, n) => {
+    const glued = targetOption(arg, home);
+    if (glued === null) return [];
+    found = true;
+    return glued.length > 0 ? glued : args.slice(n + 1, n + 2);
+  });
+  return found ? values : null;
+}
+
+/**
  * cp and ln: the last operand is the destination, written into a directory as each source's name. When the hook cannot place the
  * destination (a target-directory option, fewer than two operands, or a last operand from a glob with several matches, whose
- * order depends on the shell's locale), every operand is a possible write target.
+ * order depends on the shell's locale), every operand is a possible write target, and also a possible directory that receives
+ * every other operand's name.
  */
 function copyTargets(program: string, args: readonly Arg[], cwd: string | null, home: string): WriteTarget[] {
-  const glued = args.map(arg => targetOption(arg, home));
+  const values = targetValues(args, home);
   const operands = operandsOf(args, MOVE_VALUED);
   const last = operands.at(-1);
+  const recursive = program === 'cp' && args.some(arg => isOption(arg) && /^-[a-zA-Z]*[rRa]|^--(?:rec|ar)/.test(text(arg)));
+  // GNU -T copies a source's contents to the destination; so do a source ending in `.` or `..`, and for BSD cp -R a source with a
+  // trailing separator. The written names are then the source's children: every existing child of the destination is a possible output.
+  const contents = args.some(arg => isOption(arg) && /^-(?!-)[a-zA-Z]*?T|^--no-t/.test(text(arg)));
+  const namesOf = (sources: readonly Arg[]) => {
+    const names = sources.map(arg => arg.value === null || (recursive && TRAILING_SEPARATOR.test(arg.value)) ? null : basename(arg.value));
+    return contents || names.some(name => name === null || name === '.' || name === '..') ? null : names as string[];
+  };
   const unplaced = last !== undefined && last.matched && operands.filter(arg => arg.word === last.word).length > 1;
-  if (glued.some(found => found !== null) || operands.length < 2 || unplaced) {
-    return [...operands, ...glued.flatMap(found => found ?? [])].map(arg => targetOf('overwrite', program, arg, cwd));
+  if (values !== null || operands.length < 2 || unplaced) {
+    const all = [...new Set([...operands, ...values ?? []])];
+    const into = { names: namesOf(all), follow: program === 'cp', recursive };
+    return all.flatMap(arg => [targetOf('overwrite', program, arg, cwd), targetOf('overwrite', program, arg, cwd, { into })]);
   }
-  const sources = operands.slice(0, -1);
-  const names = sources.some(arg => arg.value === null) ? null : sources.map(arg => basename(arg.value!));
-  return [targetOf('overwrite', program, last!, cwd, { into: { names, follow: program === 'cp' } })];
+  return [targetOf('overwrite', program, last!, cwd, { into: { names: namesOf(operands.slice(0, -1)), follow: program === 'cp', recursive } })];
 }
 
 /**
@@ -789,11 +855,7 @@ function moveTargets(words: readonly Word[], args: readonly Arg[], cwd: string |
   if (plain) {
     return operands.map((arg, n) => targetOf('destroy', 'mv', arg, cwd, n === operands.length - 1 ? { destination: { intoRoot: true } } : {}));
   }
-  const values = args.flatMap((arg, n) => {
-    const found = targetOption(arg, home);
-    return found === null ? [] : found.length > 0 ? found : args.slice(n + 1, n + 2);
-  });
-  return [...new Set([...operands, ...values])].map(arg => targetOf('destroy', 'mv', arg, cwd, { destination: { intoRoot: false } }));
+  return [...new Set([...operands, ...targetValues(args, home) ?? []])].map(arg => targetOf('destroy', 'mv', arg, cwd, { destination: { intoRoot: false } }));
 }
 
 /** The words from the first mv operand on: leading options and a leading `--` are skipped. */
