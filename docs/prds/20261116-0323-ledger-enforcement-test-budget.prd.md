@@ -362,6 +362,8 @@ A rule result at write time is a trial, not part of this contract.
 
 ### Cross-repository productization
 
+The [rules review PRD](20261117-0000-rules-review.prd.md) owns cross-repository rule productization.
+
 A rule that adopted repositories can switch on needs a distribution path.
 - No ledger entry is proved to meet a cross-repository condition.
 - The rule registry in this program holds a stable id, the parameters and a repair hint. Nothing more.
