@@ -41,7 +41,7 @@ describe("run command", () => {
 
       expect(res.status).toBe(2);
       expect(res.stderr).toContain('helper "run-bounded-verifier-command" is retired');
-      expect(res.stderr).toContain("rh run verification-plan execute");
+      expect(res.stderr).toContain("rh verify plan execute");
       expect(existsSync(marker)).toBe(false);
       expect(existsSync(result)).toBe(false);
       expect(resolveHelper("run-bounded-verifier-command")).toBeNull();
@@ -68,7 +68,7 @@ describe("run command", () => {
       expect(library.stderr).toContain('rh run: helper "worktree-merge-lib" is internal. It has no public command.');
 
       expect(runHelper({ helper: "ship-worktrees.sh", args: ["--help"], cwd: tmp, stdio: "pipe" })).toMatchObject({ exitCode: 2, reason: "internal-helper" });
-      expect(runInternalHelper({ helper: "verify-sprint", cwd: tmp, stdio: "pipe" })).toMatchObject({ exitCode: 2, reason: "missing-helper" });
+      expect(runInternalHelper({ helper: "new-spec", cwd: tmp, stdio: "pipe" })).toMatchObject({ exitCode: 2, reason: "missing-helper" });
       expect([...INTERNAL_HELPER_COMMANDS.keys()].sort()).toEqual(listInternalHelperIds(packageRuntimeEnv()));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -351,13 +351,11 @@ describe("run command", () => {
 
     expect(res.status).toBe(0);
     expect(res.stdout).toContain("Helpers:");
-    expect(res.stdout).toMatch(
-      /verify-sprint\s+Run explicitly selected local checks or consume provider merge checks with --base/,
-    );
+    expect(res.stdout).toMatch(/new-spec\s+Create docs\/spec.md from the product spec template/);
     expect(res.stdout).toContain("Planning & execution:");
     expect(res.stdout.match(/cutover-closure/g)).toHaveLength(1);
     expect(res.stdout).toContain("Verification & maintenance:");
-    expect(res.stdout).not.toMatch(/contract-worktree|ship-worktrees|worktree-merge-lib/);
+    expect(res.stdout).not.toMatch(/contract-worktree|ship-worktrees|worktree-merge-lib|verify-sprint|verification-plan/);
   }, 30_000);
 
   test("run --help groups every real helper exactly once and stays within explicit budgets", () => {

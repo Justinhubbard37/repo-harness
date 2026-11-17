@@ -119,7 +119,7 @@ export function writeValidSprintChecks(cwd: string) {
       {
         status: "pass",
         source: "verify-sprint",
-        command: "rh run verify-sprint",
+        command: "rh verify",
         exit_code: 0,
         generated_at: "2026-03-04T14:10:00+0000",
         contract: { file: "tasks/contracts/demo.contract.md", status: "pass", exit_code: 0 },

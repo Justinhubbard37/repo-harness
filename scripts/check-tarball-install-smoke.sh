@@ -413,8 +413,8 @@ if [[ -n "$(git -C "$TARGET_REPO" status --porcelain)" ]]; then
   exit 1
 fi
 
-if ! "$CLI" run verify-sprint --help >/dev/null; then
-  echo "[tarball-smoke] ERROR: packaged 'rh run verify-sprint --help' failed (run dispatcher / helper lookup / bin startup broken)" >&2
+if ! "$CLI" verify --help >/dev/null; then
+  echo "[tarball-smoke] ERROR: packaged 'rh verify --help' failed (verify command / helper lookup / bin startup broken)" >&2
   exit 1
 fi
 

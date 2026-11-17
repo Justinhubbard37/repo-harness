@@ -19,7 +19,6 @@ export const RUN_HELP_GROUPS = [
       'change-assessment',
       'runtime-evidence-receipt',
       'merge-gate',
-      'verify-sprint',
       'harness-trace-grade',
     ],
   },
@@ -34,7 +33,6 @@ export const RUN_HELP_GROUPS = [
   {
     label: 'Verification & maintenance',
     helpers: [
-      'verification-plan',
       'validate-harness-profile-benchmark',
       'summarize-failures',
       'check-deploy-sql-order',
@@ -67,7 +65,7 @@ export const RUN_HELP_GROUPS = [
 
 // Retired helper ids fail with their replacement command. They never run it.
 const RETIRED_HELPERS: ReadonlyMap<string, string> = new Map([
-  ['run-bounded-verifier-command', 'rh run verification-plan execute'],
+  ['run-bounded-verifier-command', 'rh verify plan execute'],
 ]);
 
 // Internal helper ids (`helpers.internal`) fail with the public command that runs them. They never run.
@@ -76,6 +74,8 @@ export const INTERNAL_HELPER_COMMANDS: ReadonlyMap<string, string | null> = new 
   ['contract-worktree', 'rh worktrees start|cleanup|notify-merged|sweep|status'],
   ['contract-worktree-runtime', 'rh worktrees runtime'],
   ['ship-worktrees', 'rh worktrees ship'],
+  ['verification-plan', 'rh verify plan'],
+  ['verify-sprint', 'rh verify'],
   ['worktree-merge-lib', null],
 ]);
 
@@ -131,7 +131,7 @@ export function buildRunCommand(): Command {
     .allowUnknownOption(true);
 
   run
-    .argument('<helper>', 'Helper id, for example verify-sprint')
+    .argument('<helper>', 'Helper id, for example new-spec')
     .argument('[args...]', 'Arguments passed to the helper')
     .action((helper: string, args: string[]) => {
       const replacement = RETIRED_HELPERS.get(helper);

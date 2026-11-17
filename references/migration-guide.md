@@ -91,7 +91,7 @@ treats mutating update commands as probes.
    fresh advisory snapshot when needed.
 9. Run project smoke checks, `check:task-sync`, and `check:task-workflow`.
 10. Record changed task state in the issue or PR.
-11. Run `rh run verify-sprint` when an active sprint review exists.
+11. Run `rh verify` when an active sprint review exists.
 12. Commit the migration as one isolated change-set.
 
 ## Rollback

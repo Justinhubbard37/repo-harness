@@ -1,0 +1,15 @@
+schemaVersion: archcontext.node/v2
+id: component.evals-checks.verify-cli
+kind: component
+name: Verification Commands (cli)
+status: active
+parent: capability.verification.evals-checks
+layer: cli
+summary: "Routes selected checks and Verification Plan actions through the internal verification helpers."
+responsibilities:
+  - "Pass selected check arguments to verify-sprint with its verifier timeout."
+  - "Validate the plan action and pass its arguments to verification-plan."
+  - "Return the helper output and exit code."
+source:
+  include:
+    - src/cli/commands/verify.ts

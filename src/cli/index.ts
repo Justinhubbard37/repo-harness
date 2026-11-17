@@ -36,6 +36,7 @@ import { buildCapabilityContextCommand } from './commands/capability-context';
 import { buildDocsCommand } from './commands/docs';
 import { buildMcpCommand } from './commands/mcp';
 import { buildRunCommand } from './commands/run';
+import { buildVerifyCommand } from './commands/verify';
 import { buildStateCommand } from './commands/state';
 import { buildPublicationCommand } from './commands/publication';
 import { buildBoardCommand } from './commands/board';
@@ -992,6 +993,7 @@ export function buildProgram(): Command {
   }
   program.addCommand(mcp);
   program.addCommand(buildRunCommand());
+  program.addCommand(buildVerifyCommand());
   program.addCommand(buildStateCommand());
   program.addCommand(buildPublicationCommand());
   program.addCommand(buildBoardCommand(boardHostPorts(), attentionHostPorts()));

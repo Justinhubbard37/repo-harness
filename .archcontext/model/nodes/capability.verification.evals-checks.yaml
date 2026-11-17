@@ -32,6 +32,7 @@ source:
     - scripts/ci-documentation-consumers.ts
     - scripts/harness-trace-grade.sh
     - src/cli/commands/rules.ts
+    - src/cli/commands/verify.ts
   exclude:
     - tests/cli/adoption-plan.test.ts
     - tests/fixtures/adoption/**

@@ -478,7 +478,7 @@ issue-flow 在 Herdr 里开三种进程 agent，统称席位：编排席（orche
 - **清单**：按目录、按架构能力两种分组；每组显示文件数、用例数、通道、平台门槛（`darwinTest`、昂贵通道）和记录耗时。
 - **结果**：最近一次日常全量的状态和失败文件、打开的 `[CI repair]` issue、当前 PR 的必需检查、本机 verification plan 运行结果（passed、failed、reused）。
 - **TDD**：任务抽屉列出这个任务的 diff 改到的测试文件，以及它的 verification plan 检查结果。同一检查在 base 上失败、在 head 上通过时标「红→绿」。这里只陈述证据，不当门槛；没有结果的检查显示「无结果」，不算通过。
-- **命令**：受影响测试的 `bun run test:files <files> --timeout 60000 --max-concurrency 1`、`bash scripts/check-ci.sh affected`；adopted 仓库用 `rh run verify-sprint --test <file>`。
+- **命令**：受影响测试的 `bun run test:files <files> --timeout 60000 --max-concurrency 1`、`bash scripts/check-ci.sh affected`；adopted 仓库用 `rh verify --test <file>`。
 - **维护提示**：没有耗时记录的文件、指向已删文件的耗时和 verification 引用、仍按 issue 编号命名的约 10 个测试文件。
 
 数据来源都走后台 collector，GET 只读缓存：

@@ -152,6 +152,8 @@
       "contract-worktree",
       "contract-worktree-runtime",
       "ship-worktrees",
+      "verification-plan",
+      "verify-sprint",
       "worktree-merge-lib"
     ],
     "descriptions": {
@@ -1527,7 +1529,7 @@
           ],
           "fingerprints": {
             "tasks/current.md": "sha256:2cf05e26aad989b38f1fdde64ca76c1c7afe9ca0dff0ce172b8e1e4b4111bacd",
-            ".claude/templates/plan.template.md": "sha256:3b7b2f045cb14b95214a661b3e9169d3955fb26cd3906f78555f132d6e12f543",
+            ".claude/templates/plan.template.md": "sha256:2f335057a2d3d408ac8ed0d1eda9bfc6e36343cebe222b2c93b45c80a5f2bb8a",
             ".claude/templates/sprint.template.md": "sha256:da85c99845bbe180e604a5ca4f62d256b524c067406b82ca5e2ca41e51026769",
             ".claude/templates/contract.template.md": "sha256:a7cdf1c88248b35b4b8f6b44d3552ccfeb72cb6dbc3021bc35c7e808147bda8a",
             "tasks/workstreams/.gitkeep": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

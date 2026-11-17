@@ -452,7 +452,7 @@ describe("check-cli-manifest", () => {
 
   test("an undeclared option fails, but a passthrough command accepts any option", () => {
     expect(run("`rh board --nosuch`\n").stdout).toContain('unknown option "--nosuch" for "rh board"');
-    expect(run("`rh run verify-sprint --anything`\n").status).toBe(0);
+    expect(run("`rh verify --anything`\n").status).toBe(0);
   });
 
   test("a parent option before a nested command is valid; a bad nested command after it fails", () => {
