@@ -12,7 +12,7 @@ interface TaskIssue {
   readonly body: string;
 }
 
-type TaskReadInput = Omit<BoardCollectInput, 'parent'>;
+type TaskReadInput = Omit<BoardCollectInput, 'parent' | 'repository'>;
 
 /** REST lists include bodies; the board's issue projection deliberately does not. */
 function issues(input: TaskReadInput, path: string): TaskIssue[] {
@@ -103,7 +103,7 @@ export function collectRulesTasks(status: RuleStatusV1, input: TaskReadInput): R
         selected.set(marker.candidate_id, { issue, marker });
       }
     }
-    const boardInput = { ...input, parent: parent.number };
+    const boardInput = { ...input, repository, parent: parent.number };
     const board = collectBoard(boardInput);
     orchestration.plan_comment = board.plan.status === 'observed';
     // The board omits parent claims and worker names; reuse its source decoder and claim parser.

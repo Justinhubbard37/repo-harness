@@ -129,7 +129,8 @@ class PromotionGithub {
     const label = `route:${route}`;
     const labelPresent = current.labels.includes(label);
     if (!labelPresent) this.api('POST', `${this.path}/${issue.number}/labels`, ['-f', `labels[]=${label}`]);
-    const linked = this.children(parent.number).some(child => child.id === issue.id);
+    // The parent endpoint preserves cross-repository identity; issue numbers do not.
+    const linked = this.existingParent(current)?.id === parent.id;
     if (!linked) this.api('POST', `${this.path}/${parent.number}/sub_issues`, ['-F', `sub_issue_id=${issue.id}`]);
     return {
       kind: RULES_PROMOTE_KIND, protocol: 1, candidate_id: candidateId,

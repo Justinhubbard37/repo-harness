@@ -147,6 +147,28 @@ describe('rules promotion and recovery', () => {
     expect(remote.writes()).toHaveLength(0);
   });
 
+  test.each(['open', 'closed'] as const)('reconcile retains a %s cross-repository parent without writes', state => {
+    const parent = { ...issue(10, RULES_PARENT_MARKER), id: 2010, state,
+      html_url: 'https://github.com/acme/planning/issues/10' };
+    const task = issue(11, candidateMarker(CANDIDATE, ROUTE));
+    task.labels.push({ name: `route:${ROUTE}` });
+    task.parent_issue_url = 'https://api.github.com/repos/acme/planning/issues/10';
+    const remote = github([issue(10, 'Unrelated issue with the same number'), task]);
+    const runner: GithubCommandRunner = (args, options) => {
+      if (args.includes('repos/acme/app/issues/11/parent')) {
+        remote.calls.push([...args]);
+        return { stdout: JSON.stringify(parent) };
+      }
+      return remote.runner(args, options);
+    };
+    const result = reconcileRules({ repository_id: REPOSITORY, candidate_id: CANDIDATE }, runner);
+    expect(result).toMatchObject({ parent: 10, issue: 11,
+      steps: { issue: 'found', label: 'present', sub_issue: 'present' } });
+    expect(remote.writes()).toHaveLength(0);
+    expect(remote.calls.some(args => args.includes('repos/acme/app/issues/10/sub_issues'))).toBe(false);
+    expect(task.parent_issue_url).toBe('https://api.github.com/repos/acme/planning/issues/10');
+  });
+
   test('reconcile finds closed tasks and uses their stored route without a live candidate', () => {
     const task = issue(11, candidateMarker(CANDIDATE, 'simple_deep'));
     task.state = 'closed';

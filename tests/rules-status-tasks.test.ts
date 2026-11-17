@@ -171,6 +171,42 @@ test('the real board collector and source decoder compose without a live seat', 
   });
 });
 
+test.each(['acme/override', undefined])('status board reads keep the status repository with GH_REPO=%s', override => {
+  const prior = process.env.GH_REPO;
+  if (override === undefined) delete process.env.GH_REPO;
+  else process.env.GH_REPO = override;
+  try {
+    const source = remote();
+    const foreign = structuredClone(source.wire);
+    foreign.data.repository.issue.subIssues.nodes[0].state = 'CLOSED';
+    foreign.data.repository.issue.subIssues.nodes[0].comments.nodes = [];
+    foreign.data.repository.issue.comments.nodes = [];
+    const queries: readonly string[][] = [];
+    const runner: NonNullable<collector.BoardCollectInput['gh_runner']> = args => {
+      if (args[0] === 'repo') return { status: 0, stdout: JSON.stringify({
+        nameWithOwner: args[2] === '--json' ? process.env.GH_REPO ?? 'acme/default' : args[2],
+      }) };
+      if (args[1] === 'graphql') {
+        (queries as string[][]).push([...args]);
+        if (!args.includes('owner=Ancienttwo') || !args.includes('name=repo-harness')) {
+          return { status: 0, stdout: JSON.stringify(foreign) };
+        }
+      }
+      return source.runner(args);
+    };
+    withTempRepo('rules-tasks-repository', repo => {
+      const result = collectRulesTasks(status(), { repo_root: repo, host, gh_runner: runner, seats: DEFAULT_SEATS_CONFIG });
+      expect(task(result)).toMatchObject({ url: `${URL}/issues/1475`, progress: 'in_progress', seat: 'worker-important-fast' });
+      expect(result.orchestration?.coordinator_claim).toBe(true);
+      expect(queries).toHaveLength(2);
+      for (const args of queries) { expect(args).toContain('owner=Ancienttwo'); expect(args).toContain('name=repo-harness'); }
+    });
+  } finally {
+    if (prior === undefined) delete process.env.GH_REPO;
+    else process.env.GH_REPO = prior;
+  }
+});
+
 test('public CLI stays offline without --tasks and preserves ledger exit status on a failing GitHub runner', () => {
   withTempRepo('rules-tasks-cli', repo => {
     initGitRepo(repo);

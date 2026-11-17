@@ -114,6 +114,8 @@ interface GhCallResult {
 
 export interface BoardCollectInput {
   readonly repo_root: string;
+  /** Explicit owner/name for reads whose repository is already known. */
+  readonly repository?: string;
   readonly parent: number;
   readonly gh_bin?: string;
   /** Effect seam for tests: answers each gh argument list, as spawnSync reports one: no exit status with the signal, the timeout error or the launch error. */
@@ -375,8 +377,9 @@ export async function readLocalRepositoryIdAsync(input: {
 }
 
 /** The read of the parent issue, every page of its sub-issues and their comments; the board and dispatch share it. */
-export function readParent(input: Pick<BoardCollectInput, 'repo_root' | 'gh_bin' | 'gh_runner' | 'parent' | 'now'>): { readonly parent: BoardParentReadV1; readonly observed_at: string } {
-  const repository = (readGhJson(input, ['repo', 'view', '--json', 'nameWithOwner']) as { nameWithOwner?: unknown } | null)?.nameWithOwner;
+export function readParent(input: Pick<BoardCollectInput, 'repo_root' | 'repository' | 'gh_bin' | 'gh_runner' | 'parent' | 'now'>): { readonly parent: BoardParentReadV1; readonly observed_at: string } {
+  const repository = input.repository
+    ?? (readGhJson(input, ['repo', 'view', '--json', 'nameWithOwner']) as { nameWithOwner?: unknown } | null)?.nameWithOwner;
   if (typeof repository !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)) throw new BoardCollectError('the local GitHub repository is unknown');
   const [owner, name] = repository.split('/') as [string, string];
   const observedAt = (input.now?.() ?? new Date()).toISOString();
