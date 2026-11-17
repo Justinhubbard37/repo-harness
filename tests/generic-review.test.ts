@@ -344,7 +344,8 @@ darwinTest('app-terminal round returns the exact host command, sends nothing and
   expect(existsSync(join(f.dir, 'close.request'))).toBe(true);
   expect(reviewStatus(f.root, f.options.authority, taskReviewRunner).status).toBe('closed');
   expect(existsSync(acceptanceReceiptPath(f.root, f.home))).toBe(false);
-}, 60_000);
+  // Intel CI took 43.62 s and exceeded 60 s; allow 120 s for this multi-round lifecycle case (#2976).
+}, 120_000);
 
 darwinTest('app-terminal cancel before any claim leaves a tombstone, so a late launch opens no Session', async () => {
   const f = packetRoundFixture();
@@ -531,7 +532,8 @@ const spec={mode:'review',kind:'pi',installation:{kind:'available',via:'bundled'
 for(let i=0;i<2;i++){const resumed=i===0?await openReviewHost(spec,()=>{}):new OarReviewHost(await runtime.session(spec.installation,spec.options),()=>{});try{assert.equal(resumed.sessionId,native.getSessionId());assert.equal(resumed.model('pi'),${JSON.stringify(model)});}finally{await resumed.dispose();}}
 console.log(JSON.stringify({session_id:id,model:${JSON.stringify(model)},extension_ready:true,resumed:true}));
 `);
-  const result = spawnSync(node, [worker], { encoding: 'utf8', timeout: 30000,
+  // Three native Pi sessions hit 30 s on Intel CI; allow 60 s for the child and 90 s for this case (#2976).
+  const result = spawnSync(node, [worker], { encoding: 'utf8', timeout: 60_000,
     env: { PATH: process.env.PATH, HOME: home, TMPDIR: reviewHostTemporaryDirectory(output) } });
   expect(result.status, result.stderr).toBe(0);
   const observed = JSON.parse(result.stdout);
@@ -543,7 +545,7 @@ console.log(JSON.stringify({session_id:id,model:${JSON.stringify(model)},extensi
   expect(run.env.PI_CODING_AGENT_DIR).toBe(directory); expect(run.env.OAR_PI_AGENT_DIR).toBe(directory);
   for (const row of captures) for (const evidence of [row.own, row.descendant]) { expect(evidence.denied).toEqual(targets.map(() => true)); expect(evidence.signal).toBe(true); expect([evidence.nativeLock, evidence.isolatedLock]).toEqual([true, true]); }
   expect(targets.map(path => readFileSync(path, 'utf8'))).toEqual(initial);
-}, 60000);
+}, 90_000);
 
 test('Pi review options run the magpie model in the isolated directory; an unobserved model is null for every runtime', async () => {
   const { isReviewRuntimeId } = await import('../src/core/review/review-runtimes');
