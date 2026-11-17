@@ -8,7 +8,7 @@ import type { SetupSnapshotV2 } from '../core/setup/types';
 import type { OperatorTranslate } from './i18n';
 import type { QuotaSection } from './quota';
 import {
-  GATEKEEPER_FALLBACK_STARTER, seatChanges, setExplorer, setOptionalSeat, setRoute, setSeatEffort, setSeatModel, setSeatRole, setSeatRuntime, setRoutingValue, setSeatTool, type SeatsSettingsForm,
+  GATEKEEPER_FALLBACK_STARTER, seatChanges, setExplorer, setOptionalSeat, setRoute, setSeatAdvisorModel, setSeatEffort, setSeatModel, setSeatRole, setSeatRuntime, setRoutingValue, setSeatTool, type SeatsSettingsForm,
 } from './seats';
 import { EnableSwitch, formLocked, runtimeRowOf, SaveResult } from './SettingsPage';
 import type { AgentsSettingsForm } from './settings';
@@ -231,6 +231,14 @@ function SeatCard({ seat, form, agents, settings, setup, locked, t }: {
           {seat === 'worker' ? t('seats.rec.worker') : recommended?.model ? t('seats.rec.model', { model: recommended.model }) + check(draft.model === recommended.model) : ''}
         </span>
       </Field>
+
+      {draft.runtime === 'claude' && (
+        <Field label={t('seats.field.advisor')}>
+          <Segmented label={t('seats.field.advisor')} disabled={locked} value={draft.advisor_model}
+            options={[{ value: null, label: t('seats.advisor.off') }, ...runtime.models.map(model => ({ value: model as string | null, label: model }))]}
+            onPick={value => form.edit(current => setSeatAdvisorModel(current, seat, value))} />
+        </Field>
+      )}
 
       <Field label={t('seats.field.effort')}>
         <Segmented label={t('seats.field.effort')} disabled={locked} value={draft.effort} options={efforts}

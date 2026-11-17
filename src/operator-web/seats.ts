@@ -46,7 +46,7 @@ export function seatsDraftOf(config: SeatsSettingsV1['config']): SeatsConfigV1 {
 
 const sameSeat = (left: SeatConfigV1 | null, right: SeatConfigV1 | null): boolean =>
   left === null || right === null ? left === right : left.runtime === right.runtime && left.model === right.model && left.effort === right.effort
-  && left.tools.join() === right.tools.join() && left.fleet.join() === right.fleet.join();
+  && left.advisor_model === right.advisor_model && left.tools.join() === right.tools.join() && left.fleet.join() === right.fleet.join();
 
 const changedRouting = (base: SeatsConfigV1, draft: SeatsConfigV1): number =>
   ROUTING_KEYS.filter(field => JSON.stringify(base.routing[field]) !== JSON.stringify(draft.routing[field])).length;
@@ -57,7 +57,7 @@ export const sameSeats = (left: SeatsConfigV1, right: SeatsConfigV1): boolean =>
 export function seatChanges(base: SeatsConfigV1, draft: SeatsConfigV1): number {
   return SEAT_IDS.reduce((count, id) => {
     const before = base[id], after = draft[id];
-    return count + (before === null || after === null ? Number(before !== after) : (['runtime', 'model', 'effort', 'tools', 'fleet'] as const)
+    return count + (before === null || after === null ? Number(before !== after) : (['runtime', 'model', 'advisor_model', 'effort', 'tools', 'fleet'] as const)
       .filter(field => String(before[field]) !== String(after[field])).length);
   }, changedRouting(base, draft));
 }
@@ -93,6 +93,7 @@ export function setSeatRuntime(draft: SeatsConfigV1, seat: SeatId, runtime: Seat
   return patch(draft, seat, {
     runtime,
     model,
+    advisor_model: runtime === 'claude' ? current.advisor_model : null,
     effort: range.effort ? current.effort : null,
     fleet: range.fleet && seatTakesFleet({ runtime, model }) ? current.fleet : [],
     tools: runtime === 'codex' ? toggled(current.tools, 'shell', true) : current.tools,
@@ -104,6 +105,7 @@ export const setSeatModel = (draft: SeatsConfigV1, seat: SeatId, model: string |
   const current = draft[seat]!;
   return patch(draft, seat, { model, fleet: seatTakesFleet({ runtime: current.runtime, model }) ? current.fleet : [] });
 };
+export const setSeatAdvisorModel = (draft: SeatsConfigV1, seat: SeatId, advisor_model: string | null): SeatsConfigV1 => patch(draft, seat, { advisor_model });
 export const setSeatEffort = (draft: SeatsConfigV1, seat: SeatId, effort: string | null): SeatsConfigV1 => patch(draft, seat, { effort });
 export const setSeatTool = (draft: SeatsConfigV1, seat: SeatId, tool: SeatTool, on: boolean): SeatsConfigV1 =>
   patch(draft, seat, { tools: toggled(draft[seat]!.tools, tool, on) });
@@ -115,7 +117,7 @@ export const setSeatRole = (draft: SeatsConfigV1, seat: SeatId, role: string, on
  * and the account of the default gatekeeper; the seat has no default of its own.
  */
 export const GATEKEEPER_FALLBACK_STARTER: SeatConfigV1 = Object.freeze({
-  runtime: 'pi', model: DEFAULT_SEATS_CONFIG['worker-light']!.model, effort: null, tools: DEFAULT_SEATS_CONFIG.gatekeeper.tools, fleet: [],
+  runtime: 'pi', model: DEFAULT_SEATS_CONFIG['worker-light']!.model, advisor_model: null, effort: null, tools: DEFAULT_SEATS_CONFIG.gatekeeper.tools, fleet: [],
 });
 
 /** An optional seat set to null leaves the routes, since the section refuses a route that names an unconfigured seat. */

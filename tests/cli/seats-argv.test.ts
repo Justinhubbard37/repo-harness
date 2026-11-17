@@ -11,7 +11,7 @@ import { seatResetLaunch } from "../../src/cli/commands/seats";
 import { DEFAULT_SEATS_CONFIG, WORKER_SEAT_IDS } from "../../src/core/board/seats-settings";
 import { repoHarnessRepoIdFor } from "../../src/effects/repo-registry";
 import { classifyQuotaReading, decodeCodexRateLimitsResult } from "../../src/core/board/quota";
-import { formatSeatRoutes, seatAccountQuotas } from "../../src/core/board/seat-routing";
+import { effectiveSeatConfig, formatSeatRoutes, seatAccountQuotas } from "../../src/core/board/seat-routing";
 import { assertPiShell } from "../../src/effects/board/pi-shell";
 import { readClaudeQuota } from "../../src/effects/board/quota";
 
@@ -77,7 +77,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
 
 function run(env: Record<string, string>, args: string[], cwd?: string) {
   const { CLAUDE_CONFIG_DIR: _inherited, PI_CODING_AGENT_DIR: _piDirectory, ...base } = process.env;
-  const result = spawnSync(process.execPath, [CLI, "seats", "argv", ...args], { env: { ...base, ...env, PATH: `${join(env.HOME!, '.quota-bin')}${delimiter}${env.PATH ?? base.PATH ?? ''}` }, encoding: "utf8", cwd });
+  const result = spawnSync(process.execPath, [CLI, "seats", "argv", ...args], { env: { ...base, ...env, BUN_INSTALL: join(env.HOME!, '.bun'), PATH: `${join(env.HOME!, '.quota-bin')}${delimiter}${env.PATH ?? base.PATH ?? ''}` }, encoding: "utf8", cwd });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
@@ -362,6 +362,26 @@ describe("rh seats argv", () => {
       expect(brief).toContain("`rh-deep-reasoner`, `rh-explorer`");
       expect(brief).toContain("Use rh-deep-reasoner only for an independent second judgment.");
       expect(brief).not.toMatch(/(?<!rh-)deep-reasoner/u);
+    });
+  });
+
+  test("Claude advisor flags follow the setting and disappear in saving mode", () => {
+    withHome(DEFAULT_SEATS_CONFIG, home => expect(launch(home, 'worker-important').argv).not.toContain('--advisor'));
+    const seats = { ...DEFAULT_SEATS_CONFIG,
+      'worker-important': { ...DEFAULT_SEATS_CONFIG['worker-important'], advisor_model: 'fable' },
+      orchestrator: { ...DEFAULT_SEATS_CONFIG.orchestrator, advisor_model: 'fable' } };
+    withHome(seats, home => {
+      const args = launch(home, 'worker-important').argv;
+      expect(args.slice(args.indexOf('--advisor'), args.indexOf('--advisor') + 2)).toEqual(['--advisor', 'fable']);
+      mkdirSync(join(home, '.repo-harness', 'quota'));
+      for (const used of [80, 81]) {
+        writeFileSync(join(home, '.repo-harness', 'quota', 'claude.json'), JSON.stringify({ observed_at: new Date().toISOString(), rate_limits: {
+          seven_day: { used_percentage: used, resets_at: Math.floor(Date.now() / 1000) + 3600 },
+        } }));
+        expect(launch(home, 'orchestrator').argv.includes('--advisor')).toBe(used === 80);
+        const quota = seatAccountQuotas([classifyQuotaReading(readClaudeQuota({ HOME: home }), Date.now())], seats.routing);
+        expect(effectiveSeatConfig('worker-important', seats, quota).advisor_model).toBe(used === 80 ? 'fable' : null);
+      }
     });
   });
 

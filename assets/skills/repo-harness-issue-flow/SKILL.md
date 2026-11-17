@@ -45,6 +45,11 @@ The suggested models are advice, not a requirement. Any capable host may
 hold any claim role. The High tier records its `model_relation` in the
 acceptance record (`references/acceptor.md`).
 
+A Claude seat can use the Claude Code advisor tool through its
+`advisor_model` setting. Advice from that tool is not an acceptance or
+review record. The gatekeeper and the High-tier cross-model review stay
+the same.
+
 Many agents work at once. A parent issue has children, a child can have
 named PR slots, and PRs can depend on PRs with other owners. Each claim
 role has one holder at a time. Every PR has one head owner, the only agent that

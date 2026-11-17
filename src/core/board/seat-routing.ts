@@ -63,8 +63,9 @@ export function seatState(id: SeatId, seat: SeatConfigV1, quota: SeatAccountQuot
  */
 export function effectiveSeatConfig<Id extends SeatId>(id: Id, seats: SeatsConfigV1, quota: SeatAccountQuotas): SeatsConfigV1[Id];
 export function effectiveSeatConfig(id: SeatId, seats: SeatsConfigV1, quota: SeatAccountQuotas): SeatConfigV1 | null {
-  const seat = seats[id];
-  if (seat === null) return seat;
+  const configured = seats[id];
+  if (configured === null) return configured;
+  const seat = configured.runtime === 'claude' && quota.claude.mode === 'saving' ? { ...configured, advisor_model: null } : configured;
   const control = id === 'orchestrator' ? claudeReserved(quota) : id === 'advisor' && (claudeReserved(quota) || quota.claude.mode !== 'hyper');
   if (seat.runtime === 'claude' && control) return { ...seat, ...CLAUDE_CONTROL_MODEL };
   return seat;

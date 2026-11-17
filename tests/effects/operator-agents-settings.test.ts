@@ -520,6 +520,31 @@ async function seats(harness: Harness): Promise<ReturnType<typeof decodeSeatsSet
 const filesUnder = (root: string): string[] => readdirSync(root, { recursive: true, encoding: 'utf8' }).sort();
 
 describe('seat settings contract without transport', () => {
+  test('Claude advisors use the runtime range, round-trip on save, and reject other runtimes and models', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'seats-advisor-'));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    mkdirSync(join(home, '.repo-harness'));
+    writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS }));
+    const env = { HOME: home }, initial = readSeatsSettings(env), route = seatsSettingsWriteRoute(env);
+    for (const id of SEAT_IDS) if (initial.defaults[id] !== null) expect(initial.defaults[id]!.advisor_model).toBeNull();
+    const { advisor_model: _omitted, ...withoutAdvisor } = initial.config['worker-important'];
+    const section = { ...DEFAULT_SEATS_CONFIG, 'worker-important': withoutAdvisor };
+    expect(decodeSeatsConfig(section)['worker-important'].advisor_model).toBeNull();
+    for (const advisor_model of [...initial.ranges.runtimes.find(runtime => runtime.id === 'claude')!.models, null]) {
+      const { revision, ...seats } = readSeatsSettings(env).config;
+      const saved = await route.decode({ expected_revision: revision, seats: { ...seats,
+        'worker-important': { ...seats['worker-important'], advisor_model } } }, []).execute();
+      expect(saved).toMatchObject({ status: 200, body: { changed_keys: ['seats.worker-important.advisor_model'] } });
+      expect(readSeatsSettings(env).config['worker-important'].advisor_model).toBe(advisor_model);
+    }
+    for (const patch of [{ runtime: 'codex', advisor_model: 'fable' }, { runtime: 'pi', model: 'zai/glm-5.3', fleet: [], advisor_model: 'fable' },
+      ...['unknown', 'toString', '', 42].map(advisor_model => ({ advisor_model }))]) {
+      const seats = { ...DEFAULT_SEATS_CONFIG, worker: { ...DEFAULT_SEATS_CONFIG['worker-important'], ...patch } };
+      expect(() => decodeSeatsConfig(seats)).toThrow('seats_config_invalid');
+      expect(() => route.decode({ expected_revision: 'absent', seats }, [])).toThrow('seats_settings_request_invalid');
+    }
+  });
+
   test('saves a stored Pi model in range and refuses a model outside it', async () => {
     const model = 'magpie/cursor/deepseek-v41-flash-1017';
     const worker = { ...DEFAULT_SEATS_CONFIG.worker, runtime: 'pi', model, effort: null, fleet: [] };
@@ -760,7 +785,7 @@ describe('seat settings routes', () => {
   test('GET reads the defaults and the ranges from the fleet role profiles', async () => {
     const harness = await startHarness({ agents: PANE_AGENTS });
     const value = await seats(harness);
-    expect(value.config.orchestrator).toEqual({ runtime: 'claude', model: 'opus', effort: 'high', tools: ['gh', 'mcp', 'net', 'read', 'shell', 'tasks'], fleet: [] });
+    expect(value.config.orchestrator).toEqual({ runtime: 'claude', model: 'opus', advisor_model: null, effort: 'high', tools: ['gh', 'mcp', 'net', 'read', 'shell', 'tasks'], fleet: [] });
     expect(value.config.advisor.fleet).toEqual(['deep-reasoner', 'explorer']);
     expect(value.ranges.seats.advisor.fleet).toEqual(['explorer', 'deep-reasoner', 'gatekeeper']);
     expect(value.ranges.seats.orchestrator.fleet).toEqual(['explorer', 'deep-reasoner', 'gatekeeper']);

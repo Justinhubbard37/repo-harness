@@ -206,6 +206,7 @@ function claudeLaunch(seat: LaunchSeatId, config: SeatConfigV1, agentTypes: read
       'claude',
       ...(name === undefined ? [] : ['-n', name]),
       ...(config.model === null ? [] : ['--model', config.model]),
+      ...(config.advisor_model === null ? [] : ['--advisor', config.advisor_model]),
       ...(config.effort === null ? [] : ['--effort', config.effort]),
       '--tools', ...tools,
       ...(on('mcp') ? [] : ['--strict-mcp-config']),

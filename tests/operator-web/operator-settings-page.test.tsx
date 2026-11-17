@@ -172,6 +172,28 @@ describe('agents page seats section', () => {
     expect(allow('Edit files').disabled).toBe(true);
   });
 
+  test('Claude advisor choices save one field, clear when off, and clear when the seat leaves Claude', async () => {
+    const posts: (SeatsSettingsRequestV1 & { readonly request_id: string })[] = [];
+    await mount(seatsProps(posts));
+    await click(pick('Important worker'));
+    const advisor = () => document.querySelector<HTMLElement>('[role="group"][aria-label="Advisor model"]');
+    const choice = (name: string) => [...advisor()!.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === name)!;
+    expect([...advisor()!.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Off', 'opus', 'sonnet', 'haiku', 'fable']);
+    expect(seatsSave().disabled).toBe(true);
+    await click(choice('fable'));
+    expect(seatsSave().disabled).toBe(false);
+    expect(document.body.textContent).toContain('1 changes');
+    await click(choice('Off'));
+    expect(seatsSave().disabled).toBe(true);
+    await click(choice('fable'));
+    await click(seatsSave());
+    expect(posts[0]!.seats['worker-important'].advisor_model).toBe('fable');
+    await click(buttonWithText('Codex'));
+    expect(advisor()).toBeNull();
+    await click(buttonWithText('Claude Code'));
+    expect(choice('Off').getAttribute('aria-pressed')).toBe('true');
+  });
+
   test('a stored advisor role outside the range can be switched off and saved, and cannot be switched back on', async () => {
     const posts: (SeatsSettingsRequestV1 & { readonly request_id: string })[] = [];
     const read = await settingsStores(NOW, 'busy').seats.read();
@@ -277,7 +299,7 @@ describe('agents page seats section', () => {
   });
 
   const configured = () => document.querySelector<HTMLButtonElement>('[aria-label="Configured"]')!;
-  const CODEX_FALLBACK: SeatConfigV1 = { runtime: 'codex', model: null, effort: null, tools: ['net', 'read', 'shell'], fleet: [] };
+  const CODEX_FALLBACK: SeatConfigV1 = { runtime: 'codex', model: null, advisor_model: null, effort: null, tools: ['net', 'read', 'shell'], fleet: [] };
 
   test('the gatekeeper-fallback card is off by default; switched on, it saves a review seat in the gatekeeper range', async () => {
     const posts: (SeatsSettingsRequestV1 & { readonly request_id: string })[] = [];

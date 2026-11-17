@@ -5,6 +5,7 @@ import {
   SEAT_RUNTIMES,
   SEAT_TOOLS,
   DEFAULT_SEATS_CONFIG,
+  MODEL_FAMILY_LABELS,
   FRONTEND_SEAT_IDS,
   ROUTING_CLASSES,
   ROUTING_KEYS,
@@ -27,7 +28,6 @@ import {
   AGENT_TARGET_OVERRIDES,
   EFFORT_LEVELS,
   MANAGED_AGENTS,
-  MODEL_FAMILY_LABELS,
   WRITABLE_AGENTS,
 } from '../terminal/task-role-profiles';
 import { GlobalConfigurationError, mutateGlobalConfiguration, readGlobalConfiguration } from '../configuration/global-configuration';
@@ -159,7 +159,7 @@ function checkSeat(id: SeatId, seat: SeatConfigV1, enabledRuntimes: readonly str
   if (role !== undefined) throw new SeatsConfigurationError('seat_fleet_not_allowed', `The ${id} seat on ${seat.runtime} cannot call the ${role} sub-agent.`);
 }
 
-const FIELDS = ['runtime', 'model', 'effort', 'tools', 'fleet'] as const;
+const FIELDS = ['runtime', 'model', 'advisor_model', 'effort', 'tools', 'fleet'] as const;
 
 function changedKeys(current: SeatsConfigV1, next: SeatsConfigV1): string[] {
   return [...SEAT_IDS.flatMap(id => {

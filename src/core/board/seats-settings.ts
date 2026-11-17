@@ -1,8 +1,8 @@
 // Public contracts for the seat settings (G33): the `seats` section of
 // `~/.repo-harness/config.json` and GET/POST /api/v1/settings/seats. The
-// decoders check shape and seat invariants. The allowed models, efforts and fleet roles come
-// from the fleet role profiles, so the configuration effect checks them; the
-// GET body carries the result as `ranges`, and the browser renders only that.
+// decoders check shape, seat invariants and the shared Claude advisor model range.
+// The configuration effect checks the other model, effort and fleet ranges;
+// the GET body carries them as `ranges`, and the browser renders only that.
 import { DEFAULT_EXHAUSTED_AT_OR_ABOVE_USED, EXHAUSTED_AT_OR_ABOVE_USED_RANGE } from './quota';
 
 export const WORKER_SEAT_IDS = ['worker', 'worker-deep', 'worker-important', 'worker-important-fast', 'worker-light'] as const;
@@ -25,6 +25,14 @@ export const isWorkerSeat = (seat: SeatId): seat is WorkerSeatId => WORKER_SEAT_
 export const SEAT_RUNTIMES = ['claude', 'codex', 'pi'] as const;
 export type SeatRuntime = typeof SEAT_RUNTIMES[number];
 
+/** The Claude runtime model range and the labels used by fleet role profiles. */
+export const MODEL_FAMILY_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  opus: 'Opus',
+  sonnet: 'Sonnet',
+  haiku: 'Haiku',
+  fable: 'Fable',
+});
+
 /** Tool groups. `read` is always on. */
 export const SEAT_TOOLS = ['read', 'edit', 'shell', 'net', 'tasks', 'schedule', 'mcp', 'gh'] as const;
 export type SeatTool = typeof SEAT_TOOLS[number];
@@ -37,6 +45,8 @@ const REVISION = /^(?:absent|sha256:[0-9a-f]{64})$/u;
 export interface SeatConfigV1 {
   readonly runtime: SeatRuntime;
   readonly model: string | null;
+  /** Optional Claude advisor tool model. Other runtimes require null. */
+  readonly advisor_model: string | null;
   readonly effort: string | null;
   readonly tools: readonly SeatTool[];
   readonly fleet: readonly string[];
@@ -99,17 +109,17 @@ const REVIEW_TOOLS: readonly SeatTool[] = Object.freeze(['net', 'read', 'shell']
  * worker fleet with the worker range.
  */
 export const DEFAULT_SEATS_CONFIG: SeatsConfigV1 = Object.freeze({
-  orchestrator: Object.freeze({ runtime: 'claude', model: 'opus', effort: 'high', tools: Object.freeze(['gh', 'mcp', 'net', 'read', 'shell', 'tasks'] as const), fleet: Object.freeze([]) }),
-  advisor: Object.freeze({ runtime: 'claude', model: 'fable', effort: 'high', tools: Object.freeze(['mcp', 'net', 'read', 'shell'] as const), fleet: Object.freeze(['deep-reasoner', 'explorer']) }),
-  worker: Object.freeze({ runtime: 'codex', model: 'gpt-6.1-terra', effort: 'high', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
-  'worker-deep': Object.freeze({ runtime: 'codex', model: 'gpt-6.1-sol', effort: 'high', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
-  'worker-important': Object.freeze({ runtime: 'claude', model: 'opus', effort: 'medium', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
-  'worker-important-fast': Object.freeze({ runtime: 'claude', model: 'sonnet', effort: 'medium', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
-  'worker-light': Object.freeze({ runtime: 'pi', model: 'magpie/cursor/deepseek-v41-flash-1017', effort: null, tools: WORKER_TOOLS, fleet: Object.freeze([]) }),
-  gatekeeper: Object.freeze({ runtime: 'codex', model: 'gpt-6.1-terra', effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
-  'gatekeeper-deep': Object.freeze({ runtime: 'codex', model: 'gpt-6.1-sol', effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
+  orchestrator: Object.freeze({ runtime: 'claude', model: 'opus', advisor_model: null, effort: 'high', tools: Object.freeze(['gh', 'mcp', 'net', 'read', 'shell', 'tasks'] as const), fleet: Object.freeze([]) }),
+  advisor: Object.freeze({ runtime: 'claude', model: 'fable', advisor_model: null, effort: 'high', tools: Object.freeze(['mcp', 'net', 'read', 'shell'] as const), fleet: Object.freeze(['deep-reasoner', 'explorer']) }),
+  worker: Object.freeze({ runtime: 'codex', model: 'gpt-6.1-terra', advisor_model: null, effort: 'high', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
+  'worker-deep': Object.freeze({ runtime: 'codex', model: 'gpt-6.1-sol', advisor_model: null, effort: 'high', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
+  'worker-important': Object.freeze({ runtime: 'claude', model: 'opus', advisor_model: null, effort: 'medium', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
+  'worker-important-fast': Object.freeze({ runtime: 'claude', model: 'sonnet', advisor_model: null, effort: 'medium', tools: WORKER_TOOLS, fleet: WORKER_FLEET }),
+  'worker-light': Object.freeze({ runtime: 'pi', model: 'magpie/cursor/deepseek-v41-flash-1017', advisor_model: null, effort: null, tools: WORKER_TOOLS, fleet: Object.freeze([]) }),
+  gatekeeper: Object.freeze({ runtime: 'codex', model: 'gpt-6.1-terra', advisor_model: null, effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
+  'gatekeeper-deep': Object.freeze({ runtime: 'codex', model: 'gpt-6.1-sol', advisor_model: null, effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
   'gatekeeper-fallback': null,
-  reviewer: Object.freeze({ runtime: 'claude', model: 'opus', effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
+  reviewer: Object.freeze({ runtime: 'claude', model: 'opus', advisor_model: null, effort: 'high', tools: REVIEW_TOOLS, fleet: Object.freeze([]) }),
   routing: Object.freeze({
     claude_saving_below_remaining: 20,
     claude_hyper_at_or_above_remaining: 50,
@@ -247,8 +257,10 @@ export function unavailablePiSeat(seat: { readonly runtime: SeatRuntime; readonl
 }
 
 function decodeSeat(id: SeatId, value: unknown, code: string): SeatConfigV1 {
-  const record = object(value, ['runtime', 'model', 'effort', 'tools', 'fleet'], code);
+  const record = object(value, ['runtime', 'model', 'advisor_model', 'effort', 'tools', 'fleet'], code, ['runtime', 'model', 'effort', 'tools', 'fleet']);
   if (!SEAT_RUNTIMES.includes(record.runtime as SeatRuntime)) invalid(code);
+  const advisor = record.advisor_model === undefined ? null : nullableToken(record.advisor_model, code);
+  if (advisor !== null && (record.runtime !== 'claude' || !Object.hasOwn(MODEL_FAMILY_LABELS, advisor))) invalid(code);
   const tools = ascending(record.tools, isTool, code);
   if (!tools.includes('read')) invalid(code);
   const fleet = ascending(record.fleet, isRole, code);
@@ -260,6 +272,7 @@ function decodeSeat(id: SeatId, value: unknown, code: string): SeatConfigV1 {
   return {
     runtime: record.runtime as SeatRuntime,
     model,
+    advisor_model: advisor,
     effort: nullableToken(record.effort, code),
     tools,
     fleet,
