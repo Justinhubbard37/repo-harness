@@ -3,10 +3,10 @@ import { retryWindowsSharingRace } from '../../effects/atomic-append';
 import wazaRules from "../../core/skill-surface/waza-shared-rules.json";
 import { bunGlobalPackageRoot, expectedSkillProjections, skillLinkMatches } from './skill-projection';
 import { configurationReceiptPath } from './configuration-ownership';
-import { ensurePrivateDirectory, hostConfigPaths, putVault, readLedger, resolveHostPath } from '../../effects/host-config/store';
-import { openHostConfigGate } from '../../effects/host-config/gate';
-import { CODEX_CONFIG_FRAGMENTS, tomlFragment } from '../../core/host-config/toml-fragment';
+import { ensurePrivateDirectory, hostConfigPaths, putVault, resolveHostPath } from '../../effects/host-config/store';
+import { openHostConfigGate, rollbackHostConfigTransaction } from '../../effects/host-config/gate';
 import { migrateCodexConfigRecords } from './codex-config-migration';
+import { migrateJsonConfigRecords } from './json-config-migration';
 import { globalContextBackupEligible, globalContextPath } from './global-context';
 import { acquireRuntimeTransactionLock, assertRuntimeTransactionContext, globalRuntimeScope, runtimeTransactionLockRelativePath, runtimeTransactionRoot, type RuntimeTransactionContext, type RuntimeTransactionLock, type RuntimeTransactionScope } from '../../effects/locking/runtime-transaction-lock';
 import { exclusiveDirectoryLockOwnerLiveness, readExclusiveDirectoryLockOwner } from '../../effects/locking/exclusive-directory-lock';
@@ -33,7 +33,6 @@ import { homedir } from 'os';
 import { basename, delimiter, dirname, join } from 'path';
 import {
   MANAGED_TAG,
-  canonicalManagedHookProjection,
   compareManagedHookProjection,
   type HookHost,
 } from './managed-entries';
@@ -206,55 +205,6 @@ export const CODEGRAPH_CONFIG_MARKER = 'codegraph-config-projection';
 /** Markers of records that own one fragment of a shared host configuration file. */
 const SECTION_MARKERS: ReadonlySet<string> = new Set([MANAGED_TAG, CODEGRAPH_CONFIG_MARKER]);
 
-function managedAdapterHash(path: string): string | null {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as {
-      hooks?: unknown;
-    };
-    const projection = canonicalManagedHookProjection(parsed.hooks);
-    if (Object.keys(projection).length === 0) return null;
-    return sha256Prefixed(JSON.stringify(projection));
-  } catch {
-    return null;
-  }
-}
-
-export function codegraphProjection(configPath: string, readPath = configPath): string | null {
-  try {
-    const raw = readFileSync(readPath, 'utf-8');
-    const parsed = JSON.parse(raw) as {
-      mcpServers?: Record<string, unknown>;
-      allowedTools?: unknown[];
-    };
-    const server = parsed.mcpServers?.codegraph;
-    const allowedTools = Array.isArray(parsed.allowedTools)
-      ? parsed.allowedTools.filter((entry) => typeof entry === 'string' && entry.toLowerCase().includes('codegraph'))
-      : [];
-    if (server === undefined && allowedTools.length === 0) return null;
-    return sha256Prefixed(JSON.stringify({ server, allowedTools }));
-  } catch {
-    return null;
-  }
-}
-
-function removeCodegraphProjection(path: string): void {
-  const raw = readFileSync(path, 'utf-8');
-  const parsed = JSON.parse(raw) as {
-    mcpServers?: Record<string, unknown>;
-    allowedTools?: unknown[];
-  };
-  if (parsed.mcpServers) delete parsed.mcpServers.codegraph;
-  if (Array.isArray(parsed.allowedTools)) {
-    parsed.allowedTools = parsed.allowedTools.filter((entry) => (
-      typeof entry !== 'string' || !entry.toLowerCase().includes('codegraph')
-    ));
-  }
-  const next = `${JSON.stringify(parsed, null, 2)}${raw.endsWith('\n') ? '\n' : ''}`;
-  const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(temp, next, { mode: 0o600 });
-  retryWindowsSharingRace(() => renameSync(temp, path));
-}
-
 function adapterHasRequiredProjection(path: string, host: HookHost, env: NodeJS.ProcessEnv): boolean {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { hooks?: unknown };
@@ -305,22 +255,6 @@ function captureDirectoryOrLink(path: string, owner: SurfaceOwner): ManagedInsta
   } catch {
     return null;
   }
-}
-
-function captureManagedFile(path: string): ManagedInstallSurface | null {
-  if (!existsSync(path)) return null;
-  const contentHash = managedAdapterHash(path);
-  if (contentHash === null) return null;
-  return {
-    owner: 'core',
-    path,
-    type: 'managed-file',
-    authority: 'repo-harness-install-transaction',
-    removal: 'managed-surfaces-only',
-    content_hash: contentHash,
-    managed_marker: MANAGED_TAG,
-    symlink_target: null,
-  };
 }
 
 function captureOwnedPath(path: string, owner: SurfaceOwner): ManagedInstallSurface | null {
@@ -481,10 +415,6 @@ function discoverManagedSurfaces(
       if (surface) surfaces.push(surface);
     }
   }
-  for (const file of [join(home, '.codex', 'hooks.json'), join(home, '.claude', 'settings.json')]) {
-    const adapter = captureManagedFile(file);
-    if (adapter) surfaces.push(adapter);
-  }
   return surfaces;
 }
 
@@ -500,12 +430,6 @@ function surfaceIsCurrent(surface: ManagedInstallSurface, env: NodeJS.ProcessEnv
     }
     if (surface.type === 'managed-file') {
       if (!stat.isFile() || surface.content_hash === null) return false;
-      if (surface.managed_marker === MANAGED_TAG) {
-        return managedAdapterHash(surface.path) === surface.content_hash;
-      }
-      if (surface.managed_marker === CODEGRAPH_CONFIG_MARKER) {
-        return codegraphProjection(surface.path) === surface.content_hash;
-      }
       return surface.managed_marker === 'transaction-created-file'
         && sha256Prefixed(readFileSync(surface.path)) === surface.content_hash;
     }
@@ -1016,6 +940,14 @@ export function rollbackInstallHostTransaction(
           transaction_id: basename(transaction.backup_root), plugins: unresolved.plugins, ownership_manifest: unresolved.surfaces }), { mode: 0o600 });
       } catch (error) { failures.push(`Pi recovery record: ${String((error as Error).message ?? error)}`); }
     }
+    // The gate undoes its own writes by the ledger records before the ledger file goes back, so a linked host file needs no copy here.
+    const ledger = transaction.snapshots.find((snapshot) => basename(snapshot.path) === 'ledger.json' && basename(dirname(snapshot.path)) === 'config');
+    if (ledger) {
+      try {
+        const result = rollbackHostConfigTransaction(dirname(dirname(ledger.path)), ledger.existed && ledger.backup_path !== null ? readFileSync(ledger.backup_path) : null);
+        failures.push(...result.unresolved.map((entry) => `${entry}: rh cannot prove this host configuration entry, so it stays as it is`));
+      } catch (error) { failures.push(`host configuration rollback: ${String((error as Error).message ?? error)}`); }
+    }
     for (const snapshot of [...transaction.snapshots].reverse()) {
       try {
         if (isGlobalConfigurationSnapshot(snapshot.path)) {
@@ -1089,33 +1021,9 @@ function transactionOwnedSurfaces(
       const surface = owner === null ? null : captureHerdrSkill(snapshot.path, owner);
       return surface ? [surface] : [];
     }
-    const normalized = snapshot.path.replaceAll('\\', '/');
-    if (normalized.endsWith('/.claude.json') || normalized.endsWith('/.claude/settings.json')) {
-      const before = snapshot.existed && snapshot.backup_path
-        ? codegraphProjection(snapshot.path, snapshot.backup_path)
-        : null;
-      const after = codegraphProjection(snapshot.path);
-      const previouslyOwned = before !== null && previous?.ownership_manifest.some((surface) => (
-        surface.path === snapshot.path
-        && surface.managed_marker === CODEGRAPH_CONFIG_MARKER
-        && surface.content_hash === before
-      ));
-      if ((before === null || previouslyOwned) && after !== null) {
-        return [{
-          owner: 'architecture' as const,
-          path: snapshot.path,
-          type: 'managed-file' as const,
-          authority: 'repo-harness-install-transaction' as const,
-          removal: 'managed-surfaces-only' as const,
-          content_hash: after,
-          managed_marker: CODEGRAPH_CONFIG_MARKER,
-          symlink_target: null,
-        }];
-      }
-    }
     if (snapshot.existed) {
-      // A section record (CodeGraph MCP config, managed hook entries) owns a fragment of a shared
-      // file, never the whole file. Only a whole-path record is recaptured.
+      // A section record of an earlier version (CodeGraph MCP config, managed hook entries) owned a
+      // fragment of a shared file, never the whole file. Only a whole-path record is recaptured.
       const previousSurface = previous?.ownership_manifest.find((surface) => (
         surface.path === snapshot.path && !SECTION_MARKERS.has(surface.managed_marker ?? '')
       ));
@@ -1168,40 +1076,35 @@ function removeRetiredOwnedSurfaces(
     const normalized = surface.path.replaceAll('\\', '/');
     const name = normalized.split('/').at(-1) ?? '';
     if (ownedSkills.has(name) && normalized.includes('/.agents/skills/')) removedSkills.add(name);
-    if (surface.managed_marker === CODEGRAPH_CONFIG_MARKER) removeCodegraphProjection(surface.path);
-    else rmSync(surface.path, { recursive: true, force: true });
+    rmSync(surface.path, { recursive: true, force: true });
   }
   removeOwnedSkillLockEntries(env, removedSkills);
   return unique.map(({ path }) => path);
 }
 
 /**
- * The architecture plugin's CodeGraph table in `~/.codex/config.toml` goes
- * with the plugin, through the gate: a table that the user changed stays. An
- * override record replaced a user's table, so only a whole-file revert gives
- * that table back.
+ * The architecture plugin's fragments in the host files (the CodeGraph table
+ * and server, and its tool rule) go with the plugin, through the gate's
+ * per-fragment rule: a fragment that the user changed stays, and an override
+ * is never restored here, so only a whole-file revert gives a user's value back.
  */
-function removeArchitectureCodexTable(env: NodeJS.ProcessEnv): void {
-  const selector = 'mcp_servers.codegraph';
-  const owner = CODEX_CONFIG_FRAGMENTS[selector];
-  const paths = hostConfigPaths(env);
-  const path = join(env.HOME ?? homedir(), '.codex', 'config.toml');
-  const file = resolveHostPath(paths, path);
-  const record = readLedger(paths).fragments.find((entry) => entry.file === file && entry.owner === owner && entry.selector === selector);
-  if (!record || record.kind === 'override' || record.inserted === '') return;
-  openHostConfigGate({ env }).apply([{ path, fragments: [{ owner, selector, kind: 'refresh', strategy: tomlFragment, value: '' }] }]);
+function removeArchitectureHostFragments(env: NodeJS.ProcessEnv): void {
+  const home = env.HOME ?? homedir();
+  const files = [join(home, '.codex', 'config.toml'), join(home, '.claude.json'), join(home, '.claude', 'settings.json')];
+  openHostConfigGate({ env }).revert(files, { owner: 'architecture' });
 }
 
 export function prepareInstallSelectionSwitch(
   plugins: readonly PluginId[],
   env: NodeJS.ProcessEnv = process.env,
 ): readonly string[] {
-  // The old records of `~/.codex/config.toml` move to the ledger first, so the manifest holds no TOML projection.
+  // The old records of the host files move to the ledger first, so the manifest holds no section record.
   migrateCodexConfigRecords(env);
+  migrateJsonConfigRecords(env);
   const current = readInstallState(env);
   if (!current) return [];
   const removed = removeRetiredOwnedSurfaces(plugins, current, env);
-  if (!ownerEnabled('architecture', plugins)) removeArchitectureCodexTable(env);
+  if (!ownerEnabled('architecture', plugins)) removeArchitectureHostFragments(env);
   return removed;
 }
 

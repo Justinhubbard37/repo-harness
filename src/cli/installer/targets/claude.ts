@@ -5,17 +5,18 @@
  * ~/.claude/settings.json (--location global). Phase 0 verified Claude auto-reloads
  * settings.json via ConfigChange seconds after a write, no restart needed.
  *
- * `settings.json` carries non-hook config too (themes, MCP, etc.), so the
- * installer must merge into the existing object rather than overwrite.
- * Tag-based managed entries leave sibling user-authored hook entries intact
+ * `settings.json` carries non-hook config too (themes, MCP, etc.). Each managed
+ * entry and the status line are host-config fragments: the gate inserts their
+ * text and leaves every other byte, so sibling user hook entries survive
  * (Phase 0 baseline showed a sibling `rtk hook claude` entry that must survive).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { assertConfigurationPath, hostConfigurationRoot } from '../configuration-ownership';
-import { MANAGED_TAG, isRepoHarnessManagedHookCommand } from '../../../core/adoption/managed-hook-config';
+import { jsonFragment } from '../../../core/host-config/json-fragment';
+import type { FragmentRequest } from '../../../core/host-config/types';
+import { migrateJsonConfigRecords } from '../json-config-migration';
 import type {
   AgentTarget,
   DetectionResult,
@@ -23,18 +24,12 @@ import type {
   Location,
   WriteResult,
 } from '../types';
+import { readJsonOrEmpty } from '../shared';
 import {
-  atomicWriteFileSync,
-  deepEqual,
-  formatJson,
-  readJsonOrEmpty,
-} from '../shared';
-import {
+  applyManagedHooks,
   buildHookExecCommand,
-  buildManagedHooks,
   isManagedEntry,
-  mergeHooks,
-  stripManagedEntries,
+  managedStatusLine,
   type HooksByEvent,
 } from '../managed-entries';
 
@@ -55,8 +50,18 @@ function userConfigPath(loc: Location): string {
 /** The documented one-line pipe that keeps an existing status line and also writes the quota capture. */
 export const CLAUDE_STATUS_LINE_PIPE = `input=$(cat); printf '%s' "$input" | repo-harness-hook statusline >/dev/null; printf '%s' "$input" | <your status line command>`;
 
-function isManagedStatusLine(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && isRepoHarnessManagedHookCommand((value as { command?: unknown }).command);
+/**
+ * rh adds the status line only when none exists, and refreshes only the one
+ * it recorded; a status line that rh did not write is the user's (R4).
+ */
+function statusLineFragment(content: string): FragmentRequest {
+  return {
+    owner: 'core',
+    selector: 'statusLine',
+    kind: jsonFragment.locate(content, 'statusLine') ? 'refresh' : 'add',
+    strategy: jsonFragment,
+    value: managedStatusLine(),
+  };
 }
 
 class ClaudeTarget implements AgentTarget {
@@ -87,55 +92,25 @@ class ClaudeTarget implements AgentTarget {
     return { installed, alreadyConfigured, configPath: filePath };
   }
 
-  install(loc: Location, opts: InstallOptions): WriteResult {
+  install(loc: Location, _opts: InstallOptions): WriteResult {
     const filePath = userConfigPath(loc);
-    assertConfigurationPath(filePath, hostConfigurationRoot());
-    const data = readJsonOrEmpty<SettingsFile>(filePath);
-    const cleaned = stripManagedEntries(data.hooks);
-    const managed = buildManagedHooks('claude');
-    const merged = mergeHooks(cleaned, managed);
-    const next: SettingsFile = { ...data, hooks: merged };
-    // Set the status line only when none exists; refresh it only while it carries the tag.
-    // The managed tag is its ownership proof: a user edit removes the tag, and the entry is then the user's.
-    const userStatusLine = data.statusLine !== undefined && !isManagedStatusLine(data.statusLine);
-    if (!userStatusLine) next.statusLine = { type: 'command', command: `: ${MANAGED_TAG}; ${buildHookExecCommand()} statusline` };
-    const notes = userStatusLine
-      ? [`statusLine exists and is not changed. To capture Claude quota, set its command to: ${CLAUDE_STATUS_LINE_PIPE}`]
-      : [];
-    const nextContent = formatJson(next);
-
+    // An unresolved hook runtime stops the install before the migration writes.
+    buildHookExecCommand(process.env);
+    migrateJsonConfigRecords(process.env);
     const created = !fs.existsSync(filePath);
-    if (!created) {
-      const current = fs.readFileSync(filePath, 'utf-8');
-      if (current === nextContent) {
-        return { files: [{ path: filePath, action: 'unchanged' }], ...(notes.length ? { notes } : {}) };
-      }
+    const result = applyManagedHooks(filePath, 'claude', [statusLineFragment(created ? '' : fs.readFileSync(filePath, 'utf-8'))]);
+    const notes = [...result.refreshed, ...(result.skipped.some((entry) => entry.selector === 'statusLine')
+      ? [`statusLine exists and is not changed. To capture Claude quota, set its command to: ${CLAUDE_STATUS_LINE_PIPE}`]
+      : [])];
+    if (!result.written.length) {
+      return { files: [{ path: filePath, action: 'unchanged' }], ...(notes.length ? { notes } : {}) };
     }
-    atomicWriteFileSync(filePath, nextContent);
     return {
       files: [{ path: filePath, action: created ? 'created' : 'updated' }],
       notes: [created
         ? 'Claude Code will pick up hooks on next ConfigChange event; no restart needed.'
         : 'Claude Code auto-reloads settings.json on write (verified Phase 0).', ...notes],
     };
-  }
-
-  uninstall(loc: Location, opts: { dryRun?: boolean } = {}): WriteResult {
-    const filePath = userConfigPath(loc);
-    assertConfigurationPath(filePath, hostConfigurationRoot());
-    if (!fs.existsSync(filePath)) {
-      return { files: [{ path: filePath, action: 'not-found' }] };
-    }
-    const data = readJsonOrEmpty<SettingsFile>(filePath);
-    const cleaned = stripManagedEntries(data.hooks);
-    const ownedStatusLine = isManagedStatusLine(data.statusLine);
-    if (deepEqual(cleaned, data.hooks ?? {}) && !ownedStatusLine) {
-      return { files: [{ path: filePath, action: 'not-found' }] };
-    }
-    const next: SettingsFile = { ...data, hooks: cleaned };
-    if (ownedStatusLine) delete next.statusLine;
-    if (!opts.dryRun) atomicWriteFileSync(filePath, formatJson(next));
-    return { files: [{ path: filePath, action: 'removed' }] };
   }
 }
 

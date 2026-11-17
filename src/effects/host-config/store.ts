@@ -52,7 +52,11 @@ function followLinks(path: string, hops = 0): string {
 }
 
 export function hostConfigPaths(env: NodeJS.ProcessEnv): HostConfigPaths {
-  const harness = followLinks(dirname(globalConfigurationPath(env)));
+  return hostConfigPathsAt(followLinks(dirname(globalConfigurationPath(env))));
+}
+
+/** The host-config layout under one `~/.repo-harness` directory, links already followed. */
+export function hostConfigPathsAt(harness: string): HostConfigPaths {
   const root = join(harness, 'config');
   return { harness, root, ledger: join(root, 'ledger.json'), vault: join(root, 'vault') };
 }
@@ -156,26 +160,39 @@ function validFileRecord(record: unknown): boolean {
   const committed = record.committed;
   return ['created', 'text_block', 'replaced'].includes(record.kind as string) && validBaseline(record.baseline)
     && (committed.type === 'absent' || (committed.type === 'file' && isSha(committed.sha256)))
-    && (isSha(record.backup) || (record.backup === null && record.kind === 'created'))
+    && (isSha(record.backup) || (record.backup === null && record.kind !== 'replaced'))
+    && (record.external_backup === undefined || isSha(record.external_backup))
     && typeof record.external_change === 'boolean';
+}
+
+/** `created` is a member path that holds the fragment's container: a prefix of its selector. */
+function validCreated(selector: string, created: unknown): boolean {
+  return created === undefined || (isText(created) && /^[^.[\]]+(?:\.[^.[\]]+)*$/.test(created)
+    && (selector.startsWith(`${created}.`) || selector.startsWith(`${created}[`)));
 }
 
 function validFragment(value: unknown): boolean {
   return isObject(value) && isText(value.file) && isText(value.owner) && isText(value.selector)
-    && ['add', 'refresh', 'override'].includes(value.kind as string) && isText(value.inserted);
+    && ['add', 'refresh', 'override'].includes(value.kind as string) && isText(value.inserted) && validCreated(value.selector, value.created)
+    && (value.preimage === undefined || isText(value.preimage));
 }
 
 export function readLedger(paths: HostConfigPaths): HostConfigLedger {
   const { observation, bytes } = observeFile(paths.ledger);
   if (!observation.existed) return EMPTY_LEDGER;
   if (bytes === null) throw invalidState(`the ledger is not a regular file: ${paths.ledger}`);
+  return parseLedger(bytes, paths.ledger);
+}
+
+/** The ledger in `bytes`, also a copy of it; `label` names the file in an error. */
+export function parseLedger(bytes: Buffer, label: string): HostConfigLedger {
   let value: unknown;
-  try { value = JSON.parse(bytes.toString('utf8')); } catch { throw invalidState(`the ledger is not valid JSON: ${paths.ledger}`); }
+  try { value = JSON.parse(bytes.toString('utf8')); } catch { throw invalidState(`the ledger is not valid JSON: ${label}`); }
   const valid = isObject(value) && value.protocol === 1
     && isObject(value.files) && Object.entries(value.files).every(([path, record]) => isAbsolute(path) && validFileRecord(record))
     && Array.isArray(value.fragments) && value.fragments.every(validFragment)
     && Array.isArray(value.directories) && value.directories.every((directory) => isText(directory) && isAbsolute(directory));
-  if (!valid) throw invalidState(`the ledger has an invalid shape: ${paths.ledger}`);
+  if (!valid) throw invalidState(`the ledger has an invalid shape: ${label}`);
   return value as unknown as HostConfigLedger;
 }
 

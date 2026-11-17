@@ -1,5 +1,5 @@
-import { assertConfigurationPath, hostConfigurationRoot } from '../configuration-ownership';
 import { migrateCodexConfigRecords } from '../codex-config-migration';
+import { migrateJsonConfigRecords } from '../json-config-migration';
 import { CODEX_CONFIG_FRAGMENTS, codexConfigValue, tomlFragment } from '../../../core/host-config/toml-fragment';
 import type { FragmentRequest } from '../../../core/host-config/types';
 import { openHostConfigGate } from '../../../effects/host-config/gate';
@@ -12,9 +12,9 @@ import { openHostConfigGate } from '../../../effects/host-config/gate';
  *
  * Hook adapters support only the user-level global location.
  *
- * Tag-based managed entries (`MANAGED_TAG` from managed-entries.ts) ensure
- * uninstall removes only what install wrote, preserving any sibling
- * user-authored hook entries on the same file.
+ * Each managed entry is a host-config fragment: the gate inserts its text and
+ * a revert removes only what rh recorded, so sibling user-authored hook
+ * entries on the same file keep their bytes.
  */
 
 import * as fs from 'fs';
@@ -27,17 +27,11 @@ import type {
   Location,
   WriteResult,
 } from '../types';
+import { readJsonOrEmpty } from '../shared';
 import {
-  atomicWriteFileSync,
-  deepEqual,
-  formatJson,
-  readJsonOrEmpty,
-} from '../shared';
-import {
-  buildManagedHooks,
+  applyManagedHooks,
+  buildHookExecCommand,
   isManagedEntry,
-  mergeHooks,
-  stripManagedEntries,
   type HooksByEvent,
 } from '../managed-entries';
 
@@ -123,53 +117,24 @@ class CodexTarget implements AgentTarget {
     return { installed, alreadyConfigured, configPath: filePath };
   }
 
-  install(loc: Location, opts: InstallOptions): WriteResult {
+  install(loc: Location, _opts: InstallOptions): WriteResult {
     if (loc !== 'global') {
       throw new Error(
         'codexTarget.install: Codex has no project-local hook config; use --location global',
       );
     }
     const filePath = globalConfigPath();
-    assertConfigurationPath(filePath, hostConfigurationRoot());
-    const data = readJsonOrEmpty<HooksFile>(filePath);
-    const cleaned = stripManagedEntries(data.hooks);
-    const managed = buildManagedHooks('codex');
-    const merged = mergeHooks(cleaned, managed);
-    const next: HooksFile = { ...data, hooks: merged };
-    const nextContent = formatJson(next);
+    // An unresolved hook runtime stops the install before the first write.
+    buildHookExecCommand(process.env);
+    migrateJsonConfigRecords(process.env);
+    // A config.toml that rh cannot edit stops the install before any hook write.
     const tomlResult = ensureRequestUserInputToml();
-
     const created = !fs.existsSync(filePath);
-    if (!created) {
-      const current = fs.readFileSync(filePath, 'utf-8');
-      if (current === nextContent) {
-        return { files: [{ path: filePath, action: 'unchanged' }, tomlResult] };
-      }
-    }
-    atomicWriteFileSync(filePath, nextContent);
+    const result = applyManagedHooks(filePath, 'codex');
+    if (!result.written.length) return { files: [{ path: filePath, action: 'unchanged' }, tomlResult] };
     return {
       files: [{ path: filePath, action: created ? 'created' : 'updated' }, tomlResult],
-      notes: [CODEX_HOOK_TRUST_STEP],
-    };
-  }
-
-  uninstall(loc: Location): WriteResult {
-    if (loc !== 'global') return { files: [] };
-    const filePath = globalConfigPath();
-    assertConfigurationPath(filePath, hostConfigurationRoot());
-    if (!fs.existsSync(filePath)) {
-      return { files: [{ path: filePath, action: 'not-found' }] };
-    }
-    const data = readJsonOrEmpty<HooksFile>(filePath);
-    const cleaned = stripManagedEntries(data.hooks);
-    if (deepEqual(cleaned, data.hooks ?? {})) {
-      return { files: [{ path: filePath, action: 'not-found' }] };
-    }
-    const next: HooksFile = { ...data, hooks: cleaned };
-    atomicWriteFileSync(filePath, formatJson(next));
-    return {
-      files: [{ path: filePath, action: 'removed' }],
-      notes: ['~/.codex/config.toml [hooks.state] entries are not GC-ed by Codex; remove manually if desired.'],
+      notes: [...result.refreshed, CODEX_HOOK_TRUST_STEP],
     };
   }
 }

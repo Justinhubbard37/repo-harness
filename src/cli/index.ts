@@ -2,7 +2,6 @@
 import { buildStrategyCommand } from './commands/strategy';
 import { CLI_NAME } from '../core/skill-surface/cli-name';
 import { globalRuntimeScope, parentRuntimeTransactionContext, withRuntimeTransactionLock } from '../effects/locking/runtime-transaction-lock';
-import { captureConfigurationRestores, hostConfigurationRoot } from './installer/configuration-ownership';
 import { migrateCodexConfigRecords } from './installer/codex-config-migration';
 /**
  * repo-harness CLI entry.
@@ -308,7 +307,6 @@ function runTransactionalSelectionProjection(
     try {
       migrateCodexConfigRecords(transactionEnv);
       const state = requireInstallState(transactionEnv);
-      captureConfigurationRestores(transaction, hostConfigurationRoot(transactionEnv));
       commitInstallHostTransaction(transaction);
       return { result: owned, state };
     } catch (error) {
@@ -583,7 +581,6 @@ export function runTransactionalRuntimeRefresh(
         if ((options.target ?? 'both') === 'both') recordPiInstallOwnership(newPiSurfaces(result), transactionEnv, transaction);
         migrateCodexConfigRecords(transactionEnv);
       }
-      captureConfigurationRestores(transaction, hostConfigurationRoot(transactionEnv));
       commitInstallHostTransaction(transaction);
       return result;
     } catch (error) {
@@ -926,12 +923,11 @@ export function buildProgram(): Command {
     .option('--target <target>', `Target host: ${TARGET_HELP}`, 'both')
     .option('--location <location>', `Install location: ${LOCATION_HELP}`, 'global')
     .option('--dry-run', 'Preview cleanup without filesystem writes')
-    .option('--recover-interrupted', 'Restore recorded fragments after interrupted setup; overwrites later edits to those fragments')
     .option('--json', 'Output the cleanup result as JSON')
-    .action((rawOpts: { target: string; location: string; dryRun?: boolean; recoverInterrupted?: boolean; json?: boolean }) => {
+    .action((rawOpts: { target: string; location: string; dryRun?: boolean; json?: boolean }) => {
       const target = assertTarget(rawOpts.target, 'uninstall');
       const location = assertLocation(rawOpts.location, 'uninstall');
-      const uninstallAdapters = () => runUninstall({ target, location, dryRun: rawOpts.dryRun, recoverInterrupted: rawOpts.recoverInterrupted });
+      const uninstallAdapters = () => runUninstall({ target, location, dryRun: rawOpts.dryRun });
       const result = uninstallAdapters();
       if (rawOpts.json) console.log(JSON.stringify(result, null, 2));
       else for (const line of result.lines) console.log(line);

@@ -27,7 +27,6 @@ export interface UninstallCommandOptions {
   target: InstallTargetSpec;
   location: Location;
   dryRun?: boolean;
-  recoverInterrupted?: boolean;
 }
 
 export interface InstallCommandResult {

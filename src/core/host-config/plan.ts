@@ -14,6 +14,10 @@ export interface PlannedFragment {
   readonly edit: FragmentEdit;
   /** The active record of the same owner and selector, when this edit refreshes it. */
   readonly previous: FragmentRecord | null;
+  /** The fragment's text in the result, as the strategy locates it: what the ledger records as `inserted`. */
+  readonly text: string;
+  /** The outermost container that this edit created, from the content before it. */
+  readonly created: string | null;
 }
 
 export interface FilePlan {
@@ -63,29 +67,10 @@ function checkEdit(file: string, content: string, request: FragmentRequest, edit
   if (!valid) throw new HostConfigError('host_config_invalid_state', `${file}: the ${request.selector} strategy returned an edit that does not match the content`);
 }
 
-function rangesIntersect(a: FragmentEdit, b: FragmentEdit): boolean {
-  return a.at < b.at + b.removed.length && b.at < a.at + a.removed.length;
-}
-
 /**
- * Apply edits that do not intersect, all in the coordinates of `content`. At
- * one offset, insertions come first in request order, then the replacement.
- */
-function mergeEdits(content: string, edits: readonly FragmentEdit[]): string {
-  const ordered = edits
-    .map((edit, index) => ({ edit, index }))
-    .sort((a, b) => a.edit.at - b.edit.at || Number(a.edit.removed !== '') - Number(b.edit.removed !== '') || a.index - b.index);
-  let result = '', cursor = 0;
-  for (const { edit } of ordered) {
-    result += content.slice(cursor, edit.at) + edit.inserted;
-    cursor = edit.at + edit.removed.length;
-  }
-  return result + content.slice(cursor);
-}
-
-/**
- * Plan one file: every edit is computed against the same content, checked for
- * overlap and merged into one result. Nothing here reads or writes a file.
+ * Plan one file: the edits apply in request order, each computed against the
+ * content after the earlier ones, so a container that one fragment creates is
+ * there for the next. Nothing here reads or writes a file.
  */
 export function planFile(
   file: string,
@@ -102,11 +87,12 @@ export function planFile(
   const active = ledgerFragments.filter((record) => record.file === file);
   checkSelectors(file, applied, active);
 
-  const planned: PlannedFragment[] = [];
+  const planned: { request: FragmentRequest; edit: FragmentEdit; previous: FragmentRecord | null; created: string | null }[] = [];
+  let result = content;
   for (const request of applied) {
-    const edit = request.strategy.apply(content, request.selector, request.value);
+    const edit = request.strategy.apply(result, request.selector, request.value);
     // An edit whose text is already in place still claims its fragment, so the ledger records the owner.
-    checkEdit(file, content, request, edit);
+    checkEdit(file, result, request, edit);
     const previous = active.find((record) => record.owner === request.owner && record.selector === request.selector) ?? null;
     // A refresh of text that rh never recorded would overwrite a user's value: it is an override.
     if (request.kind === 'refresh' && !previous && request.selected !== true) {
@@ -118,13 +104,14 @@ export function planFile(
       skipped.push({ code: 'host_config_user_value_kept', file, owner: request.owner, selector: request.selector });
       continue;
     }
-    for (const other of planned) {
-      if (rangesIntersect(other.edit, edit)) {
-        throw overlap(file, `the edits of ${other.owner}:${other.selector} and ${request.owner}:${request.selector} intersect`);
-      }
-    }
-    planned.push({ owner: request.owner, selector: request.selector, kind: request.kind, edit, previous });
+    const created = request.strategy.created?.(result, request.selector) ?? null;
+    result = result.slice(0, edit.at) + edit.inserted + result.slice(edit.at + edit.removed.length);
+    planned.push({ request, edit, previous, created });
   }
 
-  return { file, result: mergeEdits(content, planned.map((fragment) => fragment.edit)), fragments: planned, skipped };
+  const fragments = planned.map(({ request, edit, previous, created }): PlannedFragment => {
+    const range = request.strategy.locate(result, request.selector);
+    return { owner: request.owner, selector: request.selector, kind: request.kind, edit, previous, text: range ? result.slice(range.start, range.end) : '', created };
+  });
+  return { file, result, fragments, skipped };
 }

@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { pluginSelectionEnv, recordPluginSelection } from "../helpers/install-ownership";
+import { pluginSelectionEnv, recordPluginSelection, seedGlobalPackageFixture } from "../helpers/install-ownership";
 import { writeShellExecutableFixture } from "../helpers/repo-fixture";
 import { requestUserInputFragment } from "../../src/cli/installer/targets/codex";
 import { openHostConfigGate } from "../../src/effects/host-config/gate";
+import { acquireRuntimeTransactionLock, globalRuntimeScope } from "../../src/effects/locking/runtime-transaction-lock";
+import { buildManagedHooks } from "../../src/cli/installer/managed-entries";
+import { jsonFragment } from "../../src/core/host-config/json-fragment";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const CLI = join(ROOT, "src/cli/index.ts");
@@ -147,3 +150,101 @@ test('standalone CodeGraph configure writes the Codex table through the gate, an
     expect(readFileSync(join(fixture.home, '.codex/config.toml'), 'utf8')).toBe('model = "user-model"\n');
   } finally { rmSync(fixture.root, { recursive: true, force: true }); }
 }, 15000);
+
+/** A fake codegraph whose `install --print-config claude` prints a server object with this command and writes nothing. */
+function writeClaudePrintingCodegraph(fakeBin: string, command: string) {
+  writeExecutable(join(fakeBin, 'codegraph'), [
+    '#!/bin/bash',
+    'set -euo pipefail',
+    'case "${1:-}" in',
+    '  --version) echo "0.9.6" ;;',
+    '  status) echo "CodeGraph Status"; echo "Index is up to date" ;;',
+    // codegraph 1.6.2 prints this object for `install --print-config claude` and writes nothing.
+    `  install) [[ "$*" == "install --print-config claude" ]] || exit 2; printf '%s\\n' "# Add to $HOME/.claude.json" "" '${JSON.stringify({ mcpServers: { codegraph: { type: 'stdio', command, args: ['serve', '--mcp'], alwaysLoad: true } } })}' ;;`,
+    '  *) exit 1 ;;',
+    'esac',
+  ].join('\n'));
+}
+
+test('standalone CodeGraph configure for Claude writes its server and tool rule through the gate, refreshes its own server, keeps no copy of ~/.claude.json, and uninstall reverts both', () => {
+  const fixture = setupFakeEnvironment('standalone-codegraph-claude');
+  const fakeCodegraph = (command: string) => writeClaudePrintingCodegraph(fixture.fakeBin, command);
+  try {
+    writeFakeSkillsCli(fixture.fakeBin);
+    fakeCodegraph('codegraph');
+    const rootConfig = join(fixture.home, '.claude.json');
+    const settings = join(fixture.home, '.claude/settings.json');
+    const rootBefore = '{\n    "primaryApiKey": "sk-test-not-a-key",\n    "numStartups": 3\n}\n';
+    mkdirSync(join(fixture.home, '.claude'));
+    writeFileSync(rootConfig, rootBefore);
+    // An earlier rh version wrote the tool rule into top-level allowedTools and recorded it in its receipt.
+    // The migration cannot prove that rh created the allowedTools array, so it stays, empty.
+    const settingsAfter = '{"permissions":{"allow":["Bash(ls)"]},"allowedTools":[]}';
+    writeFileSync(settings, '{"permissions":{"allow":["Bash(ls)"]},"allowedTools":["mcp__codegraph__*"]}');
+    mkdirSync(join(fixture.home, '.repo-harness'), { recursive: true });
+    writeFileSync(join(fixture.home, '.repo-harness/configuration-restore.json'), JSON.stringify({ protocol: 1, changes: [
+      { path: settings, selector: 'allowedTools.codegraph', before: null, installed: JSON.stringify('mcp__codegraph__*'), active: true },
+    ] }));
+    const env = { ...process.env, HOME: fixture.home, PATH: `${fixture.fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0', BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
+    const configured = spawnSync('bun', [CLI, 'arch', 'codegraph', 'configure', '--target', 'claude', '--location', 'global', '--json', '--repo', ROOT], { cwd: ROOT, env, encoding: 'utf8' });
+    expect(configured.status, configured.stderr).toBe(0);
+    expect(JSON.parse(configured.stdout).actions.map((entry: any) => [entry.action, entry.status])).toEqual([['configure-claude', 'changed'], ['claude-tool-permission', 'changed']]);
+    expect(JSON.parse(readFileSync(rootConfig, 'utf8')).mcpServers.codegraph).toEqual({ type: 'stdio', command: 'codegraph', args: ['serve', '--mcp', '--path', '.'], alwaysLoad: true });
+    expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ permissions: { allow: ['Bash(ls)', 'mcp__codegraph__*'] }, allowedTools: [] });
+    // C3 (owner): rh's add to ~/.claude.json keeps no whole-file copy, so the login key is in no rh file.
+    const ledger = JSON.parse(readFileSync(join(fixture.home, '.repo-harness/config/ledger.json'), 'utf8'));
+    expect(ledger.files[realpathSync(rootConfig)]).toMatchObject({ kind: 'text_block', backup: null });
+    for (const name of readdirSync(join(fixture.home, '.repo-harness/config/vault'))) {
+      expect(readFileSync(join(fixture.home, '.repo-harness/config/vault', name), 'utf8')).not.toContain('sk-test-not-a-key');
+    }
+    expect(existsSync(join(fixture.home, '.repo-harness/configuration-restore.json'))).toBe(false);
+    // A later codegraph prints another server object: rh refreshes the server that it recorded, and its record follows.
+    fakeCodegraph('/opt/codegraph/bin/codegraph');
+    const refreshed = spawnSync('bun', [CLI, 'arch', 'codegraph', 'configure', '--target', 'claude', '--location', 'global', '--json', '--repo', ROOT], { cwd: ROOT, env, encoding: 'utf8' });
+    expect(refreshed.status, refreshed.stderr).toBe(0);
+    expect(JSON.parse(refreshed.stdout).actions.map((entry: any) => [entry.action, entry.status])).toEqual([['configure-claude', 'changed'], ['claude-tool-permission', 'unchanged']]);
+    const rootAfter = readFileSync(rootConfig, 'utf8');
+    expect(JSON.parse(rootAfter).mcpServers.codegraph).toEqual({ type: 'stdio', command: '/opt/codegraph/bin/codegraph', args: ['serve', '--mcp', '--path', '.'], alwaysLoad: true });
+    const range = jsonFragment.locate(rootAfter, 'mcpServers.codegraph')!;
+    const recorded = JSON.parse(readFileSync(join(fixture.home, '.repo-harness/config/ledger.json'), 'utf8')).fragments.find((entry: any) => entry.file === realpathSync(rootConfig));
+    expect(recorded).toMatchObject({ selector: 'mcpServers.codegraph', kind: 'add', inserted: rootAfter.slice(range.start, range.end) });
+    const uninstalled = spawnSync('bun', [CLI, 'uninstall', '--target', 'claude', '--json'], { cwd: ROOT, env, encoding: 'utf8' });
+    expect(uninstalled.status, uninstalled.stdout + uninstalled.stderr).toBe(0);
+    expect(readFileSync(rootConfig, 'utf8')).toBe(rootBefore);
+    expect(readFileSync(settings, 'utf8')).toBe(settingsAfter);
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+}, 15000);
+
+test('a concurrent rh install and CodeGraph configure for Claude serialize on the global lock, and the ledger keeps the records of both', async () => {
+  const fixture = setupFakeEnvironment('concurrent-claude-writers');
+  try {
+    writeFakeSkillsCli(fixture.fakeBin);
+    writeClaudePrintingCodegraph(fixture.fakeBin, 'codegraph');
+    const rootConfig = join(fixture.home, '.claude.json');
+    const settings = join(fixture.home, '.claude/settings.json');
+    mkdirSync(join(fixture.home, '.claude'));
+    writeFileSync(rootConfig, '{"numStartups":1}\n');
+    writeFileSync(settings, '{"theme":"user"}\n');
+    const env = { ...process.env, HOME: fixture.home, BUN_INSTALL: join(fixture.home, '.bun'), PATH: `${fixture.fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_CODEGRAPH_ALLOW_REPO_LOCAL: '0', BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
+    seedGlobalPackageFixture(env);
+    // Both writers start while the test holds the lock, so each one waits for it.
+    const lock = acquireRuntimeTransactionLock(globalRuntimeScope(env));
+    let writers: ReturnType<typeof Bun.spawn>[];
+    try {
+      writers = [
+        Bun.spawn(['bun', CLI, 'install', '--target', 'claude', '--location', 'global'], { cwd: ROOT, env, stdout: 'pipe', stderr: 'pipe' }),
+        Bun.spawn(['bun', CLI, 'arch', 'codegraph', 'configure', '--target', 'claude', '--location', 'global', '--json', '--repo', ROOT], { cwd: ROOT, env, stdout: 'pipe', stderr: 'pipe' }),
+      ];
+    } finally { lock.release(); }
+    expect(await Promise.all(writers.map((writer) => writer.exited))).toEqual([0, 0]);
+    const gate = openHostConfigGate({ env });
+    const selectors = gate.recorded(settings).map((entry) => entry.selector);
+    expect(selectors).toContain('permissions.allow[mcp__codegraph__*]');
+    expect(selectors).toContain('statusLine');
+    expect(selectors.filter((selector) => selector.startsWith('hooks.')).length).toBe(Object.values(buildManagedHooks('claude', env)).flat().length);
+    expect(gate.recorded(rootConfig).map((entry) => entry.selector)).toEqual(['mcpServers.codegraph']);
+    const uninstalled = spawnSync('bun', [CLI, 'uninstall', '--target', 'claude', '--json'], { cwd: ROOT, env, encoding: 'utf8' });
+    expect(uninstalled.status, uninstalled.stdout + uninstalled.stderr).toBe(0);
+    expect([readFileSync(rootConfig, 'utf8'), readFileSync(settings, 'utf8')]).toEqual(['{"numStartups":1}\n', '{"theme":"user"}\n']);
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+}, 30000);

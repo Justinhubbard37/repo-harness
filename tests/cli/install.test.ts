@@ -6,7 +6,6 @@ import { spawnSync } from 'child_process';
 import { runInstall, runUninstall } from '../../src/cli/commands/install';
 import { CLAUDE_STATUS_LINE_PIPE, claudeTarget } from '../../src/cli/installer/targets/claude';
 import type { Location } from '../../src/cli/installer/types';
-import { withConfigurationMutation } from '../../src/cli/installer/configuration-ownership';
 import { requestUserInputFragment } from '../../src/cli/installer/targets/codex';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
 import { isRepoHarnessManagedHookCommand } from '../../src/core/adoption/managed-hook-config';
@@ -29,7 +28,7 @@ describe('issue 698 host configuration ownership', () => {
       expect(installed).toBe(`default_mode_request_user_input = true\n${original}`);
       expect(fs.existsSync(path.join(home, '.repo-harness/configuration-restore.json'))).toBe(false);
       const ledger = () => JSON.parse(fs.readFileSync(path.join(home, '.repo-harness/config/ledger.json'), 'utf8'));
-      expect(ledger().fragments).toEqual([{ file: fs.realpathSync(filePath), owner: 'core', selector: 'default_mode_request_user_input', kind: 'add', inserted: 'default_mode_request_user_input = true\n' }]);
+      expect(ledger().fragments.filter((entry: { file: string }) => entry.file === fs.realpathSync(filePath))).toEqual([{ file: fs.realpathSync(filePath), owner: 'core', selector: 'default_mode_request_user_input', kind: 'add', inserted: 'default_mode_request_user_input = true\n' }]);
       const recorded = ledger();
       expect(runInstall({ target: 'codex', location: 'global' }).exitCode).toBe(0);
       expect(fs.readFileSync(filePath, 'utf8')).toBe(installed);
@@ -67,7 +66,8 @@ describe('issue 698 host configuration ownership', () => {
       fs.writeFileSync(filePath, original);
       expect(runInstall({ target: 'codex', location: 'global' }).exitCode).toBe(0);
       expect(fs.readFileSync(filePath, 'utf8')).toBe(original);
-      expect(fs.existsSync(path.join(home, '.repo-harness/config/ledger.json'))).toBe(false);
+      const ledger = JSON.parse(fs.readFileSync(path.join(home, '.repo-harness/config/ledger.json'), 'utf8'));
+      expect(ledger.files[fs.realpathSync(filePath)]).toBeUndefined();
     });
   });
 
@@ -92,34 +92,30 @@ describe('issue 698 host configuration ownership', () => {
 
   for (const host of ['codex', 'claude'] as const) {
     for (const shape of ['file', 'directory', 'dangling'] as const) {
-      test(`issue 698 ${host} install refuses a ${shape} symlink before writes`, () => {
+      test(`${host} install follows a user's ${shape} symlink, and uninstall restores the linked file`, () => {
         withTempHome('repo-harness-install', (home) => {
           const name = host === 'codex' ? 'hooks.json' : 'settings.json';
           const root = path.join(home, `.${host}`);
           const filePath = path.join(root, name);
           const outside = path.join(home, 'dotfiles');
-          const victim = path.join(outside, name);
+          const linked = path.join(outside, name);
           const original = '{"theme":"user"}\n';
           fs.mkdirSync(outside);
-          if (shape !== 'dangling') fs.writeFileSync(victim, original);
+          if (shape !== 'dangling') fs.writeFileSync(linked, original);
           if (shape === 'directory') fs.symlinkSync(outside, root);
           else {
             fs.mkdirSync(root);
-            fs.symlinkSync(victim, filePath);
+            fs.symlinkSync(linked, filePath);
           }
           const linkPath = shape === 'directory' ? root : filePath;
           const link = fs.readlinkSync(linkPath);
-          const install = runInstall({ target: host, location: 'global' });
-          expect(install.exitCode).toBe(1);
-          expect(install.lines.join('\n')).toContain('refusing symlink configuration path');
-          expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+          expect(runInstall({ target: host, location: 'global' }).exitCode).toBe(0);
           expect(fs.readlinkSync(linkPath)).toBe(link);
-          if (shape !== 'dangling') expect(fs.readFileSync(victim, 'utf8')).toBe(original);
-          else expect(fs.existsSync(victim)).toBe(false);
-          expect(fs.existsSync(path.join(root, 'config.toml'))).toBe(false);
-          expect(fs.existsSync(path.join(home, '.repo-harness/configuration-restore.json'))).toBe(false);
-          expect(runUninstall({ target: host, location: 'global' }).exitCode).toBe(1);
+          expect(Object.keys(JSON.parse(fs.readFileSync(linked, 'utf8')).hooks).length).toBeGreaterThan(0);
+          expect(runUninstall({ target: host, location: 'global' }).exitCode).toBe(0);
           expect(fs.readlinkSync(linkPath)).toBe(link);
+          if (shape !== 'dangling') expect(fs.readFileSync(linked, 'utf8')).toBe(original);
+          else expect(fs.existsSync(linked)).toBe(false);
         });
       });
     }
@@ -141,11 +137,9 @@ describe('issue 698 host configuration ownership', () => {
         for (const target of ['codex', 'claude', 'both'] as const) {
           expect(runInstall({ target, location: local }).exitCode).toBe(2);
           expect(runUninstall({ target, location: local, dryRun: true }).exitCode).toBe(2);
-          expect(runUninstall({ target, location: local, recoverInterrupted: true }).exitCode).toBe(2);
           expect(runUninstall({ target, location: local }).exitCode).toBe(2);
         }
         expect(() => claudeTarget.install(local, {})).toThrow('--location global');
-        expect(() => claudeTarget.uninstall(local)).toThrow('--location global');
         expect(() => claudeTarget.detect(local)).toThrow('--location global');
         expect(fs.lstatSync(filePath).isSymbolicLink()).toBe(true);
         expect(fs.readFileSync(victim, 'utf8')).toBe(original);
@@ -174,10 +168,10 @@ describe('issue 698 host configuration ownership', () => {
       expect(runInstall({ target: 'claude', location: 'global' }).exitCode).toBe(0);
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       expect(data.theme).toBe('user');
-      expect(data.hooks.SessionStart[1].hooks.map((hook: any) => hook.command)).toEqual(commands);
-      expect(JSON.stringify(data)).not.toContain('session-start-context.sh');
+      // A retired rh command inside a user's entry has no selector: install leaves it to the legacy cleanup of `rh upgrade`.
+      expect(data.hooks.SessionStart[1].hooks.map((hook: any) => hook.command)).toEqual([...commands, historical]);
       expect(runUninstall({ target: 'claude', location: 'global' }).exitCode).toBe(0);
-      expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).hooks.SessionStart[0].hooks.map((hook: any) => hook.command)).toEqual(commands);
+      expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).hooks.SessionStart[0].hooks.map((hook: any) => hook.command)).toEqual([...commands, historical]);
     });
   });
 });
@@ -508,10 +502,11 @@ describe('install command (Phase 1B)', () => {
         fs.writeFileSync(filePath, `${JSON.stringify({ ...data, statusLine: edit }, null, 2)}\n`);
         // The edited entry is the user's: a later install keeps it, and a receipt mutation of the file does not fail.
         expect(runInstall({ target: 'claude', location: 'global' }).lines).toContain(pipeNote);
-        expect(() => withConfigurationMutation([filePath], home, () => undefined)).not.toThrow();
       }
+      // An rh status line that the user edited stays, and uninstall reports it (A9).
       const uninstall = runUninstall({ target: 'claude', location: 'global' });
-      expect(uninstall.exitCode, uninstall.lines.join('\n')).toBe(0);
+      expect(uninstall.exitCode, uninstall.lines.join('\n')).toBe(edit ? 1 : 0);
+      if (edit) expect(uninstall.lines).toContain(`[unresolved] ${filePath}: changed since rh wrote it; preserved: statusLine`);
       const after = fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, 'utf-8')) : {};
       expect(after.statusLine).toEqual(remaining);
       expect(after.hooks).toBeUndefined();
@@ -545,8 +540,8 @@ describe('install command (Phase 1B)', () => {
       const total = Object.values(data.hooks as Record<string, unknown[]>).flat().length;
       expect(total).toBe(6);
       expect(data.hooks.UserPromptSubmit.length).toBe(1);
-      expect(data.hooks.SubagentStart).toBeUndefined();
-      expect(data.hooks.SubagentStop).toBeUndefined();
+      // The migration does not prove that rh created the retired event arrays, so they stay, empty.
+      expect([data.hooks.SubagentStart, data.hooks.SubagentStop]).toEqual([[], []]);
     });
   });
 
@@ -596,7 +591,7 @@ describe('install command (Phase 1B)', () => {
 
       const uninstall = runUninstall({ target: 'claude', location: 'global' });
       expect(uninstall.exitCode).toBe(0);
-      expect(uninstall.lines.some((l) => l.includes('claude managed hooks'))).toBe(true);
+      expect(uninstall.lines).toContain(`[restore] ${filePath}: host-config ledger: rh text removed`);
       const afterUninstall = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
       expect(afterUninstall.theme).toBe('dark');
       expect(afterUninstall.hooks.UserPromptSubmit).toEqual([
@@ -644,7 +639,7 @@ describe('install command (Phase 1B)', () => {
 
       const uninstall = runUninstall({ target: 'codex', location: 'global' });
       expect(uninstall.exitCode).toBe(0);
-      expect(uninstall.lines.some((l) => l.includes('codex managed hooks'))).toBe(true);
+      expect(uninstall.lines).toContain(`[remove] ${hooksPath}: host-config ledger: rh created this file`);
 
 
       expect(fs.existsSync(hooksPath)).toBe(false);
@@ -696,8 +691,8 @@ describe('install command (Phase 1B)', () => {
         encoding: 'utf-8',
       });
       expect(uninstall.status).toBe(0);
-      expect(uninstall.stdout).toContain('codex managed hooks');
-      expect(uninstall.stdout).toContain('claude managed hooks');
+      expect(uninstall.stdout).toContain(`[remove] ${codexPath}: host-config ledger: rh created this file`);
+      expect(uninstall.stdout).toContain(`[remove] ${claudePath}: host-config ledger: rh created this file`);
       expect(fs.existsSync(claudePath)).toBe(false);
       expect(fs.existsSync(codexPath)).toBe(false);
     });
@@ -760,7 +755,7 @@ describe('install native Codex delegation authority', () => {
 describe('managed-first hook order', () => {
   for (const host of ['codex', 'claude'] as const) {
     const relative = host === 'codex' ? '.codex/hooks.json' : '.claude/settings.json';
-    test(`${host}: put managed blocks first, preserve duplicate, empty and mixed user blocks, then rerun without writes or notice`, () => {
+    test(`${host}: keep managed blocks where they are, preserve duplicate and empty user blocks, then rerun without writes or notice`, () => {
       withTempHome('repo-harness-install', home => {
         const file = path.join(home, relative);
         const managed = buildManagedHooks(host);
@@ -769,10 +764,8 @@ describe('managed-first hook order', () => {
           { type: 'command', command: 'echo same', timeout: 9, statusMessage: 'User guard' },
         ] };
         const empty = { matcher: 'empty', hooks: [], label: 'Keep user empty block' };
-        const mixed = { matcher: 'startup|resume', label: 'Keep metadata', timeout: 17, hooks: [
-          user.hooks[0], managed.SessionStart[0].hooks[0], user.hooks[1],
-        ] };
-        const hooks = { ...managed, SessionStart: [user, mixed, user, ...managed.SessionStart],
+        // A text edit never moves an entry: managed entries of an earlier install keep their place.
+        const hooks = { ...managed, SessionStart: [user, user, ...managed.SessionStart],
           PreToolUse: [empty, ...managed.PreToolUse], UserEvent: [empty, user], EmptyUserEvent: [] };
         const original = JSON.stringify({ theme: 'user', hooks });
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -782,16 +775,14 @@ describe('managed-first hook order', () => {
         const installed = fs.readFileSync(file, 'utf8');
         const after = JSON.parse(installed);
         expect(after.theme).toBe('user');
-        expect(after.hooks.SessionStart.slice(0, managed.SessionStart.length)).toEqual(managed.SessionStart);
-        expect(after.hooks.SessionStart.slice(managed.SessionStart.length)).toEqual([
-          user, { ...mixed, hooks: [user.hooks[0], user.hooks[1]] }, user,
-        ]);
-        expect(after.hooks.PreToolUse).toEqual([...managed.PreToolUse, empty]);
+        expect(after.hooks.SessionStart).toEqual([user, user, ...managed.SessionStart]);
+        expect(after.hooks.PreToolUse).toEqual([empty, ...managed.PreToolUse]);
         expect(after.hooks.UserEvent).toEqual([empty, user]);
         expect(after.hooks.EmptyUserEvent).toEqual([]);
         // The source objects must also keep their commands and metadata.
         expect(JSON.stringify({ theme: 'user', hooks })).toBe(original);
-        expect(result.lines.join('\n').includes('enter /hooks')).toBe(host === 'codex');
+        // The managed entries were already in place, so the hook file is not written and Codex asks for no review.
+        expect(result.lines.join('\n').includes('enter /hooks')).toBe(false);
         const rerun = runInstall({ target: host, location: 'global' });
         expect(rerun.exitCode).toBe(0);
         expect(rerun.lines.every(line => line.includes('unchanged:'))).toBe(true);

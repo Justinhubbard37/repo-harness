@@ -38,20 +38,12 @@ function writeFakeCodeGraph(fakeBin: string, logFile: string) {
       "      printf '%s\\n' \"# Add to $HOME/.codex/config.toml\" '' '[mcp_servers.codegraph]' 'command = \"codegraph\"' 'args = [\"serve\", \"--mcp\"]'",
       "      exit 0",
       "    fi",
-      "    if [[ \" $* \" == *\" --target claude \"* && ! -f \"$HOME/.claude.json\" ]]; then",
-      "      cat > \"$HOME/.claude.json\" <<'JSON'",
-      "{",
-      "  \"mcpServers\": {",
-      "    \"codegraph\": {",
-      "      \"type\": \"stdio\",",
-      "      \"command\": \"codegraph\",",
-      "      \"args\": [\"serve\", \"--mcp\"]",
-      "    }",
-      "  }",
-      "}",
-      "JSON",
+      // codegraph 1.6.2 prints this object for `install --print-config claude` and writes nothing.
+      "    if [[ \"$*\" == \"install --print-config claude\" ]]; then",
+      "      printf '%s\\n' \"# Add to $HOME/.claude.json\" '' '{\"mcpServers\":{\"codegraph\":{\"type\":\"stdio\",\"command\":\"codegraph\",\"args\":[\"serve\",\"--mcp\"],\"alwaysLoad\":true}}}'",
+      "      exit 0",
       "    fi",
-      "    echo 'installed' ;;",
+      "    exit 2 ;;",
       "  *) exit 1 ;;",
       "esac",
       "",
@@ -75,7 +67,7 @@ function writeFakeSkillsCli(fakeBin: string) {
 }
 
 type RunConfigureOptions = {
-  // null / undefined → seed empty {} settings.json so the claude-allowed-tools
+  // null / undefined → seed empty {} settings.json so the claude-tool-permission
   // step has something to mutate. Pass "missing" to skip seeding entirely and
   // exercise the "no Claude Code installed" branch.
   seedClaudeSettings?: Record<string, unknown> | "missing" | null;
@@ -153,80 +145,54 @@ describe("arch codegraph configure", () => {
     expect(codexConfigAfter).toBe('# no codegraph yet\n[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp", "--path", "."]\n');
   }, 15000);
 
-  test("configures Claude and registers codegraph for eager schema load", () => {
+  test("configures Claude from the printed server object and allows the CodeGraph tools in permissions.allow", () => {
     const { res, log, claudeSettingsAfter, claudeRootConfigAfter } = runConfigure("claude");
     expect(res.status).toBe(0);
     const result = JSON.parse(res.stdout);
     expect(result.target).toBe("claude");
-    expect(result.actions.map((entry: { action: string }) => entry.action)).toEqual([
-      "configure-claude",
-      "claude-project-path",
-      "claude-always-load",
-      "claude-allowed-tools",
+    expect(result.actions.map((entry: { action: string; status: string }) => [entry.action, entry.status])).toEqual([
+      ["configure-claude", "changed"],
+      ["claude-tool-permission", "changed"],
     ]);
-    expect(log).toContain("codegraph install --target claude --location global --yes");
-
-    const alwaysLoad = (result.actions as Array<{ action: string; status: string }>).find(
-      (entry) => entry.action === "claude-always-load",
-    );
-    const allowedTools = (result.actions as Array<{ action: string; status: string }>).find(
-      (entry) => entry.action === "claude-allowed-tools",
-    );
-    expect(alwaysLoad?.status).toBe("changed");
-    expect(allowedTools?.status).toBe("changed");
+    expect(log).toContain("codegraph install --print-config claude");
+    expect(log).not.toContain("--target claude");
     expect(claudeRootConfigAfter?.mcpServers?.codegraph?.args).toEqual(["serve", "--mcp", "--path", "."]);
     expect(claudeRootConfigAfter?.mcpServers?.codegraph?.alwaysLoad).toBe(true);
-    expect(claudeSettingsAfter?.allowedTools).toContain("mcp__codegraph__*");
+    expect(claudeSettingsAfter).toEqual({ permissions: { allow: ["mcp__codegraph__*"] } });
   }, 15000);
 
-  test("claude-always-load is idempotent when CodeGraph is already pinned", () => {
-    const { res, claudeRootConfigAfter } = runConfigure("claude", {
-      seedClaudeRootConfig: {
-        mcpServers: {
-          codegraph: {
-            type: "stdio",
-          command: "codegraph",
-          args: ["serve", "--mcp", "--path", "."],
-          alwaysLoad: true,
-        },
-      },
-      },
-    });
+  test("a CodeGraph server that rh did not write stays the user's", () => {
+    const user = { type: "stdio", command: "codegraph", args: ["serve", "--mcp"] };
+    const { res, claudeRootConfigAfter } = runConfigure("claude", { seedClaudeRootConfig: { mcpServers: { codegraph: user } } });
     expect(res.status).toBe(0);
-    const result = JSON.parse(res.stdout);
-    const alwaysLoad = (result.actions as Array<{ action: string; status: string }>).find(
-      (entry) => entry.action === "claude-always-load",
-    );
-    const projectPath = (result.actions as Array<{ action: string; status: string }>).find(
-      (entry) => entry.action === "claude-project-path",
-    );
-    expect(projectPath?.status).toBe("unchanged");
-    expect(alwaysLoad?.status).toBe("unchanged");
-    expect(claudeRootConfigAfter?.mcpServers?.codegraph?.alwaysLoad).toBe(true);
+    const configure = JSON.parse(res.stdout).actions.find((entry: { action: string }) => entry.action === "configure-claude");
+    expect(configure?.status).toBe("skipped");
+    expect(configure?.stderr ?? "").toContain("is your configuration; rh did not change it");
+    expect(claudeRootConfigAfter?.mcpServers?.codegraph).toEqual(user);
   }, 15000);
 
-  test("claude-allowed-tools is idempotent when the wildcard is already present", () => {
+  test("claude-tool-permission is unchanged when the rule is already in permissions.allow", () => {
     const { res, claudeSettingsAfter } = runConfigure("claude", {
-      seedClaudeSettings: { allowedTools: ["Edit", "mcp__codegraph__*"] },
+      seedClaudeSettings: { permissions: { allow: ["Edit", "mcp__codegraph__*"] } },
     });
     expect(res.status).toBe(0);
     const result = JSON.parse(res.stdout);
-    const allowedTools = (result.actions as Array<{ action: string; status: string }>).find(
-      (entry) => entry.action === "claude-allowed-tools",
+    const permission = (result.actions as Array<{ action: string; status: string }>).find(
+      (entry) => entry.action === "claude-tool-permission",
     );
-    expect(allowedTools?.status).toBe("unchanged");
-    expect(claudeSettingsAfter?.allowedTools).toEqual(["Edit", "mcp__codegraph__*"]);
+    expect(permission?.status).toBe("unchanged");
+    expect(claudeSettingsAfter).toEqual({ permissions: { allow: ["Edit", "mcp__codegraph__*"] } });
   }, 15000);
 
-  test("claude-allowed-tools is skipped when Claude Code is not installed", () => {
+  test("claude-tool-permission is skipped when Claude Code is not installed", () => {
     const { res, claudeSettingsAfter } = runConfigure("claude", { seedClaudeSettings: "missing" });
     expect(res.status).toBe(0);
     const result = JSON.parse(res.stdout);
-    const allowedTools = (result.actions as Array<{ action: string; status: string; stderr?: string }>).find(
-      (entry) => entry.action === "claude-allowed-tools",
+    const permission = (result.actions as Array<{ action: string; status: string; stderr?: string }>).find(
+      (entry) => entry.action === "claude-tool-permission",
     );
-    expect(allowedTools?.status).toBe("skipped");
-    expect(allowedTools?.stderr ?? "").toContain("not found");
+    expect(permission?.status).toBe("skipped");
+    expect(permission?.stderr ?? "").toContain("not found");
     expect(claudeSettingsAfter).toBeNull();
   }, 15000);
 
@@ -238,14 +204,12 @@ describe("arch codegraph configure", () => {
     expect(result.actions.map((entry: { action: string }) => entry.action)).toEqual([
       "configure-codex",
       "configure-claude",
-      "claude-project-path",
-      "claude-always-load",
-      "claude-allowed-tools",
+      "claude-tool-permission",
     ]);
     expect(log).toContain("codegraph install --print-config codex");
-    expect(log).toContain("codegraph install --target claude --location global --yes");
+    expect(log).toContain("codegraph install --print-config claude");
     // CLI output may carry the host-agnostic wildcard mcp__codegraph__* as a
-    // configuration value (it is the actual Claude allowedTools entry). What it
+    // configuration value (it is the actual Claude permissions.allow entry). What it
     // must NOT carry is concrete codegraph tool invocations such as
     // codegraph_context(...), codegraph_callers(...) etc -- those belong to
     // agent prompts, not adapter output.

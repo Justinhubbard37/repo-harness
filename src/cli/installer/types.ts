@@ -65,5 +65,4 @@ export interface AgentTarget {
   supportsLocation(loc: Location): boolean;
   detect(loc: Location): DetectionResult;
   install(loc: Location, opts: InstallOptions): WriteResult;
-  uninstall(loc: Location, opts?: { dryRun?: boolean }): WriteResult;
 }

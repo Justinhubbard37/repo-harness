@@ -14,17 +14,16 @@
  * hook bundle with the Bun runtime resolved during installation.
  */
 
-import { accessSync, constants, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { isRecord } from '../../core/evidence/is-record';
 import { shellQuote } from '../../core/shell-quote';
 import { bunGlobalPackageRoot } from './skill-projection';
 import { routesForHost, type AdapterHost, type Route } from '../hook/route-registry';
-import {
-  MANAGED_TAG,
-  isRepoHarnessManagedHookCommand,
-  stripRepoHarnessManagedHooks,
-} from '../../core/adoption/managed-hook-config';
+import { MANAGED_TAG, isRepoHarnessManagedHookCommand } from '../../core/adoption/managed-hook-config';
+import { jsonFragment, jsonFragmentValue } from '../../core/host-config/json-fragment';
+import { HostConfigError, type FragmentRecord, type FragmentRequest } from '../../core/host-config/types';
+import { openHostConfigGate, type HostConfigApplyResult } from '../../effects/host-config/gate';
 
 export { MANAGED_TAG } from '../../core/adoption/managed-hook-config';
 
@@ -109,6 +108,11 @@ export function buildHookEntry(route: Route, host: HookHost, env: NodeJS.Process
 export function isManagedEntry(entry: HookEntry): boolean {
   if (!entry || !Array.isArray(entry.hooks)) return false;
   return entry.hooks.some((hook) => isRepoHarnessManagedHookCommand(hook?.command));
+}
+
+/** The Claude status line that rh writes: the quota capture, tagged as rh's. */
+export function managedStatusLine(env: NodeJS.ProcessEnv = process.env): { type: 'command'; command: string } {
+  return { type: 'command', command: `: ${MANAGED_TAG}; ${buildHookExecCommand(env)} statusline` };
 }
 
 /** Every hook route is core: each install projects every route that the host supports. */
@@ -367,14 +371,72 @@ export function compareManagedHookProjection(
   return compareManagedHooks(actual, expected);
 }
 
-export function stripManagedEntries(existing: HooksByEvent | undefined): HooksByEvent {
-  return stripRepoHarnessManagedHooks(existing).hooks as HooksByEvent;
+/** The selector of one route's managed entry in a host hook file. */
+export function hookSelector(route: Pick<Route, 'event' | 'routeId'>): string {
+  return `hooks.${route.event}[${route.routeId}]`;
 }
 
-export function mergeHooks(existing: HooksByEvent, managed: HooksByEvent): HooksByEvent {
-  const out: HooksByEvent = { ...existing };
-  for (const [event, managedEntries] of Object.entries(managed)) {
-    out[event] = [...managedEntries, ...(out[event] ?? [])];
+/**
+ * Writes the managed entry of each route of the host into its hook file
+ * through the host-config gate, before the user's entries of the same event,
+ * and takes out the recorded entry of a route that this version no longer
+ * has. The rest of the file keeps its bytes. `extra` adds other fragments of
+ * the same file to the one apply.
+ */
+/** The fields of a hook entry or status line, flat: a hook entry's matcher beside its one hook's fields. */
+function reportFields(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const hooks = Array.isArray(value.hooks) && isRecord(value.hooks[0]) ? value.hooks[0] : null;
+  return hooks ? { ...(value.matcher === undefined ? {} : { matcher: value.matcher }), ...hooks } : { ...value };
+}
+
+/**
+ * One line per field that a refresh changes in an entry that the one-shot
+ * migration adopted and that rh did not write since: the adopted value may
+ * be an older rh value or a user's edit, so the update names it.
+ */
+function adoptedRefreshes(filePath: string, content: string, requests: readonly FragmentRequest[], records: readonly FragmentRecord[]): { selector: string; line: string }[] {
+  const lines: { selector: string; line: string }[] = [];
+  for (const request of requests) {
+    const record = records.find((entry) => entry.owner === request.owner && entry.selector === request.selector);
+    const range = jsonFragment.locate(content, request.selector);
+    if (!record || record.preimage === undefined || record.inserted !== record.preimage || !range || content.slice(range.start, range.end) !== record.inserted) continue;
+    const before = reportFields(jsonFragmentValue(content, request.selector));
+    const after = reportFields(request.value);
+    for (const field of [...new Set([...Object.keys(before), ...Object.keys(after)])]) {
+      if (JSON.stringify(before[field]) === JSON.stringify(after[field])) continue;
+      lines.push({ selector: request.selector, line: `refreshed the adopted entry ${request.selector} in ${filePath}: ${field} ${JSON.stringify(before[field]) ?? '(none)'} -> ${JSON.stringify(after[field]) ?? '(none)'}` });
+    }
   }
-  return out;
+  return lines;
+}
+
+export interface ManagedHooksResult extends HostConfigApplyResult {
+  /** The update report of adopted entries that this apply refreshed to other values. */
+  readonly refreshed: readonly string[];
+}
+
+export function applyManagedHooks(filePath: string, host: HookHost, extra: readonly FragmentRequest[] = [], env: NodeJS.ProcessEnv = process.env): ManagedHooksResult {
+  const gate = openHostConfigGate({ env });
+  const routes = routesForHost(host);
+  const current = new Set(routes.map(hookSelector));
+  const entries = routes.map((route) => ({ selector: hookSelector(route), value: buildHookEntry(route, host, env) }));
+  const retired = gate.recorded(filePath)
+    .filter((record) => record.owner === 'core' && record.selector.startsWith('hooks.') && !current.has(record.selector))
+    .map((record) => record.selector);
+  if (retired.length) gate.revert([filePath], { selectors: retired });
+  const content = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
+  const fragments = entries.map(({ selector, value }): FragmentRequest =>
+    ({ owner: 'core', selector, kind: jsonFragment.locate(content, selector) ? 'refresh' : 'add', strategy: jsonFragment, value }));
+  const requests = [...fragments, ...extra];
+  const report = adoptedRefreshes(filePath, content, requests, gate.recorded(filePath));
+  const result = gate.apply([{ path: filePath, fragments: requests }]);
+  const skipped = new Set(result.skipped.map((skip) => skip.selector));
+  const refreshed = report.filter((entry) => !skipped.has(entry.selector)).map((entry) => entry.line);
+  // A hook entry that is no longer rh's text stays as it is, and the install cannot complete its routes.
+  const kept = result.skipped.filter((skip) => skip.code === 'host_config_user_value_kept' && current.has(skip.selector)).map((skip) => skip.selector);
+  if (kept.length) {
+    throw new HostConfigError('host_config_invalid_state', `${filePath}: ${kept.join(', ')} are not rh's text any more, so rh kept them. Delete those hook entries, then run rh install again; rh writes them anew`);
+  }
+  return { ...result, refreshed };
 }

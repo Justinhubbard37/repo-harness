@@ -10,7 +10,8 @@ export type HostConfigErrorCode =
   | 'host_config_fragment_overlap'
   | 'host_config_target_changed'
   | 'host_config_invalid_path'
-  | 'host_config_invalid_state';
+  | 'host_config_invalid_state'
+  | 'host_config_unparseable_target';
 
 export class HostConfigError extends Error {
   constructor(readonly code: HostConfigErrorCode, message: string, options?: ErrorOptions) {
@@ -35,9 +36,18 @@ export type FileBaseline =
 /**
  * How rh first wrote the file: `created` (a new file, a revert removes it),
  * `text_block` (`apply` edited a user file) or `replaced` (a delegated
- * writer replaced a user file); a revert of the last two restores the backup.
+ * writer replaced a user file); a revert of the last two restores the backup
+ * when the record has one.
  */
 export type FileRecordKind = 'created' | 'text_block' | 'replaced';
+
+/**
+ * When `apply` puts the whole file into the vault: `whole-file` before any
+ * write over bytes that rh did not write last; `overrides-only` only when a
+ * fragment replaces such bytes, so a file that rh only adds to keeps no copy
+ * and a revert removes rh's fragments instead.
+ */
+export type HostConfigBackupPolicy = 'whole-file' | 'overrides-only';
 
 export type FileCommitted =
   | { readonly type: 'file'; readonly sha256: Sha256 }
@@ -52,10 +62,15 @@ export interface FileRecord {
    */
   readonly committed: FileCommitted;
   /**
-   * Vault reference of the whole file before rh last wrote over bytes that rh
-   * did not write; required for `text_block` and `replaced`.
+   * Vault reference of the whole file before rh first wrote over bytes that
+   * rh did not write (or the adopted state before rh); required for
+   * `replaced`, null for `created` and for a `text_block` that rh only added
+   * to under `overrides-only`. It is the restore target and never changes
+   * while the record lives.
    */
   readonly backup: Sha256 | null;
+  /** Vault reference of the file as an outside edit left it, from the last rh write over it; for the report, never a restore target. */
+  readonly external_backup?: Sha256;
   /** Sticky: set once the file differed from `committed` when rh wrote it again. */
   readonly external_change: boolean;
 }
@@ -74,8 +89,12 @@ export interface FragmentRecord {
   readonly owner: string;
   readonly selector: string;
   readonly kind: FragmentKind;
-  /** The text rh wrote at the selector: a refresh over other text is a user's change. */
+  /** The text rh wrote at the selector: a refresh over other text is a user's change. Empty when rh's text is not known: the fragment stays. */
   readonly inserted: string;
+  /** The outermost container that rh's insert created on the selector's path; a revert removes an emptied container only on this proof. */
+  readonly created?: string;
+  /** For a fragment that the one-shot migration adopted: its text when adopted, kept across refreshes so that a refreshed value stays recoverable. */
+  readonly preimage?: string;
 }
 
 export interface HostConfigLedger {
@@ -122,6 +141,8 @@ export interface TextRange {
 export interface HostConfigStrategy<V = unknown> {
   locate(content: string, selector: string): TextRange | null;
   apply(content: string, selector: string, value: V): FragmentEdit;
+  /** The outermost container that an insert at the selector would create in the content; null when there is none. */
+  created?(content: string, selector: string): string | null;
 }
 
 export interface FragmentRequest<V = unknown> {

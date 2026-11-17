@@ -12,7 +12,6 @@ import {
   applyInstallSelection,
   assertArchitecturePolicySelection,
   beginInstallHostTransaction,
-  codegraphProjection,
   commitInstallHostTransaction,
   effectiveSkillRoots,
   installProfileHostMutationPaths,
@@ -56,6 +55,7 @@ import { openHostConfigGate } from '../src/effects/host-config/gate';
 import { hostConfigPaths } from '../src/effects/host-config/store';
 import { tomlFragment } from '../src/core/host-config/toml-fragment';
 import { currentProcessStartTime } from '../src/effects/locking/process-start-time';
+import { jsonFragment } from '../src/core/host-config/json-fragment';
 
 const ROOT = join(import.meta.dir, '..');
 const CLI = join(ROOT, 'src/cli/index.ts');
@@ -724,34 +724,22 @@ describe('install selection', () => {
     expect(status.probes.core?.missing).toContain('effective-state');
   }));
 
-  test('managed adapter ownership hashes only package entries and preserves sibling edits', () => withHome((env) => {
+  test('adapter probe requires the complete core route projection, and ignores user content beside it', () => withHome((env) => {
     writeManagedHostSurfaces(env);
     const applied = applyInstallSelection([], [], env);
     const adapter = join(env.HOME!, '.codex', 'hooks.json');
-    const config = JSON.parse(readFileSync(adapter, 'utf-8'));
-    config.theme = 'changed-by-user';
-    writeFileSync(adapter, JSON.stringify(config));
-    expect(installStateStatus(applied.state, env).drift.status).toBe('consistent');
-
-    config.hooks.SessionStart[0].hooks.push({
-      type: 'command',
-      command: 'echo user-owned-sibling',
-      timeout: 30,
-    });
-    writeFileSync(adapter, JSON.stringify(config));
-    expect(installStateStatus(applied.state, env).drift.status).toBe('consistent');
-
-    config.hooks.SessionStart[0].hooks[0].command = ': repo-harness-managed-hook-v1; changed';
-    writeFileSync(adapter, JSON.stringify(config));
-    expect(installStateStatus(applied.state, env).drift.surface_drift).toContain(adapter);
-  }));
-
-  test('adapter probe requires the complete core route projection', () => withHome((env) => {
-    writeManagedHostSurfaces(env);
-    const applied = applyInstallSelection([], [], env);
-    const adapter = join(env.HOME!, '.codex', 'hooks.json');
-    const config = JSON.parse(readFileSync(adapter, 'utf-8'));
     const original = readFileSync(adapter, 'utf-8');
+    // A user key and a user hook entry of its own beside the managed entries leave the projection complete.
+    const edited = JSON.parse(original);
+    edited.theme = 'changed-by-user';
+    edited.hooks.SessionStart.push({ hooks: [{ type: 'command', command: 'echo user-owned-sibling', timeout: 30 }] });
+    writeFileSync(adapter, JSON.stringify(edited));
+    expect(installStateStatus(applied.state, env).drift.status).toBe('consistent');
+    // A changed managed command is not rh's route any more.
+    edited.hooks.SessionStart[0].hooks[0].command = ': repo-harness-managed-hook-v1; changed';
+    writeFileSync(adapter, JSON.stringify(edited));
+    expect(installStateStatus(applied.state, env).probes.core?.missing).toContain('host-adapters');
+    const config = JSON.parse(original);
     delete config.hooks.PreToolUse;
     writeFileSync(adapter, JSON.stringify(config));
     const status = installStateStatus(applied.state, env);
@@ -1257,20 +1245,27 @@ describe('install selection', () => {
       const claudeSettings = join(env.HOME!, '.claude', 'settings.json');
       const codexUser = 'default_mode_request_user_input = true\n\n[profiles.user]\nmodel = "user-model"\n';
       const codexTable = '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp"]\n';
-      // The CodeGraph sections that `codegraph install` and the Claude allowed-tools step write, beside user content.
-      // rh writes the Codex table through the host-config gate; a user's table or an earlier rh version's table is raw text.
+      // The CodeGraph sections beside user content. rh writes them through the host-config gate; a user's
+      // sections, or an earlier rh version's Codex table, are raw text.
+      const codegraphServer = { type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'], alwaysLoad: true };
+      const claudeUser = { userSetting: true, mcpServers: { 'user-server': { type: 'stdio', command: 'user-mcp' } } };
       const writeConfigs = () => {
+        const gate = openHostConfigGate({ env });
         if (userSections || legacyManifest) writePath(codexConfig, `${codexUser}${codexTable}`);
         else {
           writePath(codexConfig, codexUser);
-          openHostConfigGate({ env }).apply([{ path: codexConfig, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'add', strategy: tomlFragment, value: codexTable }] }]);
+          gate.apply([{ path: codexConfig, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'add', strategy: tomlFragment, value: codexTable }] }]);
         }
-        writePath(claudeJson, `${JSON.stringify({ userSetting: true, mcpServers: {
-          'user-server': { type: 'stdio', command: 'user-mcp' },
-          codegraph: { type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'], alwaysLoad: true },
-        } }, null, 2)}\n`);
-        writePath(claudeSettings, `${JSON.stringify({ hooks: buildManagedHooks('claude', env), permissions: { allow: ['Bash(ls)'] }, allowedTools: ['Read', 'mcp__codegraph__*'] }, null, 2)}\n`);
+        const allow = userSections ? ['Bash(ls)', 'mcp__codegraph__*'] : ['Bash(ls)'];
+        writePath(claudeJson, `${JSON.stringify(userSections ? { ...claudeUser, mcpServers: { ...claudeUser.mcpServers, codegraph: codegraphServer } } : claudeUser, null, 2)}\n`);
+        writePath(claudeSettings, `${JSON.stringify({ hooks: buildManagedHooks('claude', env), permissions: { allow }, allowedTools: ['Read'] }, null, 2)}\n`);
+        if (userSections) return;
+        gate.apply([{ path: claudeJson, backup: 'overrides-only', fragments: [{ owner: 'architecture', selector: 'mcpServers.codegraph', kind: 'add', strategy: jsonFragment, value: codegraphServer }] }]);
+        gate.apply([{ path: claudeSettings, fragments: [{ owner: 'architecture', selector: 'permissions.allow[mcp__codegraph__*]', kind: 'add', strategy: jsonFragment, value: 'mcp__codegraph__*' }] }]);
       };
+      const hasCodegraph = (path: string): boolean => path === claudeJson
+        ? JSON.parse(readFileSync(path, 'utf-8')).mcpServers?.codegraph !== undefined
+        : (JSON.parse(readFileSync(path, 'utf-8')).permissions?.allow ?? []).includes('mcp__codegraph__*');
       if (userSections) writeConfigs();
       const first = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
       writeManagedHostSurfaces(env, ALL_PLUGINS);
@@ -1288,8 +1283,8 @@ describe('install selection', () => {
       const owners = new Set(all.state.ownership_manifest.map(({ owner }) => owner));
       for (const owner of ['core', ...HOST_FILE_PLUGINS]) expect(owners.has(owner as PluginId), owner).toBe(true);
       const sections = all.state.ownership_manifest.filter(({ managed_marker }) => managed_marker === 'codegraph-config-projection').map(({ path }) => path);
-      // `~/.codex/config.toml` is in the host-config ledger, not in the manifest.
-      expect(sections.sort(), name).toEqual(userSections ? [] : [claudeJson, claudeSettings].sort());
+      // The host configuration files are in the host-config ledger, not in the manifest.
+      expect(sections, name).toEqual([]);
       if (legacyManifest) {
         const statePath = installStateFixturePath(env);
         const recorded = JSON.parse(readFileSync(statePath, 'utf-8'));
@@ -1315,18 +1310,15 @@ describe('install selection', () => {
       )), name).toEqual([]);
       const droppedSurfaces = all.state.ownership_manifest.filter(({ owner }) => !ownerEnabled(owner, keep));
       expect([...new Set(removed)].sort(), name).toEqual([...new Set(droppedSurfaces.map(({ path }) => path))].sort());
-      for (const surface of droppedSurfaces) {
-        if (surface.managed_marker === 'codegraph-config-projection') expect(codegraphProjection(surface.path), `${name}: ${surface.path}`).toBeNull();
-        else expect(existsSync(surface.path), `${name}: ${surface.path}`).toBe(false);
-      }
+      for (const surface of droppedSurfaces) expect(existsSync(surface.path), `${name}: ${surface.path}`).toBe(false);
       for (const { path } of all.state.ownership_manifest.filter(({ owner }) => ownerEnabled(owner, keep))) expect(existsSync(path), `${name}: ${path}`).toBe(true);
       // An owned section goes with architecture; a user's section stays.
-      for (const path of [claudeJson, claudeSettings]) expect(codegraphProjection(path) !== null, `${name}: ${path}`).toBe(keep.includes('architecture') || userSections === true);
+      for (const path of [claudeJson, claudeSettings]) expect(hasCodegraph(path), `${name}: ${path}`).toBe(keep.includes('architecture') || userSections === true);
       // The Codex table follows the same rule, through the host-config gate; its removal gives back the user's bytes.
       expect(readFileSync(codexConfig, 'utf-8'), name).toBe(keep.includes('architecture') || userSections ? `${codexUser}${codexTable}` : codexUser);
       expect(JSON.parse(readFileSync(claudeJson, 'utf-8')), name).toMatchObject({ userSetting: true, mcpServers: { 'user-server': { command: 'user-mcp' } } });
       const settings = JSON.parse(readFileSync(claudeSettings, 'utf-8'));
-      expect([settings.permissions, settings.allowedTools.includes('Read'), settings.hooks], name).toEqual([{ allow: ['Bash(ls)'] }, true, buildManagedHooks('claude', env)]);
+      expect([settings.permissions.allow.includes('Bash(ls)'), settings.allowedTools, settings.hooks], name).toEqual([true, ['Read'], buildManagedHooks('claude', env)]);
       const lockState = JSON.parse(readFileSync(lock, 'utf-8'));
       expect(lockState.skills['user-skill'], name).toEqual({ source: 'user/repo' });
       expect(lockState.skills['repo-harness-cross-review'] !== undefined, name).toBe(keep.includes('cross-review'));
@@ -1365,30 +1357,6 @@ describe('install selection', () => {
       expect(() => assertPluginCommandSelected(selection, id, command, env))
         .toThrow(`install_plugin_unavailable: rh ${command} needs the ${id} plugin: the ${id} plugin is not selected; run: rh update`);
     }
-  }));
-
-  test('reinstall refreshes ownership for an already-owned CodeGraph projection', () => withHome((env) => {
-    const first = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
-    writeManagedHostSurfaces(env, ALL_PLUGINS);
-    const config = join(env.HOME!, '.claude.json');
-    writePath(config, JSON.stringify({ mcpServers: { codegraph: { command: 'codegraph', args: ['serve'] } } }));
-    const initial = applyInstallSelection('all', ALL_PLUGINS, env, new Date('2026-01-01T00:00:00Z'), first);
-    commitInstallHostTransaction(first);
-    const original = initial.state.ownership_manifest.find(({ managed_marker }) => (
-      managed_marker === 'codegraph-config-projection'
-    ));
-    expect(original?.owner).toBe('architecture');
-
-    const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
-    writeFileSync(config, JSON.stringify({ mcpServers: { codegraph: { command: 'codegraph', args: ['serve', '--mcp'] } } }));
-    const refreshed = applyInstallSelection('all', ALL_PLUGINS, env, new Date('2026-01-02T00:00:00Z'), second);
-    commitInstallHostTransaction(second);
-    const next = refreshed.state.ownership_manifest.find(({ managed_marker }) => (
-      managed_marker === 'codegraph-config-projection'
-    ));
-    expect(next).toBeDefined();
-    expect(next?.content_hash).not.toBe(original?.content_hash);
-    expect(installStateStatus(refreshed.state, env).drift.status).toBe('consistent');
   }));
 
   test('update resolves the recorded selection on this host', () => {

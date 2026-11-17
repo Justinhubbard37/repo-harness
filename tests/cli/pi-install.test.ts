@@ -261,7 +261,7 @@ describe('Pi package and skill installation', () => {
     f.write(claude, '{"theme":"original claude"}\n');
     f.write(codex, '{"theme":"original codex"}\n');
     rmSync(join(f.home, '.bun/bin/rh'));
-    const isolatedPath = f.env.PATH.split(delimiter).filter(directory => !existsSync(join(directory, 'repo-harness'))).join(delimiter);
+    const isolatedPath = f.env.PATH.split(delimiter).filter(directory => !['repo-harness', 'rh', 'repo-harness-hook'].some(name => existsSync(join(directory, name)))).join(delimiter);
     const result = spawnSync(process.execPath, [CLI, 'install', '--plugins', 'pi', '--no-cli', '--no-external-skills', '--no-codegraph', '--json'],
       { cwd: f.root, env: { ...f.env, PATH: isolatedPath, PI_FIXTURE_FAIL_REMOVE: '1' }, encoding: 'utf8', timeout: 60_000 });
     expect(result.status).toBe(1);

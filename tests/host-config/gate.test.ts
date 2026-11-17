@@ -5,14 +5,21 @@ import { join } from 'node:path';
 import type { FragmentEdit, HostConfigStrategy, HostPath } from '../../src/core/host-config/types';
 import { openHostConfigGate, type HostConfigFileChange } from '../../src/effects/host-config/gate';
 import { replaceTarget } from '../../src/effects/host-config/store';
+import { jsonFragment } from '../../src/core/host-config/json-fragment';
 
 /** A `key=value` line format: the selector is the key. */
+function keyLineMatch(content: string, selector: string): RegExpExecArray | null {
+  return new RegExp(`^${selector.replace(/\./g, '\\.')}=.*\\n`, 'm').exec(content);
+}
 function keyLineEdit(content: string, selector: string, value: string): FragmentEdit {
-  const match = new RegExp(`^${selector.replace(/\./g, '\\.')}=.*\\n`, 'm').exec(content);
+  const match = keyLineMatch(content, selector);
   const inserted = `${selector}=${value}\n`;
   return match ? { at: match.index, removed: match[0], inserted } : { at: content.length, removed: '', inserted };
 }
-const keyLine: HostConfigStrategy<string> = { locate: () => null, apply: keyLineEdit };
+const keyLine: HostConfigStrategy<string> = {
+  locate: (content, selector) => { const match = keyLineMatch(content, selector); return match ? { start: match.index, end: match.index + match[0].length } : null; },
+  apply: keyLineEdit,
+};
 
 /** The same format with an edit of the value only: the inserted text does not name its selector. */
 const valueOnly: HostConfigStrategy<string> = {
@@ -127,7 +134,7 @@ test('an edit since rh last wrote a file is a sticky external change, also when 
   expect(g.ledger().files[g.a].external_change).toBe(true);
 });
 
-test('a file that the user edited before a later rh write is kept by a revert', () => {
+test('a file that the user edited before a later rh write is kept by a revert; the first backup stays, and the edited file goes to the vault apart', () => {
   for (const first of ['created', 'replaced', 'text_block'] as const) {
     // A whole-file writer may not replace a text_block file (see the user value test).
     for (const later of first === 'text_block' ? ['apply'] : ['apply', 'delegate']) {
@@ -139,8 +146,8 @@ test('a file that the user edited before a later rh write is kept by a revert', 
       if (later === 'apply') f.gate().apply([f.change(path, '2')]);
       else f.gate().delegate([path], ([target]) => writeFileSync(target!, readFileSync(target!, 'utf8').replace('rh=1', 'rh=2')));
       const record = f.ledger().files[path];
-      expect({ kind: record.kind, backup: f.vault(record.backup), revert: f.gate().revert().map((entry) => entry.action), text: readFileSync(path, 'utf8') })
-        .toEqual({ kind: first, backup: 'rh=1\nuser=precious\n', revert: ['kept_edited'], text: 'rh=2\nuser=precious\n' });
+      expect({ kind: record.kind, backup: record.backup === null ? null : f.vault(record.backup), external: f.vault(record.external_backup), revert: f.gate().revert().map((entry) => entry.action), text: readFileSync(path, 'utf8') })
+        .toEqual({ kind: first, backup: first === 'created' ? null : 'keep=1\n', external: 'rh=1\nuser=precious\n', revert: ['kept_edited'], text: 'rh=2\nuser=precious\n' });
     }
   }
 });
@@ -200,8 +207,8 @@ test('a user value at a recorded selector stays unless selected, and its bytes g
   expect(setting('rh2', { kind: 'refresh' })).toEqual({ written: [], skipped: [{ code: 'host_config_user_value_kept', file: f.a, owner: 'o1', selector: 'setting' }] });
   expect(readFileSync(f.a, 'utf8')).toBe('setting=USER-EDIT\n');
   setting('rh2', { kind: 'refresh', selected: true });
-  expect({ backup: f.vault(f.ledger().files[f.a].backup), revert: f.gate().revert().map((entry) => entry.action), text: readFileSync(f.a, 'utf8') })
-    .toEqual({ backup: 'setting=USER-EDIT\n', revert: ['kept_edited'], text: 'setting=rh2\n' });
+  expect({ backup: f.vault(f.ledger().files[f.a].backup), external: f.vault(f.ledger().files[f.a].external_backup), revert: f.gate().revert().map((entry) => entry.action), text: readFileSync(f.a, 'utf8') })
+    .toEqual({ backup: 'setting=original\n', external: 'setting=USER-EDIT\n', revert: ['kept_edited'], text: 'setting=rh2\n' });
   // A whole-file writer may not replace a file that holds rh text blocks.
   f.gate().apply([f.change(f.a, 'on')]);
   expect(() => f.gate().delegate([f.a], ([target]) => writeFileSync(target!, 'external\n'))).toThrow(expect.objectContaining({ code: 'host_config_invalid_state' }));
@@ -283,4 +290,46 @@ test('a refresh with no recorded fragment is an override, adopt records an old w
   expect({ text: readFileSync(f.a, 'utf8'), recorded: Object.keys(f.ledger().files) }).toEqual({ text: 'keep=1\nrh=old\n', recorded: [f.a] });
   expect(f.gate().revert([f.a]).map((entry) => entry.action)).toEqual(['text_removed']);
   expect(readFileSync(f.a, 'utf8')).toBe('keep=1\n');
+});
+
+test('after a user edit, a revert removes intact add fragments, also after a refresh, restores an intact override from the first backup, and keeps an edited fragment', () => {
+  const f = fixture();
+  const path = join(f.home, 'conf.json');
+  writeFileSync(path, '{"user":1,"o":"user"}');
+  const json = (selector: string, kind: 'add' | 'refresh' | 'override', value: unknown) => ({ owner: 'o1', selector, kind, strategy: jsonFragment, value, selected: kind === 'override' });
+  f.gate().apply([{ path, fragments: [json('a', 'add', 1), json('b', 'add', 1), json('o', 'override', 'rh')] }]);
+  writeFileSync(path, readFileSync(path, 'utf8').replace('"user":1', '"user":2'));
+  // The refresh after the outside edit keeps the first backup as the restore target and keeps the outside edit apart; the fragment kind stays `add`.
+  const first = f.ledger().files[path].backup;
+  f.gate().apply([{ path, fragments: [json('a', 'refresh', 2)] }]);
+  expect([f.ledger().files[path].backup, typeof f.ledger().files[path].external_backup]).toEqual([first, 'string']);
+  expect(f.ledger().fragments.map((entry: { selector: string; kind: string }) => [entry.selector, entry.kind])).toEqual([['b', 'add'], ['o', 'override'], ['a', 'add']]);
+  writeFileSync(path, readFileSync(path, 'utf8').replace('"b":1', '"b":9'));
+  expect(f.gate().revert([path])).toEqual([{ path, action: 'kept_edited', kept: ['b'] }]);
+  expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ user: 2, o: 'user', b: 9 });
+  expect(f.ledger().fragments.map((entry: { selector: string }) => entry.selector)).toEqual(['b']);
+});
+
+test('a revert removes an emptied container only when the record proves rh created it, also under an owner filter; an override backup is 0600', () => {
+  const f = fixture();
+  const path = join(f.home, '.claude.json');
+  const allow = { owner: 'o1', selector: 'permissions.allow[rule]', kind: 'add' as const, strategy: jsonFragment, value: 'rule' };
+  for (const [original, filter, left] of [
+    ['{"permissions":{"allow":[]},"theme":"dark"}', undefined, { permissions: { allow: [] }, theme: 'light' }],
+    ['{"permissions":{"allow":[]},"theme":"dark"}', { owner: 'o1' }, { permissions: { allow: [] }, theme: 'light' }],
+    ['{"permissions":{},"theme":"dark"}', { owner: 'o1' }, { permissions: {}, theme: 'light' }],
+    ['{"theme":"dark"}', undefined, { theme: 'light' }],
+    ['{"theme":"dark"}', { owner: 'o1' }, { theme: 'light' }],
+  ] as const) {
+    writeFileSync(path, original);
+    f.gate().apply([{ path, backup: 'overrides-only', fragments: [allow] }]);
+    writeFileSync(path, readFileSync(path, 'utf8').replace('dark', 'light'));
+    expect(f.gate().revert([path], filter).map((entry) => entry.action), original).toEqual(['text_removed']);
+    expect(JSON.parse(readFileSync(path, 'utf8')), original).toEqual(left);
+    if (filter) f.gate().revert([path]);
+  }
+  writeFileSync(path, '{"mcpServers":{"codegraph":{"command":"user"}}}');
+  const backup = f.gate().apply([{ path, backup: 'overrides-only', fragments: [{ owner: 'o1', selector: 'mcpServers.codegraph', kind: 'override', strategy: jsonFragment, value: { command: 'rh' }, selected: true }] }]);
+  expect(backup.written.length).toBe(1);
+  expect(statSync(join(f.root, 'vault', String(f.ledger().files[path].backup).replace('sha256:', ''))).mode & 0o777).toBe(0o600);
 });

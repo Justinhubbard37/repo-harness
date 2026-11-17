@@ -37,16 +37,15 @@ limits host cleanup; shared profile surfaces are retired on `--target both`
 (the default). Install and uninstall accept only `--location global`.
 `--location local` is rejected before configuration reads or writes.
 
-Cleanup removes tagged hook commands and global working-rule blocks, unchanged
-profile-owned skills/rules/agents/links, proven CodeGraph registrations, and the
-product's helper configuration fields. Sibling hooks, configuration keys,
-user-edited surfaces and vault contents remain. Newly recorded Codex request-input
-and CodeGraph configuration changes restore their original values when the current
-fragment still matches the installation receipt. The private
-`~/.repo-harness/configuration-restore.json` is static installation history, retained
-for repeated uninstall and reinstall provenance; restored entries become inactive,
-and a no-op reinstall cannot reacquire ownership from history. It does not activate
-a runtime.
+Cleanup removes global working-rule blocks, unchanged profile-owned
+skills/rules/agents/links and the product's helper configuration fields. The host
+configuration files (`~/.codex/config.toml`, `~/.codex/hooks.json`,
+`~/.claude/settings.json`, `~/.claude.json`) revert by the host-config ledger in
+`~/.repo-harness/config/`: a file that nobody changed since rh wrote it returns to
+its bytes before rh; in a changed file, rh removes each entry that it added and that
+is still as rh wrote it, and the other entries stay and are reported. Sibling hooks,
+configuration keys, user-edited surfaces and vault contents remain. It does not
+activate a runtime.
 
 Unproven old configuration, malformed configuration, changed owned surfaces and an
 edited managed block (the Global Working Rules block or the runtime-state ignore block)
@@ -57,12 +56,6 @@ completion. A preserved shared/pre-existing
 third-party installation is not claimed as repo-harness-owned.
 
 Standalone CodeGraph configuration and global install/update share one host lock.
-Before external mutation, a private pending receipt records only selected configuration
-fragments. Interrupted setup blocks ordinary mutation and cleanup; use
-`rh uninstall --recover-interrupted --dry-run` to preview restoration,
-then `rh uninstall --recover-interrupted` to apply it. This explicit
-recovery restores the recorded fragments even if they were edited after interruption;
-sibling fields remain. The target must include every affected host.
 
 Package-manager globals, the official Codex plugin, the MCP config,
 archives and runtime history remain. Repository unadoption and package removal are

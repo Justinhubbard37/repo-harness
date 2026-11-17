@@ -2,12 +2,12 @@ import { createHash } from 'crypto';
 import { versions } from '../../src/cli/installer/install-profile';
 import { beforeAll, test, expect } from 'bun:test';
 import { installStateFixturePath, seedGlobalPackageFixture } from '../helpers/install-ownership';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync, symlinkSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync, symlinkSync, lstatSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, relative } from 'path';
 import { spawnSync } from 'child_process';
 import { runUserUninstall } from '../../src/cli/installer/uninstall';
-import { configurationReceiptPath, withConfigurationMutation, writePrivateConfiguration } from '../../src/cli/installer/configuration-ownership';
+import { configurationReceiptPath } from '../../src/cli/installer/configuration-ownership';
 import { requestUserInputFragment } from '../../src/cli/installer/targets/codex';
 import { tomlFragment } from '../../src/core/host-config/toml-fragment';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
@@ -63,7 +63,8 @@ test('fresh adapter-only uninstall is idempotent',()=>fixture((home,env)=>{
  rhWritesInputMode(env,join(home,'.codex/config.toml'));
  put(home,'.codex/hooks.json',JSON.stringify({hooks:buildManagedHooks('codex')}));
  expect(runUserUninstall({target:'both',env}).exitCode).toBe(0);
- expect(existsSync(join(home,'.codex/hooks.json'))).toBe(false);
+ // The migration does not prove that rh created the file or its event arrays, so they stay, empty.
+ expect(Object.values(JSON.parse(readFileSync(join(home,'.codex/hooks.json'),'utf8')).hooks).flat()).toEqual([]);
  const after=tree(home);expect(runUserUninstall({target:'both',env}).exitCode).toBe(0);expect(tree(home)).toBe(after);
 }));
 test('target codex retains Claude and shared profile configuration',()=>fixture((home,env)=>{
@@ -96,16 +97,18 @@ test('malformed receipt prevents all mutation',()=>fixture((home,env)=>{
  put(home,'.codex/hooks.json',JSON.stringify({hooks:buildManagedHooks('codex')}));
  const before=tree(home);expect(runUserUninstall({target:'both',env}).exitCode).toBe(1);expect(tree(home)).toBe(before);
 }));
-test('symlinked host root is never traversed for cleanup',()=>fixture((home,env)=>{
+test('a symlinked host root is followed: rh entries go from the linked hook file, and the link stays',()=>fixture((home,env)=>{
  put(home,'outside/hooks.json',JSON.stringify({hooks:buildManagedHooks('codex')}));symlinkSync(join(home,'outside'),join(home,'.codex'));
- const before=readFileSync(join(home,'outside/hooks.json'),'utf8');expect(runUserUninstall({target:'both',env}).exitCode).toBe(1);expect(readFileSync(join(home,'outside/hooks.json'),'utf8')).toBe(before);
+ expect(runUserUninstall({target:'both',env}).exitCode).toBe(0);expect(Object.values(JSON.parse(readFileSync(join(home,'outside/hooks.json'),'utf8')).hooks).flat()).toEqual([]);expect(lstatSync(join(home,'.codex')).isSymbolicLink()).toBe(true);
 }));
 
 test('restores existing MCP config without deleting sibling registrations or permissions',()=>fixture((home,env)=>{
  const path=join(home,'.claude.json');
- const writeOwnedConfiguration=(target:string,content:string,root:string)=>withConfigurationMutation([target],root,()=>writePrivateConfiguration(target,content,root));
- put(home,'.claude.json',JSON.stringify({mcpServers:{codegraph:{command:'original'},user:{command:'keep'}},allowedTools:['user-tool']}));
- writeOwnedConfiguration(path,JSON.stringify({mcpServers:{codegraph:{command:'new'},user:{command:'keep'}},allowedTools:['user-tool','mcp__codegraph__*']}),home);
+ // An earlier rh version replaced the user's server and added the tool rule, and recorded both in its receipt.
+ put(home,'.claude.json',JSON.stringify({mcpServers:{codegraph:{command:'new'},user:{command:'keep'}},allowedTools:['user-tool','mcp__codegraph__*']}));
+ put(home,'.repo-harness/configuration-restore.json',JSON.stringify({protocol:1,changes:[
+  {path,selector:'mcpServers.codegraph',before:JSON.stringify({command:'original'}),installed:JSON.stringify({command:'new'}),active:true},
+  {path,selector:'allowedTools.codegraph',before:null,installed:JSON.stringify('mcp__codegraph__*'),active:true}]}));
  // An old Codex receipt entry beside a spelling that the Codex migration rejects: a Claude uninstall leaves both alone.
  const codex=join(home,'.codex/config.toml');const codexEntry={path:codex,selector:'default_mode_request_user_input',before:null,installed:'default_mode_request_user_input = true\n',active:true};
  put(home,'.codex/config.toml','"default_mode_request_user_input" = true\n');
@@ -115,6 +118,23 @@ test('restores existing MCP config without deleting sibling registrations or per
  expect(readFileSync(codex,'utf8')).toBe('"default_mode_request_user_input" = true\n');
  expect(JSON.parse(readFileSync(configurationReceiptPath(home),'utf8')).changes).toContainEqual(codexEntry);
  expect(runUserUninstall({target:'claude',env}).status).toBe('complete');
+}));
+test('an old receipt entry whose value the user changed stays and is reported, in the dry run and in the uninstall',()=>fixture((home,env)=>{
+ const path=join(home,'.claude.json');const edited=JSON.stringify({mcpServers:{codegraph:{command:'edited'}}});
+ put(home,'.claude.json',edited);
+ put(home,'.repo-harness/configuration-restore.json',JSON.stringify({protocol:1,changes:[{path,selector:'mcpServers.codegraph',before:null,installed:JSON.stringify({command:'new'}),active:true}]}));
+ const line=`[unresolved] ${path}: changed since rh wrote it; preserved: mcpServers.codegraph`;
+ for(const dryRun of [true,false]){const result=runUserUninstall({target:'claude',env,dryRun});expect(result.status,String(dryRun)).toBe('partial');expect(result.lines,String(dryRun)).toContain(line);}
+ expect(readFileSync(path,'utf8')).toBe(edited);
+}));
+test('the migration keeps a container and a file that held only that container before rh',()=>fixture((home,env)=>{
+ const path=join(home,'.claude.json');const server={command:'new'};
+ for(const before of ['{"theme":"user","mcpServers":{}}','{"mcpServers":{}}']){
+  put(home,'.claude.json',before.replace('{}',JSON.stringify({codegraph:server})));
+  put(home,'.repo-harness/configuration-restore.json',JSON.stringify({protocol:1,changes:[{path,selector:'mcpServers.codegraph',before:null,installed:JSON.stringify(server),active:true}]}));
+  expect(runUserUninstall({target:'claude',env}).status,before).toBe('complete');
+  expect(readFileSync(path,'utf8'),before).toBe(before);
+ }
 }));
 test('restores Codex MCP section while preserving other TOML tables',()=>fixture((home,env)=>{
  const path=join(home,'.codex/config.toml');
@@ -190,7 +210,7 @@ test('old transaction-owned MCP projection composes with hook removal',()=>fixtu
  const projection=JSON.stringify({server,allowedTools:['mcp__codegraph__*']});
  profile(home,[{...ownedFile(path,''),owner:'architecture',managed_marker:'codegraph-config-projection',content_hash:`sha256:${createHash('sha256').update(projection).digest('hex')}`}]);
  const result=runUserUninstall({target:'both',env});expect(result.status,result.lines.join('\n')).toBe('complete');
- expect(JSON.parse(readFileSync(path,'utf8'))).toEqual({mcpServers:{user:{command:'keep'}},allowedTools:['user-tool']});
+ expect(JSON.parse(readFileSync(path,'utf8'))).toEqual({mcpServers:{user:{command:'keep'}},allowedTools:['user-tool'],hooks:Object.fromEntries(Object.keys(buildManagedHooks('claude')).map(event=>[event,[]]))});
 }));
 test('a reverted record cannot delete a user same-value setting after no-op reinstall',()=>fixture((home,env)=>{
  const path=join(home,'.codex/config.toml');

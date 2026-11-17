@@ -25,6 +25,7 @@ import {
   type CandidateReconciliationReceipt,
 } from '../../src/cli/commands/candidate-reconciliation';
 import { sha256Prefixed } from '../../src/core/evidence/sha256';
+import { openHostConfigGate } from '../../src/effects/host-config/gate';
 import { acquireExclusiveDirectoryLock } from '../../src/effects/locking/exclusive-directory-lock';
 
 const ROOT = join(import.meta.dir, '..', '..');
@@ -541,7 +542,8 @@ describe('candidate-bound global runtime reconciliation', () => {
       expect(receipt.reconciliation_scope).toBe('complete');
       expect(receipt.ownership_manifest_digest).toBe(`sha256:${createHash('sha256').update(JSON.stringify(installed?.ownership_manifest)).digest('hex')}`);
       expect(installed?.plugins).toEqual([]);
-      expect(installed?.ownership_manifest.some((surface) => surface.path === join(home, '.codex', 'hooks.json'))).toBe(true);
+      // The hook file is in the host-config ledger, not in the manifest.
+      expect(openHostConfigGate({ env }).recorded(join(home, '.codex', 'hooks.json')).length).toBeGreaterThan(0);
       rollbackInstallHostTransaction(transaction);
     } finally {
       rmSync(root, { recursive: true, force: true });
