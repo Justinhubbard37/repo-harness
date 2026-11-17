@@ -326,6 +326,19 @@ describe('safety hook: Bash host route', () => {
         // The word after a separate -t or --target-directory is its value, also when it starts with `-`.
         [refuse, `cp -t -archive ${repo}/source.txt`, out], [refuse, `cp --target-directory -archive ${repo}/source.txt`, out],
         [refuse, `cp -R -t -archive ${repo}/stage`, out], [refuse, `ln -sf --target-directory -archive ${repo}/source.txt`, out],
+        // #3057: an -exec family template is a simple command judged by the same rules; a word that holds {} is not known.
+        [refuse, `find stage -name b.json -exec cp stage/b.json ${out}/victim.txt \\;`], [refuse, `find stage -name b.json -exec mv stage/b.json ${out}/victim.txt \\;`],
+        [refuse, `find stage -name b.json -exec tee ${out}/victim.txt \\;`], [refuse, `find stage -name b.json -execdir cp {} ${out}/{} \\;`],
+        [null, 'find stage -name b.json -exec cp stage/b.json build/b.json \\;'],
+        // A content write to {} goes through a matched link, so each link below the starts is judged as the kernel resolves it.
+        [refuse, 'find links -name x.txt -exec cp source.txt {} \\;'], [refuse, 'find links -name x.txt -exec tee {} \\;'],
+        [refuse, 'find links -name x.txt -exec truncate -s 0 {} \\;'], [null, "find build -name '*.log' -exec truncate -s 0 {} +"],
+        // A link-following start keeps the judgment of its own entry before its links are walked.
+        [refuse, `find -L ${out}/file-link -type f -exec rm {} +`], [refuse, `find -H ${out}/build-link -type f -exec rm {} +`],
+        [refuse, `find ${out}/link -follow -type f -exec rm {} +`],
+        // A value after `of=` or `--target-directory=` that holds {} keeps its literal directory; an interpreter template passes.
+        [refuse, `find stage -name b.json -exec dd if=source.txt of=${out}/{} \\;`], [refuse, `find stage -name b.json -ok cp --target-directory=${out}/{} source.txt \\;`],
+        [null, "find stage -name '*.py' -exec python3 -m py_compile {} \\;"], [refuse, 'find build -name sub -exec rm {}/../../../outside/victim.txt \\;'],
         // An unknown removal refuses; an unknown overwrite refuses only when its literal directory is outside the roots.
         [refuse, 'rm -rf build/$X'], [refuse, `echo x > ${out}/$X`], [null, 'echo x > "$TARGET"'], [null, 'echo x > build/$X'],
         [null, 'rm -rf build/*'], [null, 'rm -rf build/*/'], [null, 'rm stage/*.json'], [null, 'mv stage/*.json build/'], [null, 'cp stage/*.json build/'],
@@ -340,7 +353,7 @@ describe('safety hook: Bash host route', () => {
       expect(wrong).toEqual([]);
       // The refusal names the resolved outside path, so the local user can authorize it.
       expect(bashSafetyDenial('mv a.txt stage/*', repo, { repoRoot: repo, env, host: 'claude' })?.reason).toContain(`would remove or change ${out},`);
-      expect(bashSafetyDenial('find -L stage -delete', repo, { repoRoot: repo, env, host: 'claude' })?.reason).toContain(`target stage of find following links from ${repo} `);
+      expect(bashSafetyDenial('find -L stage -delete', repo, { repoRoot: repo, env, host: 'claude' })?.reason).toContain(`find following links would remove or change ${out},`);
     } finally {
       if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
       rmSync(root, { recursive: true, force: true });

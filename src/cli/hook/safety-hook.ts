@@ -51,8 +51,13 @@ export interface WriteTarget {
   readonly from?: string | null;
   /** For an unknown target: the absolute literal directory before the first run-time character, when the word has one. */
   readonly prefix?: string;
-  /** The word is above an expansion limit, so its targets are not known: it refuses for every kind, except as `children` allows. */
+  /**
+   * The targets are not known and have no bound (a word above an expansion limit, or a find template path that climbs out of its
+   * match with `..`): it refuses for every kind, except as `children` allows.
+   */
   readonly unbounded?: true;
+  /** A find start that find walks through links: every link below it is judged as the kernel resolves it, within the walk bound. */
+  readonly followed?: true;
   /**
    * An unbounded glob whose run-time part is one name in a known directory: its matches are the children of `dir` that `name`
    * matches, each with a trailing separator when `separator` is set.
@@ -184,6 +189,8 @@ const CHILD_LIMIT = 1000;
 interface CopyWalk { left: number; readonly seen: Set<string>; readonly active: Set<string> }
 /** A directory entry as a listing or a lookup reports it. */
 type ChildEntry = Pick<Dirent, 'name' | 'isFile' | 'isDirectory'>;
+/** A find that follows links reaches every entry below its start the way a recursive copy that writes through links does. */
+const FOLLOWED_WALK = { names: null, follow: true, recursive: true } as const;
 
 class TargetJudge {
   private rootsValue: Root[] | undefined;
@@ -202,6 +209,11 @@ class TargetJudge {
       return needsTarget || target.unbounded ? unknownTargetDenial(target, this.roots, this.userStep) : this.prefixDenial(target);
     }
     if (/^\/dev\//.test(target.path)) return null;
+    if (target.followed) {
+      // The start entry is judged as any removal operand is; then each link below it.
+      return this.denial({ ...target, followed: undefined })
+        ?? this.outputDenial(target, FOLLOWED_WALK, target.path, { left: CHILD_LIMIT, seen: new Set(), active: new Set() });
+    }
     let paths: string[];
     try {
       paths = target.kind !== 'destroy' ? [writeThroughPath(target.path)]
@@ -695,7 +707,8 @@ function restArg(arg: Arg, length: number, home: string): Arg {
   let at = 0;
   for (let count = 0; count < length && at < arg.pattern.length; count++) at += arg.pattern[at] === '\\' ? 2 : 1;
   const rest = itemArg(arg.pattern.slice(at), arg.expand, arg.word, home);
-  return arg.unbounded ? unbounded(rest) : rest;
+  // A part of a word that is not known before the command runs is not known either.
+  return arg.unbounded ? unbounded(rest) : arg.value === null ? { ...rest, value: null } : rest;
 }
 
 /**
@@ -949,6 +962,8 @@ interface FindCommand<T> {
   readonly unknown: T | null;
   /** The file that each `-fprint`, `-fprint0`, `-fls` or `-fprintf` truncates and writes, with its primary. */
   readonly outputs: ReadonlyArray<{ readonly primary: string; readonly file: T }>;
+  /** The words of each `-exec` family template; `-execdir` and `-okdir` run it from the directory of each match. */
+  readonly templates: ReadonlyArray<{ readonly inMatchDirectory: boolean; readonly words: readonly T[] }>;
 }
 
 /**
@@ -980,6 +995,7 @@ function parseFind<T extends Valued>(args: readonly T[]): FindCommand<T> {
     templateFollows: readings.some(found => found.templateFollows),
     unknown: readings.find(found => found.unknown)?.unknown ?? null,
     outputs: [...new Map(readings.flatMap(found => found.outputs).map(output => [output.file, output])).values()],
+    templates: [...new Map(readings.flatMap(found => found.templates).map(template => [template.words[0], template])).values()],
   };
 }
 
@@ -993,6 +1009,7 @@ function readFindExpression<T extends Valued>(args: readonly T[], from: number, 
   let follow = false, writes = false, templateFollows = false, expression = false;
   let unknown: T | null = null;
   const outputs: Array<{ primary: string; file: T }> = [];
+  const templates: Array<{ inMatchDirectory: boolean; words: T[] }> = [];
   for (let i = from; i < args.length; i++) {
     const value = args[i]!.value ?? '';
     if (!expression && !/^[-(!)]/.test(value)) { starts.push(args[i]!); continue; }
@@ -1004,21 +1021,22 @@ function readFindExpression<T extends Valued>(args: readonly T[], from: number, 
     if (value === '-delete') writes = true;
     else if (value === '-follow') follow = true;
     else if (FIND_RUNS.test(value)) {
-      const template: Array<string | null> = [];
-      for (i++; i < args.length && args[i]!.value !== ';' && !(args[i]!.value === '+' && template.at(-1) === '{}'); i++) template.push(args[i]!.value);
-      if (FIND_EXEC_READERS.has(template[0] ?? '')) continue;
+      const template: T[] = [];
+      for (i++; i < args.length && args[i]!.value !== ';' && !(args[i]!.value === '+' && template.at(-1)?.value === '{}'); i++) template.push(args[i]!);
+      if (template.length) templates.push({ inMatchDirectory: value.endsWith('dir'), words: template });
+      if (FIND_EXEC_READERS.has(template[0]?.value ?? '')) continue;
       writes = true;
-      templateFollows ||= template.slice(1).some(word => /\{\}[\\/]/.test(word ?? ''));
+      templateFollows ||= template.slice(1).some(word => /\{\}[\\/]/.test(word.value ?? ''));
     }
     i += operands ?? 0;
   }
-  return { starts, follow, writes, templateFollows, unknown, outputs };
+  return { starts, follow, writes, templateFollows, unknown, outputs, templates };
 }
 
 /**
- * Which starts find follows links from: every start in -L mode, with -follow or with a writing template that passes `{}/`, and a
- * start that is a link in -H mode. A writing find then reaches files below a link that its start path does not name, so the start
- * is an unknown target. A start that cannot be checked counts as a link.
+ * Which starts find follows links from: every start in -L mode, with -follow or with a writing template that passes `{}/` (or
+ * writes content to `{}`, judged by the caller), and a start that is a link in -H mode. A writing find then reaches files below a
+ * link that its start path does not name, so each link below the start is judged. A start that cannot be checked counts as a link.
  */
 function findFollowsLinks(find: FindCommand<Arg>, cwd: string | null): (start: Arg) => boolean {
   if (find.mode === 'L' || find.follow || find.templateFollows) return () => true;
@@ -1047,8 +1065,11 @@ const WRITERS = new Set(['rm', 'unlink', 'shred', 'truncate', 'mv', 'cp', 'ln', 
 const DESTINATION_ROLE = new Set(['cp', 'ln', 'mv']);
 const destinationRole = (target: WriteTarget): WriteTarget => ({ ...target, children: undefined });
 
-/** The write targets of one simple command, run from `cwd` (null when it is not known); every word is expanded first. */
-function commandTargets(cmd: Command, cwd: string | null, home: string): WriteTarget[] {
+/**
+ * The write targets of one simple command, run from `cwd` (null when it is not known); every word is expanded first. In a find
+ * template (`template`), find puts each match in place of `{}`, so a word that holds `{}` is not known before the command runs.
+ */
+function commandTargets(cmd: Command, cwd: string | null, home: string, template = false): WriteTarget[] {
   const targets: WriteTarget[] = [];
   for (const redirect of cmd.redirects) {
     const op = redirect.op.replace(/^\d+/, '');
@@ -1070,7 +1091,10 @@ function commandTargets(cmd: Command, cwd: string | null, home: string): WriteTa
   }
   // Only a writing program lists directories for its glob words.
   if (!WRITERS.has(program)) return targets;
-  const args = expandArgs(raw, cwd, home, !DESTINATION_ROLE.has(program));
+  const args = expandArgs(raw, cwd, home, !DESTINATION_ROLE.has(program)).map(arg => {
+    const word = raw[arg.word]!.value;
+    return template && word.includes('{}') ? { ...arg, value: null } : arg;
+  });
   const each = (kind: TargetKind, list: readonly Arg[]) => list.map(arg => targetOf(kind, program, arg, cwd));
   switch (program) {
     case 'rm': case 'unlink':
@@ -1116,10 +1140,19 @@ function commandTargets(cmd: Command, cwd: string | null, home: string): WriteTa
       // An output file is written whether or not find removes anything, and is judged as a redirect target.
       targets.push(...find.outputs.map(output => targetOf('overwrite', `find ${output.primary}`, output.file, cwd)));
       if (!find.writes) break;
-      const follows = findFollowsLinks(find, cwd);
+      // Each template is a simple command of its own, judged by the same rules; its `{}` paths are judged through the starts.
+      const run = find.templates.flatMap(({ inMatchDirectory, words: [first, ...rest] }) =>
+        commandTargets({ ...cmd, words: raw.slice(first!.word, (rest.at(-1) ?? first!).word + 1), redirects: [] }, inMatchDirectory ? null : cwd, home, true));
+      // A path that starts with `{}` is below a start, so the starts judge it, unless a `..` part climbs out of the match. A content
+      // write to it follows a matched link to its referent, as a walk that follows links reaches it.
+      const fromMatch = (target: WriteTarget) => target.path === null && target.spelled.startsWith('{}');
+      const climbs = (target: WriteTarget) => /(?:^|\/)\.\.(?:\/|$)/.test(target.spelled.slice(2));
+      const found = (target: WriteTarget) => fromMatch(target) && !climbs(target);
+      const follows = run.some(target => found(target) && target.kind !== 'destroy') ? () => true : findFollowsLinks(find, cwd);
       targets.push(...[...find.starts, ...(find.currentDirectory ? [literalArg('.')] : [])].map(arg => follows(arg)
-        ? targetOf('destroy', 'find following links', { ...arg, value: null }, cwd) : targetOf('destroy', 'find', arg, cwd)));
+        ? { ...targetOf('destroy', 'find following links', arg, cwd), followed: true as const } : targetOf('destroy', 'find', arg, cwd)));
       if (find.unknown) targets.push(targetOf('destroy', 'find', { ...find.unknown, value: null }, cwd));
+      targets.push(...run.filter(target => !found(target)).map(target => fromMatch(target) ? { ...target, unbounded: true as const } : target));
       break;
     }
   }
