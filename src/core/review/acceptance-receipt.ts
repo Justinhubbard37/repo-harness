@@ -8,8 +8,12 @@ import { sha256Prefixed } from '../evidence/sha256';
 import { modelFamily } from './model-family';
 import { isBlockingSeverity, type ReviewSeverity } from './finding-severity';
 import { isReviewRuntimeId, type ReviewRuntimeId } from './review-runtimes';
+import type { UserWaiverGrant } from './waiver-grant';
 
 export { canonicalize as stableJson } from '../evidence/canonical-json';
+export { authorityFingerprint, contractCarriesArchiveProjection } from './archive-projection';
+export { assertUserWaiverGrant, validateUserWaiverAuthorization, waiverGrantFingerprint } from './waiver-grant';
+export type { UserWaiverAuthorizationSubject, UserWaiverAuthorization, UserWaiverGrant } from './waiver-grant';
 
 export type AcceptanceDisposition = 'external_pass' | 'user_waiver' | 'reject';
 /** The bound author task session and the models its OAR host observed. */
@@ -169,97 +173,6 @@ function assertModelRelationFields(receipt: AcceptanceReceipt): void {
   }
 }
 
-/** Already-authorized upstream waiver action. References and actor strings are
- * trace data; the trusted Bot must obtain the user's separate waiver decision.
- */
-export interface UserWaiverAuthorizationSubject {
-  repository_root: string;
-  repository_id: string;
-  issue_id: string;
-  campaign_id: string;
-  campaign_sha256: string;
-  admission_sha256: string;
-  grant_sha256: string;
-  goal_sha256: string;
-  actor: string;
-  summary: string;
-}
-export interface UserWaiverAuthorization extends UserWaiverAuthorizationSubject {
-  protocol: 1;
-  kind: 'repo-harness-upstream-waiver-authorization';
-  action: 'human-approved-user-waiver';
-  authorization_ref: string;
-  bot_id: string;
-  /** Epoch milliseconds; expiry is exclusive. */
-  expires_at: number;
-}
-
-export function validateUserWaiverAuthorization(
-  value: unknown, expected: UserWaiverAuthorizationSubject, now: number,
-): Readonly<UserWaiverAuthorization> {
-  function invalid(reason: string): never { return fail(`UserWaiverGrant upstream authorization ${reason}`); }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid('is required');
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) invalid('prototype is invalid');
-  const fields = ['protocol', 'kind', 'action', 'authorization_ref', 'bot_id', 'expires_at',
-    'repository_root', 'repository_id', 'issue_id', 'campaign_id', 'campaign_sha256', 'admission_sha256',
-    'grant_sha256', 'goal_sha256', 'actor', 'summary'];
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (Reflect.ownKeys(value).length !== fields.length || fields.some(field => !Object.hasOwn(descriptors, field))) invalid('fields are invalid');
-  const detached: Record<string, unknown> = {};
-  for (const field of fields) {
-    const descriptor = descriptors[field]!;
-    if (!descriptor.enumerable || !('value' in descriptor)) invalid('fields must be plain data');
-    detached[field] = descriptor.value;
-    if (field !== 'protocol' && field !== 'expires_at'
-      && (typeof descriptor.value !== 'string' || !descriptor.value.trim() || descriptor.value.includes('\0'))) invalid(`${field} is invalid`);
-  }
-  if (detached.protocol !== 1 || detached.kind !== 'repo-harness-upstream-waiver-authorization'
-    || detached.action !== 'human-approved-user-waiver') invalid('action is invalid');
-  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(detached.expires_at)
-    || typeof detached.expires_at !== 'number' || detached.expires_at <= now) invalid('is expired');
-  if (detached.bot_id === expected.actor) invalid('Bot cannot be the execution actor');
-  for (const field of ['campaign_sha256', 'admission_sha256', 'grant_sha256', 'goal_sha256']) {
-    if (!SHA256_PREFIXED_PATTERN.test(detached[field] as string)) invalid(`${field} is invalid`);
-  }
-  for (const [field, expectedValue] of Object.entries(expected)) {
-    if (detached[field] !== expectedValue) invalid(`${field} is stale`);
-  }
-  return Object.freeze(detached as unknown as UserWaiverAuthorization);
-}
-
-export type UserWaiverGrant = {
-  protocol: 3;
-  kind: 'repo-harness-user-waiver-grant';
-  repository_root: string;
-  campaign_sha256: string;
-  admission_sha256: string;
-  grant_sha256: string;
-  goal_sha256: string;
-  actor: string;
-  scope: 'admission-authority';
-  summary: string;
-  issued_at: string;
-  authorization: Readonly<UserWaiverAuthorization>;
-};
-
-/** Structural metadata check. Upstream authorization is validated separately
- * against the freshly observed admission and current time before consumption. */
-export function assertUserWaiverGrant(value: unknown): asserts value is UserWaiverGrant {
-  if (!isRecord(value) || value.protocol !== 3 || value.kind !== 'repo-harness-user-waiver-grant') fail('UserWaiverGrant kind/protocol is invalid');
-  const fields = ['protocol', 'kind', 'repository_root', 'campaign_sha256', 'admission_sha256', 'grant_sha256',
-    'goal_sha256', 'actor', 'scope', 'summary', 'issued_at', 'authorization'];
-  if (Object.keys(value).length !== fields.length || fields.some(field => !Object.hasOwn(value, field))
-    || !isRecord(value.authorization)) fail('UserWaiverGrant fields are invalid');
-  for (const field of ['repository_root', 'campaign_sha256', 'admission_sha256', 'grant_sha256', 'goal_sha256', 'actor', 'scope', 'summary', 'issued_at']) {
-    if (typeof value[field] !== 'string' || !value[field].trim()) fail(`UserWaiverGrant ${field} is required`);
-  }
-  if (value.scope !== 'admission-authority') fail('UserWaiverGrant scope is invalid');
-  for (const field of ['campaign_sha256', 'admission_sha256', 'grant_sha256', 'goal_sha256']) {
-    if (!SHA256_PREFIXED_PATTERN.test(value[field] as string)) fail(`UserWaiverGrant ${field} is invalid`);
-  }
-}
-
 export type ReviewSubject = {
   status: 'ok' | 'unknown';
   scope: 'normalized-final-content';
@@ -275,107 +188,6 @@ export function fail(message: string, code = 1): never {
   const error = new Error(message) as Error & { exitCode?: number };
   error.exitCode = code;
   throw error;
-}
-
-type ArchiveProjectionKind = 'plan' | 'contract' | 'review' | 'notes';
-
-type ArchiveProjectionEntry = {
-  source: string;
-  destination: string;
-  kind: ArchiveProjectionKind;
-};
-
-type ParsedArchiveProjection = {
-  body: string;
-  entries: ArchiveProjectionEntry[];
-  lifecycle: ArchiveProjectionKind;
-  relatedPlan: string;
-  manifestSha256: string;
-};
-
-function archiveProjectionKind(path: string, archived: boolean): ArchiveProjectionKind | null {
-  const patterns: Array<[ArchiveProjectionKind, RegExp]> = archived
-    ? [
-        ['plan', /^plans\/archive\/plan-[^`\r\n]+\.md$/],
-        ['contract', /^tasks\/archive\/contract-[^`\r\n]+\.md$/],
-        ['review', /^tasks\/archive\/review-[^`\r\n]+\.md$/],
-        ['notes', /^tasks\/archive\/notes-[^`\r\n]+\.md$/],
-      ]
-    : [
-        ['plan', /^plans\/plan-[^`\r\n]+\.md$/],
-        ['contract', /^tasks\/contracts\/[^`\r\n]+\.contract\.md$/],
-        ['review', /^tasks\/reviews\/[^`\r\n]+\.review\.md$/],
-        ['notes', /^tasks\/notes\/[^`\r\n]+\.notes\.md$/],
-      ];
-  return patterns.find(([, pattern]) => pattern.test(path))?.[0] ?? null;
-}
-
-function parseArchiveProjection(content: string): ParsedArchiveProjection | null {
-  const projectionMarker = '> **Archive Projection V1**:';
-  const archiveEnvelope = /^(?<envelope>> \*\*Archived\*\*: \d{4}-\d{2}-\d{2} \d{2}:\d{2}\r?\n> \*\*Related Plan\*\*: (?<relatedPlan>plans\/archive\/[^\r\n]+)\r?\n> \*\*Outcome\*\*: (?:Completed|Abandoned|Superseded)\r?\n> \*\*Lifecycle\*\*: (?<lifecycle>plan|contract|review|notes)\r?\n> \*\*Parent Run ID\*\*: [^\s\r\n]+\r?\n(?<projection>(?:> \*\*Archive Projection V1\*\*: `[^`\r\n]+` => `[^`\r\n]+`\r?\n)*)\r?\n)/;
-  const envelope = archiveEnvelope.exec(content);
-  if (!envelope) {
-    if (content.includes(projectionMarker)) fail('archive projection envelope is malformed');
-    return null;
-  }
-
-  const projectionText = envelope.groups?.projection ?? '';
-  if (projectionText === '') return null;
-
-  const entries: ArchiveProjectionEntry[] = [];
-  const linePattern = /^> \*\*Archive Projection V1\*\*: `([^`\r\n]+)` => `([^`\r\n]+)`\r?$/gm;
-  for (const match of projectionText.matchAll(linePattern)) {
-    const source = match[1];
-    const destination = match[2];
-    const sourceKind = archiveProjectionKind(source, false);
-    const destinationKind = archiveProjectionKind(destination, true);
-    if (sourceKind === null || destinationKind === null || sourceKind !== destinationKind) {
-      fail('archive projection entry crosses an unsupported workflow family');
-    }
-    entries.push({ source, destination, kind: sourceKind });
-  }
-  if (entries.length === 0 || entries.length !== projectionText.trimEnd().split(/\r?\n/).length) {
-    fail('archive projection entries are malformed');
-  }
-  if (new Set(entries.map((entry) => entry.source)).size !== entries.length
-    || new Set(entries.map((entry) => entry.destination)).size !== entries.length) {
-    fail('archive projection entries must be one-to-one');
-  }
-  const planEntry = entries.find((entry) => entry.kind === 'plan');
-  if (!planEntry || planEntry.destination !== envelope.groups?.relatedPlan) {
-    fail('archive projection related plan is inconsistent');
-  }
-  const lifecycle = envelope.groups?.lifecycle as ArchiveProjectionKind;
-  if (!entries.some((entry) => entry.kind === lifecycle)) {
-    fail('archive projection does not contain its lifecycle artifact');
-  }
-
-  let normalized = content.slice(envelope[0].length);
-  for (const entry of [...entries].sort((left, right) => right.destination.length - left.destination.length)) {
-    normalized = normalized.replaceAll(entry.destination, entry.source);
-  }
-  const canonicalEntries = [...entries].sort((left, right) => left.source.localeCompare(right.source));
-  return {
-    body: normalized,
-    entries,
-    lifecycle,
-    relatedPlan: envelope.groups?.relatedPlan ?? '',
-    manifestSha256: sha256Prefixed(canonicalize({ protocol: 1, entries: canonicalEntries })),
-  };
-}
-
-function normalizeArchiveProjection(content: string): string {
-  const parsed = parseArchiveProjection(content);
-  if (parsed) return parsed.body;
-  const legacyEnvelope = /^> \*\*Archived\*\*: \d{4}-\d{2}-\d{2} \d{2}:\d{2}\r?\n> \*\*Related Plan\*\*: plans\/archive\/[^\r\n]+\r?\n> \*\*Outcome\*\*: (?:Completed|Abandoned|Superseded)\r?\n> \*\*Lifecycle\*\*: (?:contract|review|notes)\r?\n> \*\*Parent Run ID\*\*: [^\s\r\n]+\r?\n\r?\n/;
-  return content.replace(legacyEnvelope, '');
-}
-
-export function authorityFingerprint(content: string): string {
-  const normalized = normalizeArchiveProjection(content)
-    .replace(/^> \*\*Status\*\*:[ \t]*.+$/m, '> **Status**: <lifecycle>')
-    .replace(/^> \*\*Last Updated\*\*:[ \t]*.+$/m, '> **Last Updated**: <lifecycle>');
-  return sha256Prefixed(normalized);
 }
 
 export function parseAcceptancePolicy(contractText: string): AcceptancePolicy {
@@ -514,14 +326,6 @@ export function buildAcceptanceVerificationObservation(basis: AcceptanceVerifica
     observation_id: acceptanceVerificationObservationId(basis),
     ...basis,
   };
-}
-
-export function contractCarriesArchiveProjection(content: string): boolean {
-  return parseArchiveProjection(content) !== null;
-}
-
-export function waiverGrantFingerprint(grant: UserWaiverGrant): string {
-  return sha256Prefixed(canonicalize(grant));
 }
 
 export function validateFindings(value: unknown): AcceptanceFinding[] {
