@@ -58,7 +58,7 @@ const SIXTEEN: readonly TriageThemeV1[] = [
 function rulesRead(report: Partial<TriageReportV1>, dirty = false): RulesRead {
   const status = ruleStatus({ judgment: [], themes: SIXTEEN, field_errors: [], evidence_errors: [], ...report }, 'github:owner/repo',
     { head: 'abcdef0123456789abcdef0123456789abcdef01', blob: 'b'.repeat(40), dirty });
-  const snapshot = decodeRulesSnapshot({ protocol: 1, kind: 'operator_rules', repository_id: REGISTRY.repositories[0]!.repository_id, collected_at: new Date(NOW - 180_000).toISOString(), status });
+  const snapshot = decodeRulesSnapshot({ protocol: 1, kind: 'operator_rules', repository_id: REGISTRY.repositories[0]!.repository_id, collected_at: new Date(NOW - 180_000).toISOString(), status, prompts: [], routes: null, herdr: 'unavailable' });
   return { state: 'ok', snapshot };
 }
 

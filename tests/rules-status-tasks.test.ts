@@ -6,7 +6,7 @@ import { DEFAULT_SEATS_CONFIG } from '../src/core/board/seats-settings';
 import { candidateId, describeRuleStatus, ruleStatus, type RuleStatusV1, type RuleTaskProgress } from '../src/core/ci/rule-candidates';
 import { candidateMarker, RULES_PARENT_MARKER } from '../src/core/ci/rule-prompt';
 import * as collector from '../src/effects/board/collect';
-import { collectRulesTasks } from '../src/effects/rules/tasks';
+import { collectRulesTasks, RULES_TASKS_GH_CALL_LIMIT } from '../src/effects/rules/tasks';
 import { commitAll, initGitRepo, run, withTempRepo } from './helpers/repo-fixture';
 
 const REPOSITORY = 'Ancienttwo/repo-harness';
@@ -160,6 +160,16 @@ test('a failed board read keeps discovered identities and does not leak provider
   expect(task(result)).toMatchObject({ issue: 1475, progress: 'unknown', reason: 'github_read_failed' });
   expect(result.themes[0]!.actions[1]!.task).toBeNull();
   expect(JSON.stringify(result)).not.toContain('private provider detail');
+});
+
+test('a board read that does not end stops at the gh call limit and keeps discovered identities', () => {
+  const source = remote();
+  boardSpy = spyOn(collector, 'collectBoard').mockImplementation((input) => {
+    for (;;) collector.readGhJson(input, ['repo', 'view', '--json', 'nameWithOwner']);
+  });
+  const result = collectRulesTasks(status(), { repo_root: '/unused', host, gh_runner: source.runner });
+  expect(task(result)).toMatchObject({ issue: 1475, progress: 'unknown', reason: 'github_read_failed' });
+  expect(source.calls).toHaveLength(RULES_TASKS_GH_CALL_LIMIT);
 });
 
 test('the real board collector and source decoder compose without a live seat', () => {

@@ -2,8 +2,10 @@ import { afterEach, expect, spyOn, test } from 'bun:test';
 import * as childProcess from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ROUTING_CLASSES } from '../src/core/board/seats-settings';
 import { ruleStatus } from '../src/core/ci/rule-candidates';
-import { decodeRulesSnapshot, RULES_UNAVAILABLE_REASONS, type RulesSnapshotV1 } from '../src/core/operator/rules';
+import { promotionCandidate, renderPromotionPrompt } from '../src/core/ci/rule-prompt';
+import { decodeRulesSnapshot, RULES_UNAVAILABLE_REASONS, type RulesRouteV1, type RulesSnapshotV1 } from '../src/core/operator/rules';
 import { startOperatorServer } from '../src/effects/operator/server';
 import { RULES_CLI_ENTRY, RULES_COLLECT_INTERVAL_MS, RULES_COMMAND_TIMEOUT_MS, runRulesProcess, startRulesCollector, type RulesCollectorHandle, type RulesProcessRunner, type RulesRepositoryCache } from '../src/effects/operator/rules-collector';
 import { repoHarnessRepoIdFor } from '../src/effects/repo-registry';
@@ -28,12 +30,26 @@ function fixture() {
   register();
   return { root, repo, home, id, registry, register, env: sandboxEnv({ HOME: home, REPO_HARNESS_HOME: home }) };
 }
+const ROUTES: readonly RulesRouteV1[] = ROUTING_CLASSES.map(task => task === 'frontend'
+  ? { class: task, seat: null, runtime: null, model: null }
+  : { class: task, seat: 'worker-light', runtime: 'pi', model: 'magpie/codex/gpt-6-astra' });
 function snapshot(id = 'repo-a'): RulesSnapshotV1 {
-  return { protocol: 1, kind: 'operator_rules', repository_id: id, collected_at: AT, status: ruleStatus({
+  const ledger = ruleStatus({
     judgment: [], field_errors: [], evidence_errors: [], themes: [{ key: 'alpha', theme: 'alpha', name: 'Alpha', seen: 3,
       prevention_rule: 'Keep evidence.', why: 'The earlier fix missed the cause.', correction_sources: ['#10'],
       enforced_by: 'judgment', promoted: null, lines: [3] }],
-  }, 'github:owner/repo', { head: 'a'.repeat(40), blob: 'b'.repeat(40), dirty: false }) };
+  }, 'github:owner/repo', { head: 'a'.repeat(40), blob: 'b'.repeat(40), dirty: false });
+  // The `--tasks` fields: one filed task with its pull request and one with no task.
+  const [enforce, promote] = ledger.themes[0]!.actions;
+  const status = { ...ledger, orchestration: { parent: 7, plan_comment: true, coordinator_claim: false }, themes: [{ ...ledger.themes[0]!, actions: [
+    { ...enforce!, task: { issue: 8, url: 'https://github.com/owner/repo/issues/8', route: 'important_fast', progress: 'unknown', reason: 'claim_unknown',
+      seat: 'worker-important', pull_request: { number: 9, url: 'https://github.com/owner/repo/pull/9', head_sha: 'c'.repeat(40), base_sha: 'd'.repeat(40) } } },
+    { ...promote!, task: null },
+  ] }] } as RulesSnapshotV1['status'];
+  const prompts = [enforce!, promote!].flatMap(action => ROUTING_CLASSES.map(route => ({
+    candidate_id: action.candidate_id, route, prompt: renderPromotionPrompt(promotionCandidate(status, action.candidate_id), route),
+  })));
+  return { protocol: 1, kind: 'operator_rules', repository_id: id, collected_at: AT, status, prompts, routes: ROUTES, herdr: 'ready' };
 }
 function collect(options: Parameters<typeof startRulesCollector>[0]) {
   const collector = startRulesCollector(options); collectors.push(collector); return collector;
@@ -83,13 +99,13 @@ test('collector reads only on its five-minute cycle, replaces failures, recovers
   let next!: () => void;
   let result: Awaited<ReturnType<RulesProcessRunner>> = { exit_code: 0, stdout: JSON.stringify(snapshot(f.id).status) };
   let calls = 0;
-  const collector = collect({ env: { ...f.env, GIT_DIR: '/not-the-repository' }, clock: {
+  const collector = collect({ env: { ...f.env, GIT_DIR: '/not-the-repository' }, read_routes: async () => ROUTES, read_herdr: () => 'ready', clock: {
     now: () => new Date(AT),
     setTimeout: (callback, ms) => { expect(ms).toBe(RULES_COLLECT_INTERVAL_MS); next = callback; return {} as ReturnType<typeof setTimeout>; },
     clearTimeout: () => {},
   }, run_process: async (argv, options) => {
     calls++;
-    expect(argv).toEqual([RULES_CLI_ENTRY, 'rules', 'status', '--json', '--target', f.repo]);
+    expect(argv).toEqual([RULES_CLI_ENTRY, 'rules', 'status', '--json', '--tasks', '--target', f.repo]);
     expect(options.cwd).toBe(f.repo);
     expect(options.env.GIT_DIR).toBeUndefined();
     expect(options.timeout_ms).toBe(RULES_COMMAND_TIMEOUT_MS);
@@ -140,9 +156,9 @@ test('real CLI output is served unchanged, including exit 1 ledger errors; GET s
     }
     for (const valid of [true, false]) {
       writeFileSync(join(f.repo, 'tasks/lessons.md'), ledger(valid ? '3×' : 'not-a-count'));
-      const cli = run(process.execPath, [RULES_CLI_ENTRY, 'rules', 'status', '--json', '--target', f.repo], f.repo, f.env);
+      const cli = run(process.execPath, [RULES_CLI_ENTRY, 'rules', 'status', '--json', '--tasks', '--target', f.repo], f.repo, f.env);
       expect({ status: cli.status, stderr: cli.stderr }).toEqual({ status: valid ? 0 : 1, stderr: '' });
-      const collector = collect({ env: f.env }); await collector.settled();
+      const collector = collect({ env: f.env, read_routes: async () => null }); await collector.settled();
       cache = collector.read(f.id);
       expect(cache.state).toBe('ready');
       const spawn = spyOn(childProcess, 'spawn');
@@ -154,6 +170,10 @@ test('real CLI output is served unchanged, including exit 1 ledger errors; GET s
         const body = await response.json() as RulesSnapshotV1;
         expect(body.status).toEqual(JSON.parse(cli.stdout));
         expect(body.status.ledger.valid).toBe(valid);
+        const actions = body.status.themes.flatMap(theme => theme.actions).length;
+        if (valid) expect(actions).toBeGreaterThan(0);
+        expect({ prompts: body.prompts.length, routes: body.routes, herdr: body.herdr })
+          .toEqual({ prompts: valid ? actions * ROUTING_CLASSES.length : 0, routes: null, herdr: 'unavailable' });
         if (!valid) expect(body.status.ledger.field_errors.length).toBeGreaterThan(0);
         else {
           expect(body.status.themes).toHaveLength(1);
@@ -198,7 +218,7 @@ test('bounded runner retains exit 1 stdout and refuses timeout, abort, output ov
 test('close aborts an active collection and waits for its runner', async () => {
   const f = fixture();
   let aborted = false;
-  const collector = collect({ env: f.env, run_process: async (_argv, { signal }) => new Promise(resolve => {
+  const collector = collect({ env: f.env, read_routes: async () => null, run_process: async (_argv, { signal }) => new Promise(resolve => {
     signal.addEventListener('abort', () => { aborted = true; resolve(null); }, { once: true });
   }) });
   await collector.close(); expect(aborted).toBe(true);

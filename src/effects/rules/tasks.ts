@@ -3,7 +3,7 @@ import { BoardSourceError, field, issueClaim, type BoardParentReadV1 } from '../
 import type { RuleOrchestrationV1, RuleStatusV1, RuleTaskV1 } from '../../core/ci/rule-candidates';
 import { RULES_PARENT_MARKER } from '../../core/ci/rule-prompt';
 import { isRecord } from '../../core/evidence/is-record';
-import { BoardCollectError, collectBoard, readGhJson, readParent, type BoardCollectInput } from '../board/collect';
+import { BoardCollectError, collectBoard, readGhJson, readParent, runGh, type BoardCollectInput } from '../board/collect';
 import { promptMarker } from './promote';
 
 interface TaskIssue {
@@ -13,6 +13,19 @@ interface TaskIssue {
 }
 
 type TaskReadInput = Omit<BoardCollectInput, 'parent' | 'repository'>;
+
+/** The gh calls of one task read, the board read included; a paged list is one call. */
+export const RULES_TASKS_GH_CALL_LIMIT = 100;
+
+/** Every board and readiness gh call goes through `gh_runner`, so one counter bounds the whole read. */
+function limitGhCalls(input: TaskReadInput): TaskReadInput {
+  let calls = 0;
+  return { ...input, gh_runner: (args) => {
+    calls += 1;
+    if (calls > RULES_TASKS_GH_CALL_LIMIT) throw new BoardCollectError(`gh call limit ${RULES_TASKS_GH_CALL_LIMIT} reached`);
+    return runGh(input, args);
+  } };
+}
 
 /** REST lists include bodies; the board's issue projection deliberately does not. */
 function issues(input: TaskReadInput, path: string): TaskIssue[] {
@@ -82,7 +95,8 @@ function attach(status: RuleStatusV1, orchestration: RuleOrchestrationV1, task: 
  * Opt-in GitHub enrichment. Read errors do not change the ledger or its exit status.
  * The CLI composition root supplies boardHostPorts; this effect never selects a host plugin.
  */
-export function collectRulesTasks(status: RuleStatusV1, input: TaskReadInput): RuleStatusV1 {
+export function collectRulesTasks(status: RuleStatusV1, unlimited: TaskReadInput): RuleStatusV1 {
+  const input = limitGhCalls(unlimited);
   const orchestration = { parent: null, plan_comment: false, coordinator_claim: false } as {
     parent: number | null; plan_comment: boolean; coordinator_claim: boolean;
   };

@@ -23,6 +23,7 @@ import { decodeCliInventory, unavailableCliInventory, type CliInventorySnapshotV
 import { startDocsCollector, type DocsRepositoryCache } from './docs-collector';
 import { startTestsCollector, type TestsRepositoryCache } from './tests-collector';
 import { startRulesCollector, type RulesRepositoryCache } from './rules-collector';
+import { OPERATOR_RULES_PROMOTIONS_ROUTE, OPERATOR_RULES_RECONCILE_ROUTE, rulesPromoteWriteRoute, rulesReconcileWriteRoute } from './rules-promote-route';
 import { decodeRulesSnapshot, type RulesUnavailableReason } from '../../core/operator/rules';
 import { startExecutionCollector, type ExecutionRepositoryCache } from './execution-collector';
 import { startArchitectureMapCollector, type ArchitectureMapRepositoryCache } from './architecture-map-collector';
@@ -150,6 +151,9 @@ export const OPERATOR_ROUTES: readonly OperatorRouteV1[] = Object.freeze([
   Object.freeze({ id: 'cli_inventory', method: 'GET', pattern: OPERATOR_CLI_INVENTORY_PATH, write: false }),
   Object.freeze({ id: 'tests', method: 'GET', pattern: OPERATOR_TESTS_ROUTE.source, write: false }),
   Object.freeze({ id: 'rules', method: 'GET', pattern: OPERATOR_RULES_ROUTE.source, write: false }),
+  // Files one rules promotion task and completes its label and parent link; both run `rh rules promote` in a child process.
+  Object.freeze({ id: 'rules_promote', method: 'POST', pattern: OPERATOR_RULES_PROMOTIONS_ROUTE.source, write: true }),
+  Object.freeze({ id: 'rules_reconcile', method: 'POST', pattern: OPERATOR_RULES_RECONCILE_ROUTE.source, write: true }),
   Object.freeze({ id: 'board', method: 'GET', pattern: OPERATOR_BOARD_ROUTE.source, write: false }),
   Object.freeze({ id: 'board_seats', method: 'GET', pattern: OPERATOR_BOARD_SEATS_ROUTE.source, write: false }),
   Object.freeze({ id: 'board_parents', method: 'GET', pattern: OPERATOR_BOARD_PARENTS_ROUTE.source, write: false }),
@@ -1140,6 +1144,10 @@ export async function startOperatorServer(
     advisorSeatWriteRoute({ admit: run => admitBoardCli(run)?.result ?? null, env: boardEnvironment, send: options.send_advisor }),
     advisorBossCommandWriteRoute({ admit: run => admitBoardCli(run)?.result ?? null, env: boardEnvironment, audit_env: options.env,
       send: options.send_advisor, read: options.read_advisor_transcript }),
+    ...[rulesPromoteWriteRoute, rulesReconcileWriteRoute].map(route => route({
+      // The runtime status reader is bound after the runtime service starts, below.
+      admit: run => admitBoardCli(run)?.result ?? null, env: boardEnvironment, audit_env: options.env, read_herdr: () => readHerdr(),
+    })),
   ].filter(route => !injectedWriteRoutes.some(injected => injected.id === route.id))
     .concat(injectedWriteRoutes);
   // The inventory is the one write authority: a handler it does not declare
@@ -1600,7 +1608,7 @@ export async function startOperatorServer(
         sendRefusal(request, response, 400, errorBody('invalid_request', 'Rules accept no query parameters.'), headOnly);
         return;
       }
-      const cache = (options.read_rules ?? rules?.read ?? (() => ({ state: 'unavailable', reason: 'rules_pending' }) as const))(rulesRoute[1]!);
+      const cache = readRules(rulesRoute[1]!);
       if (cache.state !== 'ready') {
         const refusal = RULES_UNAVAILABLE[cache.reason];
         sendRefusal(request, response, refusal.status, errorBody(cache.reason, refusal.message, refusal.next_action), headOnly);
@@ -1842,7 +1850,10 @@ export async function startOperatorServer(
   const tests = options.tests_collector && !options.read_tests
     ? startTestsCollector({ env: options.env, read_dev_activity: options.read_dev_activity ?? devActivity?.read ?? unavailableDevActivitySnapshot })
     : null;
-  const rules = options.rules_collector && !options.read_rules ? startRulesCollector({ env: options.env }) : null;
+  const readRuntimeStatus = options.read_runtime_status ?? runtimeService?.read ?? unavailableRuntimeOverlay;
+  const readHerdr = () => readRuntimeStatus().status;
+  const rules = options.rules_collector && !options.read_rules ? startRulesCollector({ env: options.env, read_herdr: readHerdr }) : null;
+  const readRules = options.read_rules ?? rules?.read ?? ((): RulesRepositoryCache => ({ state: 'unavailable', reason: 'rules_pending' }));
   const execution = options.execution_collector && !options.read_execution_state ? startExecutionCollector({ env: options.env }) : null;
   const worktrees = options.worktree_collector && !options.read_worktrees ? startWorktreeCollector({ env: options.env }) : null;
   const architectureMap = options.architecture_map_collector && !options.read_architecture_map

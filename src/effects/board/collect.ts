@@ -107,7 +107,7 @@ export function boardAvailabilityFailure(error: unknown): error is BoardCollectE
 }
 
 /** One finished gh call, as spawnSync reports it. `signal`, the timeout error and a launch error explain a null status. */
-interface GhCallResult {
+export interface GhCallResult {
   readonly status: number | null; readonly stdout: string; readonly stderr?: string;
   readonly signal?: NodeJS.Signals | null; readonly error?: Error;
 }
@@ -137,7 +137,7 @@ function bufferLimitError(args: readonly string[]): GhOutputLimitError {
 }
 
 /** A gh call killed at `GH_MAX_BUFFER_BYTES` is a `BoardCollectError` that names the limit: its signal is no short availability. */
-function runGh(input: GhInput, args: readonly string[]): GhCallResult {
+export function runGh(input: GhInput, args: readonly string[]): GhCallResult {
   const result = input.gh_runner?.(args) ?? spawnSync(input.gh_bin ?? process.env.REPO_HARNESS_GH_BIN ?? 'gh', [...args], {
     cwd: input.repo_root, env: { ...process.env, GH_HOST: 'github.com' }, encoding: 'utf-8', timeout: GH_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: GH_MAX_BUFFER_BYTES,
   });
