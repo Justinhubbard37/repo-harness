@@ -246,7 +246,7 @@ describe('package-owned admitted test runner', () => {
   }, 30_000);
 
   test('contains no bare Bun test fallback for package_test criteria', () => {
-    const source = readFileSync(join(ROOT, 'src/effects/evidence/verification-execution.ts'), 'utf-8');
+    const source = readFileSync(join(ROOT, 'src/effects/evidence/verification-toolchain.ts'), 'utf-8');
     expect(source).toContain('args: ["run", "--cwd", owner, "test", "--", testRelative]');
     expect(source).not.toContain('args: ["test", testRelative]');
   });

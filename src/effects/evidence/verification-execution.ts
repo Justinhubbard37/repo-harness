@@ -1,15 +1,10 @@
-import { captureReadonlyGitTree } from '../git/readonly-virtual-tree';
-import { currentReadonlyObservation, observationReadFileSync as readFileSync, observationExecFileSync as execFileSync } from '../readonly-observation';
 import { randomUUID } from "crypto";
-import { accessSync, constants, existsSync, lstatSync, mkdtempSync, realpathSync, rmSync, statSync } from "fs";
-import { tmpdir } from "os";
-import { delimiter, isAbsolute, join, relative, resolve } from "path";
+import { isAbsolute, resolve } from "path";
 
 import { canonicalize } from "../../core/evidence/canonical-json";
-import { SHA256_PREFIXED_PATTERN } from "../../core/evidence/sha256-pattern";
 import { sha256Prefixed } from "../../core/evidence/sha256";
-import type { EvidenceEventRecord, GenesisRecord, JsonValue, AdmittedReviewSubjectIdentity, EvalCatalogSubjectIdentity } from "../../core/evidence/types";
-import { redactPayloadStrings, SECRET_DENYLIST_ENV_KEYS } from "../../core/evidence/redaction";
+import type { JsonValue, AdmittedReviewSubjectIdentity, EvalCatalogSubjectIdentity } from "../../core/evidence/types";
+import { redactPayloadStrings } from "../../core/evidence/redaction";
 import {
   fingerprintVerificationCheck,
   fingerprintVerificationCheckExecution,
@@ -18,108 +13,72 @@ import {
   type VerificationPlan,
 } from "../../core/evidence/verification-plan";
 import { readEvalCatalogPlan, type EvalCatalogSource } from "./eval-catalog";
-import { observeActiveReviewAdmission } from "../admission/issue-goal";
 import { resolveGitCommonDirectory } from "../git/common-directory";
-import {
-  acquireExclusiveDirectoryLock,
-  ExclusiveLockContentionError,
-} from "../locking/exclusive-directory-lock";
+import { acquireExclusiveDirectoryLock, ExclusiveLockContentionError } from "../locking/exclusive-directory-lock";
 import { resolveInsideRepo } from "../path-safety";
-import { redactProcessOutput, runProcess } from "../process-runner";
+import { runProcess } from "../process-runner";
 import { createFileExclusiveDurably, writeFileDurably } from "../atomic-append";
-import { resolveBlobsDir } from "./paths";
 import { LEDGER_EPOCH_START_SHA } from "./epoch";
-import { appendEvidenceEvent, appendGenesisRecord, readAcceptedEvents, readGenesisRecord } from "./event-log";
+import { appendEvidenceEvent, appendGenesisRecord, readGenesisRecord } from "./event-log";
 import { collectDenylistSecretValues } from "./secret-env";
-import { gitExecFileSync } from '../git/runner';
+import {
+  cacheKey,
+  captureGitVirtualTreeSnapshot,
+  declaredEnvironmentHash,
+  redactKnownEnvironmentValues,
+  resolveExecutionCwd,
+  resolvePackageTest,
+  resolveToolchain,
+  verificationChildEnv,
+  type EvidenceContext,
+  type PreparedContext,
+  type EvalBinding,
+} from "./verification-toolchain";
+import {
+  EVENT_TYPE,
+  PRODUCER,
+  admittedIdentity,
+  baselineResult,
+  buildReport,
+  currentResult,
+  ledgerView,
+  missingResult,
+  priorExecutionExists,
+  readAdmission,
+  reusableResult,
+  reviewAuthority,
+  type ExecutionPayload,
+  type ExecutionReport,
+  type VerificationExecutionResult,
+  type VerificationReportStatus,
+  type VerificationExecutionReport,
+  type EvalExecutionReport,
+  type VerificationInput,
+  type VerificationOutcome,
+} from "./verification-ledger-view";
 
-const EVENT_TYPE = "verification_execution.result";
-const PRODUCER = "verification-execution";
+export { captureGitVirtualTreeSnapshot } from "./verification-toolchain";
+export type { GitVirtualTreeSnapshot } from "./verification-toolchain";
+export {
+  validateMaterializedVerificationExecutionReport,
+  validateMaterializedVerificationExecutionOutcome,
+  verificationOutcomeProvenance,
+} from "./verification-ledger-view";
+export type {
+  VerificationExecutionState,
+  VerificationReportStatus,
+  VerificationExecutionResult,
+  VerificationEvaluation,
+  VerificationExecutionReport,
+  EvalExecutionReport,
+  VerificationOutcome,
+  ReviewAdmissionSource,
+  VerificationInput,
+  VerificationExecutionReportValidation,
+} from "./verification-ledger-view";
+
 const REQUEST_LOCK_ROOT = "repo-harness/verification-execution";
 const VERIFICATION_DIAGNOSTIC_MAX_BYTES = 16 * 1024 * 1024;
-
-export type VerificationExecutionState = "executed" | "reused" | "baseline" | "missing";
-export type VerificationReportStatus = "passed" | "failed" | "missing" | "needs_verification_plan" | "waiting";
-
-export interface GitVirtualTreeSnapshot {
-  readonly head_commit: string;
-  readonly tree_hash: string;
-  readonly snapshot_hash: string;
-}
-
-export interface VerificationExecutionResult {
-  readonly id: string;
-  readonly kind: VerificationCheck["kind"];
-  readonly target: "current_exact" | "historical_baseline_with_current_delta";
-  readonly passed: boolean;
-  readonly message: string;
-  readonly duration_ms: number;
-  readonly timed_out: boolean;
-  readonly exit_code: number | null;
-  readonly signal: NodeJS.Signals | null;
-  readonly execution: VerificationExecutionState;
-  readonly cache_key: string;
-  readonly command: string;
-  readonly force_reason: string | null;
-  readonly execution_id: string | null;
-  readonly run_file: string | null;
-  readonly failure_log_file: string | null;
-}
-
-export interface VerificationEvaluation {
-  readonly requirements_hash: string;
-  readonly snapshot_hash: string;
-  readonly exact_passed: number;
-  readonly baseline_passed: number;
-  readonly unmet_check_ids: readonly string[];
-  readonly snapshot_changed_during_execution: boolean;
-}
-
-export interface VerificationExecutionReport {
-  readonly protocol: 2;
-  readonly kind: "verification_execution_report";
-  readonly target: {
-    readonly campaign_sha256: string;
-    readonly admission_sha256: string;
-    readonly grant_sha256: string;
-    readonly plan_hash: string;
-    readonly snapshot_hash: string;
-    readonly tree_hash: string;
-    readonly head_commit: string;
-  };
-  readonly passed: boolean;
-  readonly status: VerificationReportStatus;
-  readonly evaluation: VerificationEvaluation;
-  readonly results: readonly VerificationExecutionResult[];
-}
-
-export interface EvalExecutionReport extends Omit<VerificationExecutionReport, "kind" | "target"> {
-  readonly kind: "eval_execution_report";
-  readonly target: {
-    readonly catalog_sha256: string;
-    readonly eval_id: string;
-    readonly eval_sha256: string;
-    readonly plan_hash: string;
-    readonly snapshot_hash: string;
-    readonly tree_hash: string;
-    readonly head_commit: string;
-  };
-}
-type ExecutionReport = VerificationExecutionReport | EvalExecutionReport;
-type ReviewBinding = Pick<AdmittedReviewSubjectIdentity, "authority_kind" | "campaign_sha256" | "admission_sha256" | "grant_sha256">;
-type EvalBinding = Pick<EvalCatalogSubjectIdentity, "authority_kind" | "catalog_sha256" | "eval_id" | "eval_sha256">;
-type AuthorityBinding = ReviewBinding | EvalBinding;
-
-export type VerificationOutcome = VerificationExecutionReport;
-
-export type ReviewAdmissionSource = Parameters<typeof observeActiveReviewAdmission>[0];
-
-export interface VerificationInput {
-  readonly repoRoot: string;
-  readonly authority: ReviewAdmissionSource;
-  readonly env?: NodeJS.ProcessEnv;
-  readonly timeoutMs?: number;
-}
 
 export interface ExecuteAdmittedVerificationInput extends VerificationInput {
   readonly reportFile?: string;
@@ -137,222 +96,6 @@ export interface AdmittedVerificationValidation {
   readonly plan: VerificationPlan;
 }
 
-export interface VerificationExecutionReportValidation {
-  readonly valid: true;
-  readonly report: VerificationExecutionReport;
-}
-
-type ExecutionPayload = AuthorityBinding & {
-  readonly protocol: 2;
-  readonly plan_hash: string;
-  readonly check_id: string;
-  readonly check_fingerprint: string;
-  readonly execution_spec_hash: string;
-  readonly inputs_hash: string;
-  readonly toolchain_hash: string;
-  readonly snapshot_hash: string;
-  readonly cache_key: string;
-  readonly execution_id: string;
-  readonly run_file: string;
-  readonly run_record_hash: string;
-  readonly passed: boolean;
-}
-
-/** Ledger and admitted plan facts. Historical validation needs no live toolchain. */
-interface EvidenceContext {
-  readonly repoRoot: string;
-  readonly binding: AuthorityBinding;
-  readonly assertCurrent: () => void;
-  readonly plan: VerificationPlan;
-  readonly planHash: string;
-  readonly snapshot: GitVirtualTreeSnapshot;
-  readonly env: NodeJS.ProcessEnv;
-}
-
-interface PreparedContext extends EvidenceContext {
-  readonly toolchainHash: string;
-  readonly envProviderId: string;
-}
-
-function git(repoRoot: string, args: readonly string[], env?: NodeJS.ProcessEnv): string {
-  return gitExecFileSync(["-C", repoRoot, ...args], {
-    encoding: "utf8",
-    env: env ? { ...process.env, ...env } : process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-}
-
-function virtualTreeOnce(repoRoot: string): string {
-  const temporary = mkdtempSync(join(tmpdir(), "repo-harness-verification-index-"));
-  const indexPath = join(temporary, "index");
-  const indexEnv = { GIT_INDEX_FILE: indexPath };
-  try {
-    try {
-      git(repoRoot, ["read-tree", "HEAD"], indexEnv);
-    } catch {
-      git(repoRoot, ["read-tree", "--empty"], indexEnv);
-    }
-    git(repoRoot, ["add", "-A", "--", "."], indexEnv);
-    return git(repoRoot, ["write-tree"], indexEnv);
-  } finally {
-    rmSync(temporary, { recursive: true, force: true });
-  }
-}
-
-/**
- * Capture the complete Git-visible filesystem as a virtual tree. A temporary
- * index preserves modes, deletions, symlinks, gitlinks, staged/unstaged edits,
- * and non-ignored untracked files without changing the caller's index.
- */
-export function captureGitVirtualTreeSnapshot(repoRoot: string): GitVirtualTreeSnapshot {
-  const root = resolve(repoRoot);
-  const before = git(root, ["status", "--porcelain=v2", "--untracked-files=all"]);
-  const snapshot = currentReadonlyObservation() ? captureReadonlyGitTree : virtualTreeOnce;
-  const firstTree = snapshot(root);
-  const secondTree = snapshot(root);
-  const after = git(root, ["status", "--porcelain=v2", "--untracked-files=all"]);
-  if (firstTree !== secondTree || before !== after) {
-    throw new Error("repository changed while capturing the verification source snapshot");
-  }
-  let headCommit: string;
-  try {
-    headCommit = git(root, ["rev-parse", "HEAD"]);
-  } catch {
-    headCommit = "unborn";
-  }
-  return {
-    head_commit: headCommit,
-    tree_hash: firstTree,
-    // An empty commit changes provenance but not the source inputs consumed by
-    // a check. Keep HEAD in the snapshot record while keying input identity to
-    // the complete virtual tree itself.
-    snapshot_hash: sha256Prefixed(canonicalize({ tree_hash: firstTree })),
-  };
-}
-
-function readAdmission(input: Pick<VerificationInput, "repoRoot" | "authority">) {
-  if (realpathSync(input.repoRoot) !== realpathSync(input.authority.repoRoot)) {
-    throw new Error("verification admission repository does not match execution repository");
-  }
-  return observeActiveReviewAdmission(input.authority);
-}
-
-function admittedIdentity(active: ReturnType<typeof observeActiveReviewAdmission>) {
-  return { campaign_sha256: active.admission.campaign_sha256,
-    admission_sha256: active.admission.admission_sha256, grant_sha256: active.grant_sha256 };
-}
-
-function reviewAuthority(input: Pick<VerificationInput, "repoRoot" | "authority">) {
-  const active = readAdmission(input);
-  const binding: ReviewBinding = { authority_kind: "review-admission", ...admittedIdentity(active) };
-  return { binding, plan: active.admission.verification_plan, assertCurrent: () => {
-    const current = readAdmission(input);
-    if (current.revision !== active.revision
-      || canonicalize(admittedIdentity(current)) !== canonicalize(admittedIdentity(active))) {
-      throw new Error("verification admission changed during evaluation");
-    }
-  } };
-}
-
-function authorityBinding(identity: AdmittedReviewSubjectIdentity | EvalCatalogSubjectIdentity | ExecutionPayload): AuthorityBinding {
-  return identity.authority_kind === "review-admission"
-    ? { authority_kind: identity.authority_kind, campaign_sha256: identity.campaign_sha256,
-        admission_sha256: identity.admission_sha256, grant_sha256: identity.grant_sha256 }
-    : { authority_kind: identity.authority_kind, catalog_sha256: identity.catalog_sha256,
-        eval_id: identity.eval_id, eval_sha256: identity.eval_sha256 };
-}
-
-function sameAuthority(left: AuthorityBinding, right: AuthorityBinding): boolean {
-  return canonicalize(left) === canonicalize(right);
-}
-
-function resolveExecutablePath(command: string, env: NodeJS.ProcessEnv): string {
-  const candidates = command.includes("/") || command.includes("\\")
-    ? [command]
-    : (env.PATH ?? "").split(delimiter).filter(Boolean).flatMap((directory) => {
-        const base = join(directory, command);
-        if (process.platform !== "win32") return [base];
-        const extensions = (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
-        return [base, ...extensions.map((extension) => `${base}${extension.toLowerCase()}`), ...extensions.map((extension) => `${base}${extension.toUpperCase()}`)];
-      });
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, constants.X_OK);
-      const canonical = realpathSync(candidate);
-      if (statSync(canonical).isFile()) return canonical;
-    } catch {
-      // Continue through PATH candidates; absence is rejected below.
-    }
-  }
-  throw new Error(`verification toolchain executable is unavailable: ${command}`);
-}
-
-function versionOf(command: string, read: () => string): string {
-  try {
-    const version = read().trim();
-    if (!version) throw new Error("empty version output");
-    return version;
-  } catch (error) {
-    throw new Error(`verification toolchain version probe failed for ${command}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-function resolveToolchain(env: NodeJS.ProcessEnv): { readonly hash: string; readonly providerId: string } {
-  const git = resolveExecutablePath(env.REPO_HARNESS_GIT_BIN || "git", env);
-  const bash = resolveExecutablePath(env.REPO_HARNESS_BASH_BIN || "/bin/bash", env);
-  const bun = resolveExecutablePath(env.REPO_HARNESS_BUN_BIN || process.execPath, env);
-  const packageRoot = resolve(import.meta.dir, "../../..");
-  let manifest: unknown;
-  try {
-    manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-  } catch (error) {
-    throw new Error(`verification runner package manifest is unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const packageVersion = typeof manifest === "object" && manifest !== null && !Array.isArray(manifest)
-    ? (manifest as Record<string, unknown>).version
-    : undefined;
-  if (typeof packageVersion !== "string" || packageVersion.length === 0) {
-    throw new Error("verification runner package version is unavailable");
-  }
-  const runnerSources = [
-    ["verification-execution", join(packageRoot, "src/effects/evidence/verification-execution.ts")],
-    ["verification-plan", join(packageRoot, "src/core/evidence/verification-plan.ts")],
-    ["eval-catalog", join(packageRoot, "src/effects/evidence/eval-catalog.ts")],
-    ["evidence-redaction", join(packageRoot, "src/core/evidence/redaction.ts")],
-    ["evidence-secret-env", join(packageRoot, "src/effects/evidence/secret-env.ts")],
-    ["process-runner", join(packageRoot, "src/effects/process-runner.ts")],
-    ["process-supervisor", join(packageRoot, "src/effects/process-supervisor.ts")],
-    ["expensive-run-lock", join(packageRoot, "src/effects/expensive-run-lock.ts")],
-    ["process-group-launcher", join(packageRoot, "src/effects/process-group-launcher.ts")],
-    ["process-group-termination", join(packageRoot, "src/effects/process-group-termination.ts")],
-    ["git-runner", join(packageRoot, "src/effects/git/runner.ts")],
-    ["git-common-directory", join(packageRoot, "src/effects/git/common-directory.ts")],
-    ["exclusive-directory-lock", join(packageRoot, "src/effects/locking/exclusive-directory-lock.ts")],
-  ] as const;
-  const sourceHashes = Object.fromEntries(runnerSources.map(([name, path]) => {
-    try {
-      return [name, sha256Prefixed(readFileSync(path))];
-    } catch (error) {
-      throw new Error(`verification runner source is unavailable (${name}): ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }));
-  // File workers share CPU and process startup. Keep discovery bounded under load.
-  const probe = { encoding: "utf8" as const, env, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"], timeout: 15_000 };
-  const toolchain = {
-    protocol: 1,
-    package_version: packageVersion,
-    runner_sources: sourceHashes,
-    platform: { os: process.platform, arch: process.arch },
-    path: env.PATH ?? null,
-    tools: {
-      git: { path: git, version: versionOf(git, () => gitExecFileSync(["--version"], { ...probe, gitBin: git })) },
-      bash: { path: bash, version: versionOf(bash, () => execFileSync(bash, ["--version"], probe)) },
-      bun: { path: bun, version: versionOf(bun, () => execFileSync(bun, ["--version"], probe)) },
-    },
-  };
-  const hash = sha256Prefixed(canonicalize(toolchain));
-  return { hash, providerId: `verification-execution/${hash}` };
-}
 
 function prepareContext(input: Pick<VerificationInput, "repoRoot" | "env">,
   authority: Pick<EvidenceContext, "binding" | "plan" | "assertCurrent">): PreparedContext {
@@ -377,385 +120,6 @@ export function validateAdmittedVerification(
     ...admittedIdentity(admission), plan_hash: hashVerificationPlan(plan), plan };
 }
 
-function declaredEnvironment(check: VerificationCheck, env: NodeJS.ProcessEnv): JsonValue {
-  return Object.fromEntries(check.inputs.env.map((name) => [
-    name,
-    env[name] === undefined ? { present: false } : { present: true, value_hash: sha256Prefixed(env[name]!) },
-  ])) as JsonValue;
-}
-
-function declaredEnvironmentHash(check: VerificationCheck, env: NodeJS.ProcessEnv): string {
-  return sha256Prefixed(canonicalize(declaredEnvironment(check, env)));
-}
-
-function cacheKeyFromIdentity(input: {
-  readonly check: VerificationCheck;
-  readonly snapshotHash: string;
-  readonly toolchainHash: string;
-  readonly inputsHash: string;
-}): string {
-  return sha256Prefixed(canonicalize({
-    protocol: 1,
-    execution_spec_hash: fingerprintVerificationCheckExecution(input.check),
-    snapshot_hash: input.snapshotHash,
-    cwd: input.check.cwd,
-    toolchain_hash: input.toolchainHash,
-    inputs_hash: input.inputsHash,
-  }));
-}
-
-function cacheKey(context: PreparedContext, check: VerificationCheck): string {
-  return cacheKeyFromIdentity({
-    check,
-    snapshotHash: context.snapshot.snapshot_hash,
-    toolchainHash: context.toolchainHash,
-    inputsHash: declaredEnvironmentHash(check, context.env),
-  });
-}
-
-function displayCommand(check: VerificationCheck): string {
-  return redactProcessOutput(check.kind === "command" ? check.command : `bun run test -- ${check.path}`);
-}
-
-function resolveExecutionCwd(repoRoot: string, cwd: string): string {
-  const lexical = cwd === "." ? repoRoot : resolveInsideRepo(repoRoot, cwd);
-  const lexicalPath = typeof lexical === "string" ? lexical : (lexical.ok ? lexical.path : undefined);
-  if (!lexicalPath) throw new Error(typeof lexical === "string" ? "invalid cwd" : lexical.error);
-  const canonicalRoot = realpathSync(repoRoot);
-  const canonicalCwd = realpathSync(lexicalPath);
-  const fromRoot = relative(canonicalRoot, canonicalCwd);
-  if (fromRoot === ".." || fromRoot.startsWith("../") || fromRoot.startsWith("..\\") || isAbsolute(fromRoot)) {
-    throw new Error(`verification cwd resolves outside the repository: ${cwd}`);
-  }
-  if (!statSync(canonicalCwd).isDirectory()) throw new Error(`verification cwd is not a directory: ${cwd}`);
-  return canonicalCwd;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const fromRoot = relative(root, candidate);
-  return fromRoot === "" || (!isAbsolute(fromRoot) && fromRoot !== ".." && !fromRoot.startsWith("../") && !fromRoot.startsWith("..\\"));
-}
-
-function pathEntryExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function resolvePackageTest(
-  context: PreparedContext,
-  check: Extract<VerificationCheck, { readonly kind: "package_test" }>,
-): { readonly command: string; readonly args: readonly string[]; readonly cwd: string } {
-  const canonicalRoot = realpathSync(context.repoRoot);
-  const declaredCwd = resolveExecutionCwd(context.repoRoot, check.cwd);
-  let testPath: string;
-  try {
-    testPath = realpathSync(resolve(declaredCwd, check.path));
-  } catch {
-    throw new Error(`package_test path is missing or symlink-ambiguous: ${check.path}`);
-  }
-  if (!isWithin(canonicalRoot, testPath)) throw new Error(`package_test path resolves outside repository: ${check.path}`);
-
-  let ancestor = statSync(testPath).isDirectory() ? testPath : resolve(testPath, "..");
-  while (isWithin(canonicalRoot, ancestor)) {
-    const manifest = join(ancestor, "package.json");
-    if (pathEntryExists(manifest)) {
-      let canonicalManifest: string;
-      try {
-        canonicalManifest = realpathSync(manifest);
-      } catch {
-        throw new Error(`package_test package manifest is symlink-ambiguous: ${check.path}`);
-      }
-      if (canonicalManifest !== manifest || !isWithin(canonicalRoot, canonicalManifest)) {
-        throw new Error(`package_test package manifest is symlink-ambiguous: ${check.path}`);
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(readFileSync(canonicalManifest, "utf8"));
-      } catch {
-        throw new Error(`package_test package manifest is malformed: ${check.path}`);
-      }
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        throw new Error(`package_test package manifest is malformed: ${check.path}`);
-      }
-      const scripts = (parsed as Record<string, unknown>).scripts;
-      if (typeof scripts !== "object" || scripts === null || Array.isArray(scripts)) {
-        throw new Error(`package_test package scripts.test is missing: ${check.path}`);
-      }
-      const testScript = (scripts as Record<string, unknown>).test;
-      if (typeof testScript !== "string" || testScript.trim().length === 0) {
-        throw new Error(`package_test package scripts.test is missing: ${check.path}`);
-      }
-      const owner = relative(canonicalRoot, ancestor) || ".";
-      const testRelative = relative(ancestor, testPath);
-      const bun = context.env.REPO_HARNESS_BUN_BIN || process.execPath;
-      return { command: bun, args: ["run", "--cwd", owner, "test", "--", testRelative], cwd: canonicalRoot };
-    }
-    if (ancestor === canonicalRoot) break;
-    const parent = resolve(ancestor, "..");
-    if (parent === ancestor) break;
-    ancestor = parent;
-  }
-  throw new Error(`package_test package owner is missing: ${check.path}`);
-}
-
-function verificationChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const scrubbed: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (key === "BASH_ENV" || key.startsWith("REPO_HARNESS_")) continue;
-    scrubbed[key] = value;
-  }
-  return scrubbed;
-}
-
-function redactKnownEnvironmentValues(value: string, env: NodeJS.ProcessEnv): string {
-  let redacted = value;
-  const secrets = SECRET_DENYLIST_ENV_KEYS
-    .map((key) => env[key])
-    .filter((secret): secret is string => typeof secret === "string" && secret.length > 0)
-    .sort((left, right) => right.length - left.length);
-  for (const secret of secrets) redacted = redacted.split(secret).join(sha256Prefixed(secret));
-  return redacted;
-}
-
-function payloadOf(repoRoot: string, event: EvidenceEventRecord): ExecutionPayload | null {
-  let value: unknown = event.payload;
-  if (value === undefined && event.blob_sha256) {
-    try {
-      value = JSON.parse(readFileSync(join(resolveBlobsDir(repoRoot), event.blob_sha256), "utf8"));
-    } catch {
-      return null;
-    }
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const authorityHashes = record.authority_kind === "review-admission"
-    ? [record.campaign_sha256, record.admission_sha256, record.grant_sha256]
-    : record.authority_kind === "eval-catalog" && typeof record.eval_id === "string" && record.eval_id.length > 0
-      ? [record.catalog_sha256, record.eval_sha256] : [];
-  if (record.protocol !== 2 || !authorityHashes.length
-    || ![...authorityHashes, record.plan_hash].every(value => typeof value === "string" && SHA256_PREFIXED_PATTERN.test(value))
-    || typeof record.check_id !== "string") return null;
-  if (typeof record.cache_key !== "string" || typeof record.execution_id !== "string" || typeof record.run_file !== "string") return null;
-  if (typeof record.run_record_hash !== "string" || typeof record.passed !== "boolean") return null;
-  if (typeof record.inputs_hash !== "string" || typeof record.toolchain_hash !== "string") return null;
-  return record as unknown as ExecutionPayload;
-}
-
-function executionEvents(context: EvidenceContext): readonly { event: EvidenceEventRecord; payload: ExecutionPayload }[] {
-  return readAcceptedEvents(context.repoRoot).accepted.flatMap((event) => {
-    if (event.event_type !== EVENT_TYPE || event.producer !== PRODUCER || event.trust_class !== "authoritative_machine") return [];
-    const payload = payloadOf(context.repoRoot, event);
-    if (!payload || payload.authority_kind !== context.binding.authority_kind) return [];
-    // Review history is campaign-scoped only for explicit baseline references.
-    // Exact matching below still requires the current admission and grant.
-    if (payload.authority_kind === "review-admission" && context.binding.authority_kind === "review-admission") {
-      if (payload.campaign_sha256 !== context.binding.campaign_sha256) return [];
-    } else if (!sameAuthority(authorityBinding(payload), context.binding)) return [];
-    const identity = event.subject_identity;
-    if (!("authority_kind" in identity)
-      || !sameAuthority(authorityBinding(identity), authorityBinding(payload))
-      || identity.plan_hash !== payload.plan_hash
-      || identity.scope_hash !== payload.plan_hash
-      || identity.subject_hash !== payload.snapshot_hash
-      || identity.command_hash !== payload.check_fingerprint
-      || identity.env_provider_id !== `verification-execution/${payload.toolchain_hash}`
-      || identity.authority_commit !== identity.base_commit
-      || sha256Prefixed(canonicalize({ tree_hash: identity.target_commit })) !== payload.snapshot_hash) return [];
-    return [{ event, payload }];
-  });
-}
-
-interface LedgerView {
-  readonly events: readonly { event: EvidenceEventRecord; payload: ExecutionPayload }[];
-  readonly genesis: GenesisRecord | null;
-}
-
-/**
- * Reads the ledger at most once, on first use. Share one view only between
- * checks with no append between them; take a new view after an append.
- */
-function ledgerView(context: EvidenceContext): LedgerView {
-  let events: LedgerView["events"] | undefined;
-  let genesis: { readonly value: GenesisRecord | null } | undefined;
-  return {
-    get events() { return events ??= executionEvents(context); },
-    get genesis() { return (genesis ??= { value: readGenesisRecord(context.repoRoot) }).value; },
-  };
-}
-
-function readValidRunResult(context: EvidenceContext, payload: ExecutionPayload): VerificationExecutionResult | null {
-  if (!payload.run_file.startsWith(".ai/harness/runs/")) return null;
-  const resolved = resolveInsideRepo(context.repoRoot, payload.run_file);
-  if (!resolved.ok || !resolved.path || !existsSync(resolved.path)) return null;
-  try {
-    const bytes = readFileSync(resolved.path);
-    if (sha256Prefixed(bytes) !== payload.run_record_hash) return null;
-    const record = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
-    if (!(record.protocol === 1
-      && record.kind === "verification_execution_record"
-      && record.execution_id === payload.execution_id
-      && record.cache_key === payload.cache_key
-      && typeof record.result === "object"
-      && record.result !== null
-      && !Array.isArray(record.result))) return null;
-    const result = record.result as unknown as VerificationExecutionResult;
-    return result.passed === payload.passed ? result : null;
-  } catch {
-    return null;
-  }
-}
-
-function currentResult(context: PreparedContext, check: VerificationCheck, ledger: LedgerView): VerificationExecutionResult | null {
-  const key = cacheKey(context, check);
-  const matches = ledger.events.filter(({ payload }) => payload.cache_key === key);
-  const winner = matches[matches.length - 1];
-  if (!winner) return null;
-  const result = readValidRunResult(context, winner.payload);
-  if (!result || result.id !== check.id) return null;
-  if (!result.passed && result.exit_code === 0 && !result.timed_out && result.signal === null) return null;
-  const projected = { ...result, execution: result.passed ? "reused" as const : "executed" as const };
-  const materialized = (redactPayloadStrings({ result: projected } as unknown as JsonValue, collectDenylistSecretValues()) as unknown as { result: VerificationExecutionResult }).result;
-  return matchingImmutableExecution(context, check, materialized, false, context.toolchainHash, ledger) ? projected : null;
-}
-
-function reusableResult(context: PreparedContext, check: VerificationCheck, ledger: LedgerView): VerificationExecutionResult | null {
-  const result = currentResult(context, check, ledger);
-  return result?.passed ? result : null;
-}
-
-function priorExecutionExists(context: PreparedContext, check: VerificationCheck, ledger: LedgerView): boolean {
-  return ledger.events.some(({ payload }) =>
-    payload.execution_spec_hash === fingerprintVerificationCheckExecution(check));
-}
-
-function baselineResult(
-  context: EvidenceContext,
-  check: VerificationCheck,
-  current: ReadonlyMap<string, VerificationExecutionResult>,
-  ledger: LedgerView,
-): VerificationExecutionResult {
-  const key = sha256Prefixed(canonicalize({
-    policy: "baseline_with_delta",
-    plan_hash: context.planHash,
-    snapshot_hash: context.snapshot.snapshot_hash,
-    execution_spec_hash: fingerprintVerificationCheckExecution(check),
-    baseline: check.baseline ?? null,
-    delta: (check.delta_checks ?? []).map((id) => ({ id, cache_key: current.get(id)?.cache_key ?? null })),
-  } as unknown as JsonValue));
-  const base = {
-    id: check.id,
-    kind: check.kind,
-    target: "historical_baseline_with_current_delta" as const,
-    duration_ms: 0,
-    timed_out: false,
-    exit_code: null,
-    signal: null,
-    execution: "missing" as VerificationExecutionState,
-    cache_key: key,
-    command: displayCommand(check),
-    force_reason: null,
-    execution_id: check.baseline?.execution_id ?? null,
-    run_file: check.baseline?.run_file ?? null,
-    failure_log_file: null,
-  };
-  if (!check.baseline || !check.delta_checks) return { ...base, passed: false, message: "baseline reference is incomplete" };
-  const events = ledger.events;
-  const eventMatch = events.find(({ payload }) =>
-    payload.execution_id === check.baseline!.execution_id
-      && payload.run_file === check.baseline!.run_file
-      && payload.execution_spec_hash === fingerprintVerificationCheckExecution(check)
-      && payload.passed
-      && readValidRunResult(context, payload)?.passed === true);
-  if (!eventMatch) return { ...base, passed: false, message: "baseline execution is missing, failed, forged, or stale" };
-  const sameInput = events.filter(({ payload }) => payload.cache_key === eventMatch.payload.cache_key);
-  const latest = sameInput[sameInput.length - 1];
-  if (!latest?.payload.passed || readValidRunResult(context, latest.payload)?.passed !== true) {
-    return { ...base, passed: false, message: "baseline is superseded because a newer execution failed or is invalid" };
-  }
-  const unmet = check.delta_checks.filter((id) => current.get(id)?.passed !== true);
-  if (unmet.length > 0) return { ...base, passed: false, message: `current delta checks are unsatisfied: ${unmet.join(", ")}` };
-  return {
-    ...base,
-    passed: true,
-    message: `historical baseline ${check.baseline.execution_id} retained with current delta checks`,
-    execution: "baseline",
-  };
-}
-
-function skippedResult(check: VerificationCheck, message: string, key: string): VerificationExecutionResult {
-  return {
-    id: check.id,
-    kind: check.kind,
-    target: "current_exact",
-    passed: false,
-    message,
-    duration_ms: 0,
-    timed_out: false,
-    exit_code: null,
-    signal: null,
-    execution: "missing",
-    cache_key: key,
-    command: displayCommand(check),
-    force_reason: null,
-    execution_id: null,
-    run_file: null,
-    failure_log_file: null,
-  };
-}
-
-function missingResult(context: PreparedContext, check: VerificationCheck, message: string): VerificationExecutionResult {
-  return skippedResult(check, message, cacheKey(context, check));
-}
-
-/** A skipped result claims no execution, so only its exact materialized shape is valid. */
-function isMaterializedSkippedResult(check: VerificationCheck, result: VerificationExecutionResult): boolean {
-  if (typeof result.message !== "string" || typeof result.cache_key !== "string") return false;
-  const expected = (redactPayloadStrings(
-    { result: skippedResult(check, result.message, result.cache_key) } as unknown as JsonValue,
-    collectDenylistSecretValues(),
-  ) as unknown as { result: JsonValue }).result;
-  return canonicalize(result as unknown as JsonValue) === canonicalize(expected);
-}
-
-function buildReport(
-  context: EvidenceContext,
-  results: readonly VerificationExecutionResult[],
-  status: VerificationReportStatus,
-  snapshotChanged = false,
-): ExecutionReport {
-  const shared = {
-    protocol: 2 as const,
-    target: {
-      plan_hash: context.planHash,
-      snapshot_hash: context.snapshot.snapshot_hash,
-      tree_hash: context.snapshot.tree_hash,
-      head_commit: context.snapshot.head_commit,
-    },
-    passed: status === "passed",
-    status,
-    evaluation: {
-      requirements_hash: context.planHash,
-      snapshot_hash: context.snapshot.snapshot_hash,
-      exact_passed: results.filter((result) => result.passed && result.target === "current_exact").length,
-      baseline_passed: results.filter((result) => result.passed && result.execution === "baseline").length,
-      unmet_check_ids: results.filter((result) => !result.passed).map((result) => result.id),
-      snapshot_changed_during_execution: snapshotChanged,
-    },
-    results,
-  };
-  if (context.binding.authority_kind === "review-admission") {
-    const review = context.binding;
-    return { ...shared, kind: "verification_execution_report", target: { ...shared.target,
-      campaign_sha256: review.campaign_sha256, admission_sha256: review.admission_sha256, grant_sha256: review.grant_sha256 } };
-  }
-  const evaluation = context.binding;
-  return { ...shared, kind: "eval_execution_report", target: { ...shared.target,
-    catalog_sha256: evaluation.catalog_sha256, eval_id: evaluation.eval_id, eval_sha256: evaluation.eval_sha256 } };
-}
 
 function evaluatePrepared(context: PreparedContext): ExecutionReport {
   const ledger = ledgerView(context);
@@ -778,237 +142,6 @@ export function evaluateAdmittedVerification(input: VerificationInput): Verifica
   if (report.kind !== "verification_execution_report") throw new Error("review authority required");
   if (report.passed) context.assertCurrent();
   return report;
-}
-
-function objectValue(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${field} must be an object`);
-  return value as Record<string, unknown>;
-}
-
-function stringValue(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0) throw new Error(`${field} must be a non-empty string`);
-  return value;
-}
-
-function materializedVerificationCheckId(id: string): string {
-  const projected = redactPayloadStrings({
-    execution_evaluation: { results: [{ id }] },
-  } as unknown as JsonValue, collectDenylistSecretValues()) as {
-    readonly execution_evaluation: { readonly results: readonly [{ readonly id: string }] };
-  };
-  return projected.execution_evaluation.results[0].id;
-}
-
-/** `currentToolchainHash` is null for historical proof, which uses the event's self-bound toolchain identity. */
-function matchingImmutableExecution(
-  context: EvidenceContext,
-  check: VerificationCheck,
-  result: VerificationExecutionResult,
-  requirePass: boolean,
-  currentToolchainHash: string | null,
-  ledger: LedgerView,
-): boolean {
-  return ledger.events.some(({ event, payload }) => {
-    if (currentToolchainHash !== null && (payload.toolchain_hash !== currentToolchainHash
-      || payload.inputs_hash !== declaredEnvironmentHash(check, context.env))) return false;
-    if (!sameAuthority(authorityBinding(payload), context.binding)) return false;
-    if (payload.check_id !== check.id
-      || payload.plan_hash !== context.planHash
-      || payload.check_fingerprint !== fingerprintVerificationCheck(check)
-      || payload.execution_spec_hash !== fingerprintVerificationCheckExecution(check)
-      || payload.snapshot_hash !== context.snapshot.snapshot_hash
-      || payload.cache_key !== result.cache_key
-      || payload.execution_id !== result.execution_id
-      || payload.run_file !== result.run_file
-      || (requirePass && !payload.passed)) return false;
-    const genesis = ledger.genesis;
-    if (!genesis || event.worktree_id !== genesis.worktree_id) return false;
-    const identity = event.subject_identity;
-    if (!("authority_kind" in identity)
-      || !sameAuthority(authorityBinding(identity), authorityBinding(payload))
-      || identity.authority_commit !== identity.base_commit
-      || identity.target_commit !== context.snapshot.tree_hash
-      || identity.scope_hash !== payload.plan_hash
-      || identity.subject_hash !== payload.snapshot_hash
-      || identity.plan_hash !== payload.plan_hash
-      || identity.command_hash !== payload.check_fingerprint
-      || identity.env_provider_id !== `verification-execution/${payload.toolchain_hash}`) return false;
-    const selfBoundCacheKey = cacheKeyFromIdentity({
-      check,
-      snapshotHash: payload.snapshot_hash,
-      toolchainHash: payload.toolchain_hash,
-      inputsHash: payload.inputs_hash,
-    });
-    if (selfBoundCacheKey !== payload.cache_key) return false;
-    const stored = readValidRunResult(context, payload);
-    if (!stored || (requirePass && !stored.passed)) return false;
-    const normalized = { ...result, execution: "executed" as const };
-    const ledgerProjection = (redactPayloadStrings(
-      { result: stored } as unknown as JsonValue,
-      collectDenylistSecretValues(),
-    ) as unknown as { result: JsonValue }).result;
-    return canonicalize(normalized as unknown as JsonValue) === canonicalize(ledgerProjection);
-  });
-}
-
-/**
- * Validate a ledger-writer-projected report against immutable run evidence.
- * Callers must supply the materialized representation consumed by receipts,
- * after the evidence writer's canonical redaction pass. Raw execute/evaluate
- * output containing entropy-redacted leaves is outside this API boundary.
- * The report's frozen snapshot is verified while the current checkout may
- * have moved because receipt/archive readers consume historical facts.
- */
-interface MaterializedVerificationInput {
-  readonly repoRoot: string;
-  readonly authority: ReviewAdmissionSource;
-  readonly report: unknown;
-  readonly env?: NodeJS.ProcessEnv;
-  readonly current?: boolean;
-}
-
-export function validateMaterializedVerificationExecutionReport(input: MaterializedVerificationInput): VerificationExecutionReportValidation {
-  return validateMaterializedOutcome(input, true);
-}
-
-/** Observer admission retains negative immutable outcomes without granting a pass. */
-export function validateMaterializedVerificationExecutionOutcome(input: MaterializedVerificationInput): VerificationExecutionReportValidation {
-  return validateMaterializedOutcome(input, false);
-}
-
-function validateMaterializedOutcome(input: MaterializedVerificationInput, requirePass: boolean): VerificationExecutionReportValidation {
-  const reportObject = objectValue(input.report, "verification report");
-  if (reportObject.protocol !== 2 || reportObject.kind !== "verification_execution_report") {
-    throw new Error("verification report protocol or kind is invalid");
-  }
-  if (requirePass && (reportObject.status !== "passed" || reportObject.passed !== true)) {
-    throw new Error("verification report is not a passing evaluation");
-  }
-  const target = objectValue(reportObject.target, "verification report target");
-  const treeHash = stringValue(target.tree_hash, "verification report target.tree_hash");
-  const snapshotHash = stringValue(target.snapshot_hash, "verification report target.snapshot_hash");
-  if (snapshotHash !== sha256Prefixed(canonicalize({ tree_hash: treeHash }))) throw new Error("verification report snapshot hash is invalid");
-
-  const repoRoot = resolve(input.repoRoot);
-  const admission = readAdmission(input);
-  for (const [key, value] of Object.entries(admittedIdentity(admission))) {
-    if (target[key] !== value) throw new Error(`verification report ${key} does not match admitted authority`);
-  }
-  const plan = admission.admission.verification_plan;
-  const planHash = hashVerificationPlan(plan);
-  if (target.plan_hash !== planHash) throw new Error("verification report plan hash does not match admitted authority");
-  const env = input.env ?? process.env;
-  const currentToolchainHash = input.current ? resolveToolchain(env).hash : null;
-  const context: EvidenceContext = {
-    repoRoot, binding: { authority_kind: "review-admission", ...admittedIdentity(admission) },
-    assertCurrent: () => {
-      const current = readAdmission(input);
-      if (current.revision !== admission.revision || !sameAuthority(
-        { authority_kind: "review-admission", ...admittedIdentity(current) },
-        { authority_kind: "review-admission", ...admittedIdentity(admission) })) throw new Error("verification admission changed during evaluation");
-    }, plan, planHash,
-    snapshot: {
-      head_commit: stringValue(target.head_commit, "verification report target.head_commit"),
-      tree_hash: treeHash,
-      snapshot_hash: snapshotHash,
-    },
-    env,
-  };
-  const ledger = ledgerView(context);
-  if (!Array.isArray(reportObject.results) || reportObject.results.length !== plan.checks.length) {
-    throw new Error("verification report results do not cover the plan exactly");
-  }
-  const expectedByMaterializedId = new Map<string, VerificationCheck>();
-  for (const check of plan.checks) {
-    const materializedId = materializedVerificationCheckId(check.id);
-    if (expectedByMaterializedId.has(materializedId)) {
-      throw new Error("verification report result ids are ambiguous after materialization");
-    }
-    expectedByMaterializedId.set(materializedId, check);
-  }
-  const supplied = new Map<string, VerificationExecutionResult>();
-  for (const raw of reportObject.results) {
-    const candidate = objectValue(raw, "verification report result") as unknown as VerificationExecutionResult;
-    if (typeof candidate.id !== "string") throw new Error("verification report result ids are missing or invalid");
-    const check = expectedByMaterializedId.get(candidate.id);
-    if (!check) throw new Error(`verification report result id is unknown: ${candidate.id}`);
-    if (supplied.has(check.id)) throw new Error("verification report result ids are duplicated");
-    supplied.set(check.id, candidate);
-  }
-  if (supplied.size !== plan.checks.length) {
-    throw new Error("verification report result ids do not cover the plan exactly");
-  }
-  for (const check of plan.checks) {
-    const result = supplied.get(check.id);
-    if (!result || result.kind !== check.kind || typeof result.passed !== "boolean" || (requirePass && result.passed !== true)) throw new Error(`verification report result is invalid: ${check.id}`);
-    if (check.evidence_policy === "current_exact") {
-      // A failed preflight skips later checks. Those skipped results must not
-      // remove the authority of the recorded failure from a negative outcome.
-      const skipped = !requirePass && result.execution === "missing" && isMaterializedSkippedResult(check, result);
-      if (result.target !== "current_exact" || (!skipped && result.execution !== "executed" && result.execution !== "reused")) {
-        throw new Error(`verification report exact result has invalid disposition: ${check.id}`);
-      }
-      if (!skipped && !matchingImmutableExecution(context, check, result, requirePass, currentToolchainHash, ledger)) {
-        throw new Error(`verification report exact result is not backed by immutable evidence: ${check.id}`);
-      }
-    }
-  }
-  for (const check of plan.checks) {
-    if (check.evidence_policy !== "baseline_with_delta") continue;
-    const result = supplied.get(check.id)!;
-    const evaluated = baselineResult(context, check, supplied, ledger);
-    if (requirePass && !evaluated.passed) {
-      throw new Error(`verification report baseline result is not backed by immutable evidence: ${check.id}`);
-    }
-    const projectedExpected = (redactPayloadStrings(
-      { result: evaluated } as unknown as JsonValue,
-      collectDenylistSecretValues(),
-    ) as unknown as { result: JsonValue }).result;
-    if (canonicalize(result as unknown as JsonValue) !== canonicalize(projectedExpected)) {
-      throw new Error(`verification report baseline result was altered: ${check.id}`);
-    }
-  }
-  const results = plan.checks.map((check) => supplied.get(check.id)!);
-  const expected = buildReport(context, results, results.every(result => result.passed) ? "passed" : "failed", false);
-  if (!requirePass && (reportObject.status !== expected.status || reportObject.passed !== expected.passed)) throw new Error("verification report outcome is inconsistent");
-  const evaluation = objectValue(reportObject.evaluation, "verification report evaluation");
-  const projectedEvaluation = redactPayloadStrings(
-    expected.evaluation as unknown as JsonValue,
-    collectDenylistSecretValues(),
-  );
-  if (canonicalize(evaluation as JsonValue) !== canonicalize(projectedEvaluation)) {
-    throw new Error("verification report evaluation metadata is inconsistent");
-  }
-  context.assertCurrent();
-  return { valid: true, report: input.report as VerificationExecutionReport };
-}
-
-export function verificationOutcomeProvenance(input: MaterializedVerificationInput, checkId: string) {
-  const { report } = validateMaterializedVerificationExecutionOutcome(input);
-  const plan = readAdmission(input).admission.verification_plan;
-  const result = report.results.find(item => item.id === materializedVerificationCheckId(checkId));
-  if (!result) throw new Error("verification check is absent");
-  const events = readAcceptedEvents(input.repoRoot).accepted;
-  const offset = events.slice().reverse().findIndex(event => {
-    const payload = payloadOf(input.repoRoot, event);
-    return event.event_type === EVENT_TYPE && event.producer === PRODUCER
-      && payload?.authority_kind === "review-admission"
-      && payload.campaign_sha256 === report.target.campaign_sha256
-      && payload?.execution_id === result.execution_id
-      && payload.check_id === checkId
-      && payload.cache_key === result.cache_key;
-  });
-  if (offset < 0) throw new Error("verification sequence is unavailable");
-  const index = events.length - 1 - offset;
-  const payload = payloadOf(input.repoRoot, events[index]!)!;
-  if (payload.authority_kind !== "review-admission") throw new Error("review authority required");
-  return { report, result, execution_order: index + 1,
-    environment: `verification-execution/${payload.toolchain_hash}`,
-    admission_identity: payload.admission_sha256,
-    grant_identity: payload.grant_sha256,
-    campaign_identity: payload.campaign_sha256,
-    check_set_identity: sha256Prefixed(canonicalize(plan.checks.map(check => check.id))),
-  };
 }
 
 function subjectIdentity(context: PreparedContext, check: VerificationCheck): AdmittedReviewSubjectIdentity | EvalCatalogSubjectIdentity {

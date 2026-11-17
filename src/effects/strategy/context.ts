@@ -134,7 +134,8 @@ export class StrategyReader {
   }
   observationIO(authorityHome?: string): ReadonlyObservationIO {
     const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-    const packaged = new Set(['package.json', 'src/effects/evidence/verification-execution.ts', 'src/core/evidence/verification-plan.ts',
+    const packaged = new Set(['package.json', 'src/effects/evidence/verification-execution.ts',
+      'src/effects/evidence/verification-toolchain.ts', 'src/effects/evidence/verification-ledger-view.ts', 'src/core/evidence/verification-plan.ts',
       'src/core/evidence/redaction.ts', 'src/effects/evidence/secret-env.ts', 'src/effects/process-runner.ts',
       'src/effects/process-supervisor.ts', 'src/effects/expensive-run-lock.ts', 'src/effects/process-group-launcher.ts',
       'src/effects/process-group-termination.ts', 'src/effects/git/common-directory.ts', 'src/effects/locking/exclusive-directory-lock.ts'].map(p => join(packageRoot, p)));

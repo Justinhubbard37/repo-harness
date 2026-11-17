@@ -1263,8 +1263,12 @@ ${path === secondBash ? 'if [ "$1" = --version ]; then sleep 5.1; fi\n' : ''}exe
   }, 30_000);
 });
 
-test("changing an installed Git runner invalidates downstream verification", async () => {
-  const fixture = setupRepo("verification-installed-git-runner");
+test.each([
+  "src/effects/git/runner.ts",
+  "src/effects/evidence/verification-toolchain.ts",
+  "src/effects/evidence/verification-ledger-view.ts",
+])("changing an installed runner source invalidates downstream verification (%s)", async (sourcePath) => {
+  const fixture = setupRepo("verification-installed-runner-source");
   const installed = mkdtempSync(join(tmpdir(), "verification-package-"));
   const packageRoot = join(import.meta.dir, "../..");
   try {
@@ -1277,7 +1281,7 @@ test("changing an installed Git runner invalidates downstream verification", asy
     const input = { repoRoot: fixture.root, authority: currentAuthority(fixture.root, fixture.contractPath), env };
     expect(runner.executeAdmittedVerification(input).passed).toBe(true);
     expect(runner.evaluateAdmittedVerification(input).passed).toBe(true);
-    appendFileSync(join(installed, "src/effects/git/runner.ts"), "\n// changed installed runner bytes\n");
+    appendFileSync(join(installed, sourcePath), "\n// changed installed runner bytes\n");
     expect(runner.evaluateAdmittedVerification(input).passed).toBe(false);
     expect(readFileSync(fixture.counterPath, "utf8")).toBe("x\n");
   } finally {
