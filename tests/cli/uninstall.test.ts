@@ -106,8 +106,14 @@ test('restores existing MCP config without deleting sibling registrations or per
  const writeOwnedConfiguration=(target:string,content:string,root:string)=>withConfigurationMutation([target],root,()=>writePrivateConfiguration(target,content,root));
  put(home,'.claude.json',JSON.stringify({mcpServers:{codegraph:{command:'original'},user:{command:'keep'}},allowedTools:['user-tool']}));
  writeOwnedConfiguration(path,JSON.stringify({mcpServers:{codegraph:{command:'new'},user:{command:'keep'}},allowedTools:['user-tool','mcp__codegraph__*']}),home);
+ // An old Codex receipt entry beside a spelling that the Codex migration rejects: a Claude uninstall leaves both alone.
+ const codex=join(home,'.codex/config.toml');const codexEntry={path:codex,selector:'default_mode_request_user_input',before:null,installed:'default_mode_request_user_input = true\n',active:true};
+ put(home,'.codex/config.toml','"default_mode_request_user_input" = true\n');
+ const receipt=JSON.parse(readFileSync(configurationReceiptPath(home),'utf8'));writeFileSync(configurationReceiptPath(home),JSON.stringify({...receipt,changes:[...receipt.changes,codexEntry]}));
  const result=runUserUninstall({target:'claude',env});expect(result.status,result.lines.join('\n')).toBe('complete');
  expect(JSON.parse(readFileSync(path,'utf8'))).toEqual({mcpServers:{codegraph:{command:'original'},user:{command:'keep'}},allowedTools:['user-tool']});
+ expect(readFileSync(codex,'utf8')).toBe('"default_mode_request_user_input" = true\n');
+ expect(JSON.parse(readFileSync(configurationReceiptPath(home),'utf8')).changes).toContainEqual(codexEntry);
  expect(runUserUninstall({target:'claude',env}).status).toBe('complete');
 }));
 test('restores Codex MCP section while preserving other TOML tables',()=>fixture((home,env)=>{
@@ -196,10 +202,13 @@ test('a reverted record cannot delete a user same-value setting after no-op rein
  const result=runUserUninstall({target:'codex',env});
  expect(readFileSync(path,'utf8')).toContain('true');expect(result.status).toBe('complete');
 }));
-test('an old manifest record of the Codex CodeGraph table migrates to the ledger and uninstall removes the table',()=>fixture((home,env)=>{
- const path=join(home,'.codex/config.toml');const table='[mcp_servers.codegraph]\ncommand = "cg"\n';
- put(home,'.codex/config.toml',`model = "user"\n${table}`);
- profile(home,[{...ownedFile(path,''),owner:'architecture',managed_marker:'codegraph-config-projection',content_hash:`sha256:${createHash('sha256').update(table.trim()).digest('hex')}`}]);
- const result=runUserUninstall({target:'both',env});expect(result.status,result.lines.join('\n')).toBe('complete');
- expect(readFileSync(path,'utf8')).toBe('model = "user"\n');expect(existsSync(join(home,'.repo-harness/install-state.json'))).toBe(false);
-}));
+test('an old manifest record of the Codex CodeGraph table migrates to the ledger and uninstall removes the table',()=>{
+ // The old manifest matched an indented header too.
+ for(const table of ['[mcp_servers.codegraph]\ncommand = "cg"\n','  [mcp_servers.codegraph]\ncommand = "cg"\n'])fixture((home,env)=>{
+  const path=join(home,'.codex/config.toml');
+  put(home,'.codex/config.toml',`model = "user"\n${table}`);
+  profile(home,[{...ownedFile(path,''),owner:'architecture',managed_marker:'codegraph-config-projection',content_hash:`sha256:${createHash('sha256').update(table.trim()).digest('hex')}`}]);
+  const result=runUserUninstall({target:'both',env});expect(result.status,result.lines.join('\n')).toBe('complete');
+  expect(readFileSync(path,'utf8')).toBe('model = "user"\n');expect(existsSync(join(home,'.repo-harness/install-state.json'))).toBe(false);
+ });
+});

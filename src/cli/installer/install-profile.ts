@@ -3,7 +3,10 @@ import { retryWindowsSharingRace } from '../../effects/atomic-append';
 import wazaRules from "../../core/skill-surface/waza-shared-rules.json";
 import { bunGlobalPackageRoot, expectedSkillProjections, skillLinkMatches } from './skill-projection';
 import { configurationReceiptPath } from './configuration-ownership';
-import { hostConfigPaths } from '../../effects/host-config/store';
+import { hostConfigPaths, readLedger, resolveHostPath } from '../../effects/host-config/store';
+import { openHostConfigGate } from '../../effects/host-config/gate';
+import { CODEX_CONFIG_FRAGMENTS, tomlFragment } from '../../core/host-config/toml-fragment';
+import { migrateCodexConfigRecords } from './codex-config-migration';
 import { globalContextBackupEligible, globalContextPath } from './global-context';
 import { acquireRuntimeTransactionLock, assertRuntimeTransactionContext, globalRuntimeScope, runtimeTransactionRoot, type RuntimeTransactionContext, type RuntimeTransactionLock } from '../../effects/locking/runtime-transaction-lock';
 import { randomUUID } from 'crypto';
@@ -761,6 +764,8 @@ export function installProfileHostMutationPaths(env: NodeJS.ProcessEnv = process
     ...ARCHCTX_PACKAGES.map(name => join(bunRoot, 'install', 'global', 'node_modules', name)),
     join(home, '.codex', 'hooks.json'),
     join(home, '.codex', 'config.toml'),
+    // The gate writes the file that a dotfile link names, so the snapshot holds that file as well as the link.
+    resolveHostPath(hostConfigPaths(env), join(home, '.codex', 'config.toml')),
     join(home, '.claude', 'settings.json'),
     join(home, '.claude.json'),
     join(home, '.repo-harness', 'config.json'),
@@ -1065,13 +1070,34 @@ function removeRetiredOwnedSurfaces(
   return unique.map(({ path }) => path);
 }
 
+/**
+ * The architecture plugin's CodeGraph table in `~/.codex/config.toml` goes
+ * with the plugin, through the gate: a table that the user changed stays. An
+ * override record replaced a user's table, so only a whole-file revert gives
+ * that table back.
+ */
+function removeArchitectureCodexTable(env: NodeJS.ProcessEnv): void {
+  const selector = 'mcp_servers.codegraph';
+  const owner = CODEX_CONFIG_FRAGMENTS[selector];
+  const paths = hostConfigPaths(env);
+  const path = join(env.HOME ?? homedir(), '.codex', 'config.toml');
+  const file = resolveHostPath(paths, path);
+  const record = readLedger(paths).fragments.find((entry) => entry.file === file && entry.owner === owner && entry.selector === selector);
+  if (!record || record.kind === 'override' || record.inserted === '') return;
+  openHostConfigGate({ env }).apply([{ path, fragments: [{ owner, selector, kind: 'refresh', strategy: tomlFragment, value: '' }] }]);
+}
+
 export function prepareInstallSelectionSwitch(
   plugins: readonly PluginId[],
   env: NodeJS.ProcessEnv = process.env,
 ): readonly string[] {
+  // The old records of `~/.codex/config.toml` move to the ledger first, so the manifest holds no TOML projection.
+  migrateCodexConfigRecords(env);
   const current = readInstallState(env);
   if (!current) return [];
-  return removeRetiredOwnedSurfaces(plugins, current, env);
+  const removed = removeRetiredOwnedSurfaces(plugins, current, env);
+  if (!ownerEnabled('architecture', plugins)) removeArchitectureCodexTable(env);
+  return removed;
 }
 
 /** The path allowlist, type and hash shape of a recorded ownership surface. */

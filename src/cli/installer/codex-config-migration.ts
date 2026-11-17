@@ -37,6 +37,13 @@ function isFragmentText(value: unknown, selector: CodexConfigSelector): value is
   return value === null || (typeof value === 'string' && codexConfigFragment(value, selector) === value);
 }
 
+/** The receipt's entries of the Codex file as written, and the receipt without them for the JSON reader to validate. */
+export function splitCodexReceiptEntries(raw: any, path: string): { entries: any[]; rest: any } {
+  if (raw === null || !Array.isArray(raw?.changes)) return { entries: [], rest: raw };
+  const entries = raw.changes.filter((entry: any) => entry?.path === path);
+  return { entries, rest: entries.length ? { ...raw, changes: raw.changes.filter((entry: any) => !entries.includes(entry)) } : raw };
+}
+
 /** The receipt's TOML entries; every other entry stays for the JSON reader to validate. */
 function receiptFragments(raw: any, path: string, receiptPath: string): { fragments: OldFragment[]; rest: ConfigurationReceipt | null } {
   if (raw === null || !Array.isArray(raw?.changes)) return { fragments: [], rest: null };
@@ -45,7 +52,7 @@ function receiptFragments(raw: any, path: string, receiptPath: string): { fragme
     const selectors = pending.map((entry: any) => String(entry.selector)).join(', ');
     throw invalid(`interrupted Codex configuration change (${selectors}) in ${path}. Restore each fragment in that file from its value in the "pending" block of ${receiptPath}, then remove those entries from the block`);
   }
-  const entries = raw.changes.filter((entry: any) => entry?.path === path);
+  const { entries, rest } = splitCodexReceiptEntries(raw, path);
   if (!entries.length) return { fragments: [], rest: null };
   const fragments: OldFragment[] = [];
   for (const entry of entries) {
@@ -53,7 +60,7 @@ function receiptFragments(raw: any, path: string, receiptPath: string): { fragme
       || !isFragmentText(entry.before, entry.selector) || !isFragmentText(entry.installed, entry.selector)) throw invalid(`invalid Codex configuration receipt entry: ${receiptPath}`);
     if (entry.active) fragments.push({ selector: entry.selector, before: entry.before, installed: entry.installed });
   }
-  return { fragments, rest: { ...raw, changes: raw.changes.filter((entry: any) => !entries.includes(entry)) } };
+  return { fragments, rest };
 }
 
 function isTomlProjection(path: string) {
@@ -110,11 +117,18 @@ export function planCodexConfigMigration(env: NodeJS.ProcessEnv): CodexConfigMig
   const path = join(home, '.codex', 'config.toml');
   const receipt = receiptFragments(readRawConfigurationReceipt(home), path, configurationReceiptPath(home));
   const content = existsSync(path) ? readFileSync(path, 'utf8') : '';
-  const manifest = manifestFragments(readInstallState(env), path, content);
-  if (!receipt.rest && !manifest.rest) return null;
-  // A receipt entry for the CodeGraph table is the older and more exact record of it.
-  const fromManifest = manifest.fragments.filter((fragment) => !receipt.fragments.some((entry) => entry.selector === fragment.selector));
-  return { path, adoption: adoption(content, [...receipt.fragments, ...fromManifest], manifest.changed), receipt: receipt.rest, state: manifest.rest };
+  const state = readInstallState(env);
+  // The file's own spelling errors name the file.
+  try {
+    const manifest = manifestFragments(state, path, content);
+    if (!receipt.rest && !manifest.rest) return null;
+    // A receipt entry for the CodeGraph table is the older and more exact record of it.
+    const fromManifest = manifest.fragments.filter((fragment) => !receipt.fragments.some((entry) => entry.selector === fragment.selector));
+    return { path, adoption: adoption(content, [...receipt.fragments, ...fromManifest], manifest.changed), receipt: receipt.rest, state: manifest.rest };
+  } catch (error) {
+    if (!(error instanceof HostConfigError)) throw error;
+    throw new HostConfigError(error.code, `${path}: ${error.message}`, { cause: error });
+  }
 }
 
 /** Run the migration once: the ledger records come first, then the old records go. A later run finds none. */

@@ -14,8 +14,8 @@ import { removeRuntimeStateIgnoreBlock } from '../../effects/adoption/gitignore-
 import { readRepositoryExcludes, repositoryCommonDirectory, repositoryExcludesLedgerPath, repositoryExcludeTarget, serializeRepositoryExcludes, type RepositoryExclude } from './repository-excludes';
 import { managedInstallSurfaceIsCurrent, readInstallState, type ManagedInstallSurface } from './install-profile';
 import { installProfileStatePath } from './install-state';
-import { assertConfigurationPath, configurationPaths, configurationReceiptPath, hostConfigurationRoot, readConfigurationFragment, readConfigurationReceipt, replaceConfigurationFragment, validConfigurationReceipt, writePrivateConfiguration } from './configuration-ownership';
-import { migrateCodexConfigRecords, planCodexConfigMigration, previewAdoptedRevert } from './codex-config-migration';
+import { assertConfigurationPath, configurationPaths, configurationReceiptPath, hostConfigurationRoot, readConfigurationFragment, readConfigurationReceipt, readRawConfigurationReceipt, replaceConfigurationFragment, validConfigurationReceipt, writePrivateConfiguration } from './configuration-ownership';
+import { migrateCodexConfigRecords, planCodexConfigMigration, previewAdoptedRevert, splitCodexReceiptEntries } from './codex-config-migration';
 import { openHostConfigGate, type HostConfigRevertEntry } from '../../effects/host-config/gate';
 
 export interface UninstallOptions { target: 'codex' | 'claude' | 'both'; dryRun?: boolean; recoverInterrupted?: boolean; env?: NodeJS.ProcessEnv; runtimeLock?: RuntimeTransactionContext }
@@ -63,12 +63,16 @@ function readUninstallState(opts: UninstallOptions) {
   const home = hostConfigurationRoot(env);
   assertConfigurationPath(installProfileStatePath(env), home);
   const lock = providerSkillLock(home, env);
+  // A target without Codex leaves the Codex file and its old receipt entries as they are, also when the migration would reject that file.
+  const codex = selected(join(home, '.codex/config.toml'), opts.target, home);
   // Before the Codex migration has run (a dry run, or the check before the lock), plan it in memory.
-  const migration = planCodexConfigMigration(env);
+  const migration = codex ? planCodexConfigMigration(env) : null;
+  const kept = codex ? { entries: [], rest: null } : splitCodexReceiptEntries(readRawConfigurationReceipt(home), join(home, '.codex/config.toml'));
   const state = migration?.state ?? readInstallState(env);
-  const receipt = migration?.receipt ? validConfigurationReceipt(migration.receipt, home) : readConfigurationReceipt(home);
+  const raw = migration?.receipt ?? kept.rest;
+  const receipt = raw ? validConfigurationReceipt(raw, home) : readConfigurationReceipt(home);
   if (receipt.pending && !opts.recoverInterrupted) throw new Error('interrupted configuration transaction; preview recovery with uninstall --recover-interrupted --dry-run, then apply --recover-interrupted to restore recorded fragments');
-  return { state, receipt, lock, migration };
+  return { state, receipt, lock, migration, codexEntries: kept.entries };
 }
 
 const REVERT_ITEMS: Readonly<Record<Exclude<HostConfigRevertEntry['action'], 'released'>, Pick<UninstallItem, 'action' | 'reason'>>> = {
@@ -111,9 +115,10 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   let state: ReturnType<typeof readInstallState> = null;
   let receipt: ReturnType<typeof readConfigurationReceipt>;
   let migration: ReturnType<typeof planCodexConfigMigration>;
+  let codexEntries: readonly unknown[];
   try {
-    if (!opts.dryRun) migrateCodexConfigRecords(env);
-    ({ state, receipt, lock, migration } = readUninstallState(opts));
+    if (!opts.dryRun && selected(join(home, '.codex/config.toml'), opts.target, home)) migrateCodexConfigRecords(env);
+    ({ state, receipt, lock, migration, codexEntries } = readUninstallState(opts));
   } catch (error) { unresolved(configurationReceiptPath(home), String((error as Error).message)); return result(); }
   let recovered = false;
   if (receipt.pending) {
@@ -322,7 +327,7 @@ function runUserUninstallLocked(opts: UninstallOptions): UninstallResult {
   }
   const restored = receipt.changes.filter((entry) => entry.active && !remaining.includes(entry));
   if (restored.length || recovered) {
-    const next = { ...receipt, changes: receipt.changes.map((entry) => restored.includes(entry) ? { ...entry, active: false } : entry) };
+    const next = { ...receipt, changes: [...receipt.changes.map((entry) => restored.includes(entry) ? { ...entry, active: false } : entry), ...codexEntries] };
     change(configurationReceiptPath(home), `${JSON.stringify(next, null, 2)}\n`, 'deactivate restored ownership; retain static installation history', 'restore');
   }
   items.push({ path: join(home, '.repo-harness'), action: 'preserve', reason: 'archives, runtime history and the MCP config retained; third-party packages/plugins retained' });

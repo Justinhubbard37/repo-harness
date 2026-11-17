@@ -52,6 +52,9 @@ import { copyUpgradeFixture } from './helpers/upgrade-fixtures';
 import { writeFakeHc } from './helpers/fake-hc';
 import { writeBunWrapper } from './helpers/repo-fixture';
 import { HC_MIN_VERSION } from '../src/core/terminal/herdr-pin';
+import { openHostConfigGate } from '../src/effects/host-config/gate';
+import { hostConfigPaths } from '../src/effects/host-config/store';
+import { tomlFragment } from '../src/core/host-config/toml-fragment';
 
 const ROOT = join(import.meta.dir, '..');
 const CLI = join(ROOT, 'src/cli/index.ts');
@@ -931,6 +934,27 @@ describe('install selection', () => {
     expect(existsSync(created)).toBe(false);
   }));
 
+  test('a host transaction rollback restores config.toml, the file that its link names, and the ledger together', () => {
+    for (const row of [{ linked: false, recorded: false }, { linked: true, recorded: false }, { linked: true, recorded: true }]) withHome((env) => {
+      const name = JSON.stringify(row);
+      const config = join(env.HOME!, '.codex', 'config.toml');
+      const target = row.linked ? join(env.HOME!, 'dotfiles', 'config.toml') : config;
+      const { ledger } = hostConfigPaths(env);
+      writePath(target, 'model = "user"\n');
+      if (row.linked) { mkdirSync(dirname(config), { recursive: true }); symlinkSync(target, config); }
+      const configure = (command: string) => openHostConfigGate({ env }).apply([{ path: config, fragments: [{
+        owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'add', strategy: tomlFragment, value: `[mcp_servers.codegraph]\ncommand = "${command}"\n`,
+      }] }]);
+      if (row.recorded) configure('old');
+      const observe = () => ({ text: readFileSync(target, 'utf-8'), ledger: existsSync(ledger) ? readFileSync(ledger, 'utf-8') : null, linked: lstatSync(config).isSymbolicLink() });
+      const before = observe();
+      const transaction = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
+      expect(configure('new').written, name).toEqual([target]);
+      rollbackInstallHostTransaction(transaction);
+      expect(observe(), name).toEqual(before);
+    });
+  });
+
   test('failed install compensates earlier host writes and never commits state', () => withHome((env) => {
     const bin = join(env.HOME!, 'fake-bin');
     mkdirSync(bin, { recursive: true });
@@ -1175,20 +1199,29 @@ describe('install selection', () => {
   }));
 
   test('dropping plugins from all removes only their owned surfaces and sections, and records nothing of them', () => {
-    // Each plugin alone, `install --plugins product` (five at once), and CodeGraph sections that a user wrote before the install.
-    const rows: readonly { readonly keep: readonly PluginId[]; readonly userSections?: true }[] = [
+    // Each plugin alone, `install --plugins product` (five at once), CodeGraph sections that a user wrote before the install,
+    // and a Codex table that an earlier rh version recorded in the manifest.
+    const rows: readonly { readonly keep: readonly PluginId[]; readonly userSections?: true; readonly legacyManifest?: true }[] = [
       ...ALL_PLUGINS.map(dropped => ({ keep: ALL_PLUGINS.filter(id => id !== dropped) })),
       { keep: ['product'] },
       { keep: ALL_PLUGINS.filter(id => id !== 'architecture'), userSections: true },
+      { keep: ALL_PLUGINS.filter(id => id !== 'architecture'), legacyManifest: true },
     ];
-    for (const { keep, userSections } of rows) withHome((env) => {
-      const name = `keep ${keep.join(',')}${userSections ? ', user sections' : ''}`;
+    for (const { keep, userSections, legacyManifest } of rows) withHome((env) => {
+      const name = `keep ${keep.join(',')}${userSections ? ', user sections' : ''}${legacyManifest ? ', legacy manifest' : ''}`;
       const codexConfig = join(env.HOME!, '.codex', 'config.toml');
       const claudeJson = join(env.HOME!, '.claude.json');
       const claudeSettings = join(env.HOME!, '.claude', 'settings.json');
+      const codexUser = 'default_mode_request_user_input = true\n\n[profiles.user]\nmodel = "user-model"\n';
+      const codexTable = '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp"]\n';
       // The CodeGraph sections that `codegraph install` and the Claude allowed-tools step write, beside user content.
+      // rh writes the Codex table through the host-config gate; a user's table or an earlier rh version's table is raw text.
       const writeConfigs = () => {
-        writePath(codexConfig, 'default_mode_request_user_input = true\n\n[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp"]\n\n[profiles.user]\nmodel = "user-model"\n');
+        if (userSections || legacyManifest) writePath(codexConfig, `${codexUser}${codexTable}`);
+        else {
+          writePath(codexConfig, codexUser);
+          openHostConfigGate({ env }).apply([{ path: codexConfig, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'add', strategy: tomlFragment, value: codexTable }] }]);
+        }
         writePath(claudeJson, `${JSON.stringify({ userSetting: true, mcpServers: {
           'user-server': { type: 'stdio', command: 'user-mcp' },
           codegraph: { type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'], alwaysLoad: true },
@@ -1214,6 +1247,15 @@ describe('install selection', () => {
       const sections = all.state.ownership_manifest.filter(({ managed_marker }) => managed_marker === 'codegraph-config-projection').map(({ path }) => path);
       // `~/.codex/config.toml` is in the host-config ledger, not in the manifest.
       expect(sections.sort(), name).toEqual(userSections ? [] : [claudeJson, claudeSettings].sort());
+      if (legacyManifest) {
+        const statePath = installStateFixturePath(env);
+        const recorded = JSON.parse(readFileSync(statePath, 'utf-8'));
+        recorded.ownership_manifest.push({
+          owner: 'architecture', authority: 'repo-harness-install-transaction', removal: 'managed-surfaces-only', path: codexConfig, type: 'managed-file',
+          content_hash: `sha256:${createHash('sha256').update(codexTable.trim()).digest('hex')}`, managed_marker: 'codegraph-config-projection', symlink_target: null,
+        });
+        writeFileSync(statePath, `${JSON.stringify(recorded, null, 2)}\n`);
+      }
 
       const second = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
       const removed = prepareInstallSelectionSwitch(keep, env);
@@ -1237,9 +1279,8 @@ describe('install selection', () => {
       for (const { path } of all.state.ownership_manifest.filter(({ owner }) => ownerEnabled(owner, keep))) expect(existsSync(path), `${name}: ${path}`).toBe(true);
       // An owned section goes with architecture; a user's section stays.
       for (const path of [claudeJson, claudeSettings]) expect(codegraphProjection(path) !== null, `${name}: ${path}`).toBe(keep.includes('architecture') || userSections === true);
-      // A switch keeps the Codex table until an owner-scoped removal exists: a revert acts on the whole file.
-      expect(readFileSync(codexConfig, 'utf-8'), name).toContain('default_mode_request_user_input = true\n\n[mcp_servers.codegraph]');
-      expect(readFileSync(codexConfig, 'utf-8'), name).toContain('[profiles.user]\nmodel = "user-model"');
+      // The Codex table follows the same rule, through the host-config gate; its removal gives back the user's bytes.
+      expect(readFileSync(codexConfig, 'utf-8'), name).toBe(keep.includes('architecture') || userSections ? `${codexUser}${codexTable}` : codexUser);
       expect(JSON.parse(readFileSync(claudeJson, 'utf-8')), name).toMatchObject({ userSetting: true, mcpServers: { 'user-server': { command: 'user-mcp' } } });
       const settings = JSON.parse(readFileSync(claudeSettings, 'utf-8'));
       expect([settings.permissions, settings.allowedTools.includes('Read'), settings.hooks], name).toEqual([{ allow: ['Bash(ls)'] }, true, buildManagedHooks('claude', env)]);

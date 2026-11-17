@@ -39,11 +39,18 @@ function split(content: string, selector: CodexConfigSelector): { value: unknown
   return { value, rest };
 }
 
+const SPELLING: Record<CodexConfigSelector, string> = {
+  default_mode_request_user_input: 'one default_mode_request_user_input = <value> line before the first table',
+  'mcp_servers.codegraph': 'one [mcp_servers.codegraph] table under its own header line',
+};
+
 /**
  * The text span of one selector: the root-table key line, or the
- * `[mcp_servers.codegraph]` table up to the next table header. The span must
- * be the only spelling of the selector: removing it must remove exactly that
- * value from the parsed file, so text inside strings or arrays never matches.
+ * `[mcp_servers.codegraph]` table up to the next table header. A table that
+ * ends the file without a final line break also owns the line break before
+ * its header, the pair that rh appends to such a file. The span must be the
+ * only spelling of the selector: removing it must remove exactly that value
+ * from the parsed file, so text inside strings or arrays never matches.
  */
 function span(content: string, selector: CodexConfigSelector): TextRange | null {
   const { value, rest } = split(content, selector);
@@ -51,14 +58,16 @@ function span(content: string, selector: CodexConfigSelector): TextRange | null 
   const rootKey = selector === 'default_mode_request_user_input';
   const pattern = rootKey
     ? /^default_mode_request_user_input\s*=.*(?:\r?\n|$)/gm
-    : /^\[mcp_servers\.codegraph\][^\S\r\n]*(?:\r?\n|$)[\s\S]*?(?=^\s*\[|(?![\s\S]))/gm;
+    : /^[ \t]*\[mcp_servers\.codegraph\][^\S\r\n]*(?:\r?\n|$)[\s\S]*?(?=^\s*\[|(?![\s\S]))/gm;
   // The key belongs to the root table; a profile table may use the same key.
   const tableStart = rootKey ? content.search(/^[ \t]*\[/m) : -1;
   const source = tableStart === -1 ? content : content.slice(0, tableStart);
   const matches = [...source.matchAll(pattern)];
-  if (matches.length !== 1) throw preserving(selector, 'unsupported TOML spelling');
-  const start = matches[0]!.index!;
-  const range = { start, end: start + matches[0]![0].length };
+  if (matches.length !== 1) throw new HostConfigError('host_config_invalid_state', `unsupported TOML spelling for ${selector}; preserving configuration. Write it as ${SPELLING[selector]}, then run the command again`);
+  let start = matches[0]!.index!;
+  const end = start + matches[0]![0].length;
+  if (!rootKey && end === content.length && !content.endsWith('\n') && content[start - 1] === '\n') start -= content[start - 2] === '\r' ? 2 : 1;
+  const range = { start, end };
   if (!isDeepStrictEqual(parse(content.slice(0, range.start) + content.slice(range.end)), rest)) throw preserving(selector, 'ambiguous TOML fragment');
   return range;
 }
@@ -79,20 +88,28 @@ export function codexConfigFragment(content: string, selector: CodexConfigSelect
   return range ? content.slice(range.start, range.end) : null;
 }
 
+/** A table at the end of a file without a final line break: the line break before it, the table, and no final line break. */
+function atFileEnd(lineBreak: string, value: string): string {
+  return value === '' ? '' : `${lineBreak}${value.trimEnd()}`;
+}
+
 /**
  * Edits one selector of `~/.codex/config.toml`. The value is the whole
  * fragment text; '' removes the fragment. A new root key goes first, before
- * any table; a new table goes at the end.
+ * any table; a new table goes at the end. The inserted text has the span's
+ * boundary, so a later lookup finds exactly the text that rh recorded.
  */
 export const tomlFragment: HostConfigStrategy<string> = {
   locate: (content, selector) => span(content, selectorOf(selector)),
   apply(content, selector, value): FragmentEdit {
     const name = selectorOf(selector);
     const range = span(content, name);
+    const removed = range ? content.slice(range.start, range.end) : '';
+    const lineBreak = /^\r?\n/.exec(removed)?.[0];
     const edit = range
-      ? { at: range.start, removed: content.slice(range.start, range.end), inserted: value }
+      ? { at: range.start, removed, inserted: lineBreak ? atFileEnd(lineBreak, value) : value }
       : name === 'default_mode_request_user_input' ? { at: 0, removed: '', inserted: value }
-        : { at: content.length, removed: '', inserted: content === '' || content.endsWith('\n') || value === '' ? value : `\n${value}` };
+        : { at: content.length, removed: '', inserted: content === '' || content.endsWith('\n') ? value : atFileEnd('\n', value) };
     const next = content.slice(0, edit.at) + edit.inserted + content.slice(edit.at + edit.removed.length);
     try { parse(next); } catch (error) { throw new HostConfigError('host_config_invalid_state', `the ${selector} edit does not give valid TOML; preserving configuration`, { cause: error }); }
     return edit;

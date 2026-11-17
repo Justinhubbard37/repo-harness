@@ -23,6 +23,18 @@ test('issue 698 TOML fragment selects the root key and preserves profile keys', 
   expect(result).toBe('default_mode_request_user_input = true\n[profiles.work]\ndefault_mode_request_user_input = false\n');
 });
 
+test('an appended CodeGraph table refreshes as rh text and its removal gives back the exact bytes, with or without a final newline', () => {
+  const table = '[mcp_servers.codegraph]\ncommand = "cg"\n';
+  const request = (kind: 'add' | 'refresh', value: string) => ({ owner: 'architecture', selector: 'mcp_servers.codegraph', kind, strategy: tomlFragment, value });
+  for (const raw of ['model = "user"', 'model = "user"\n']) {
+    const added = planFile('config.toml', raw, [request('add', table)], []);
+    const record = { file: 'config.toml', owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'add' as const, inserted: added.fragments[0]!.edit.inserted };
+    const refreshed = planFile('config.toml', added.result, [request('refresh', table)], [record]);
+    expect({ skipped: refreshed.skipped, unchanged: refreshed.result === added.result }, JSON.stringify(raw)).toEqual({ skipped: [], unchanged: true });
+    expect(planFile('config.toml', added.result, [request('refresh', '')], [record]).result).toBe(raw);
+  }
+});
+
 test('issue 698 ambiguous top-level TOML keys refuse a fragment mutation', () => {
   for (const raw of ['default_mode_request_user_input = false\ndefault_mode_request_user_input = true\n', '"default_mode_request_user_input" = false\n']) {
     expect(() => tomlFragment.apply(raw, 'default_mode_request_user_input', 'default_mode_request_user_input = true\n')).toThrow();
