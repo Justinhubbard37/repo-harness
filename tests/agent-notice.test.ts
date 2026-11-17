@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { ERROR_CATALOG, digestJson, type Json } from 'archctx-contracts';
+import { ARCHCONTEXT_NODE_RANGE, ERROR_CATALOG, digestJson, type Json } from 'archctx-contracts';
 import { collectAgentNotice, renderAgentNotice } from '../src/cli/hook/agent-notice';
-import { ArchctxClient, checkpointArchitectureDebt } from '../src/effects/architecture/archctx-provider';
+import { ArchctxClient, checkpointArchitectureDebt, resolveCompatibleNodeRuntime } from '../src/effects/architecture/archctx-provider';
 import { ARCHCTX_REQUIRED_VERSION } from '../src/core/architecture/projection';
 import type { ArchctxProviderOptions } from '../src/core/architecture/contracts';
 import type { CapabilityOwnership } from '../src/core/capabilities/registry';
@@ -43,6 +43,63 @@ const touchRegistry = (root: string) => fixtureWrite(root, '.ai/context/capabili
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('AgentNotice', () => {
+  test.each(['status', 'archimap', 'checkpoint'] as const)('budget-dropped %s is delivered on the next call', kind => {
+    const root = kind === 'checkpoint' ? fixture() : registryFixture();
+    const env = noticeEnv(root);
+    const report = kind === 'checkpoint' ? checkpointArchitectureDebt(root, noticeOwnership(root), { env })!.report : null;
+    if (kind === 'checkpoint') {
+      fixtureWrite(root, '.ai/harness/policy.json', JSON.stringify({ context: { capability_source: 'registry' } }));
+      writeNoticeRegistry(root);
+    } else rmSync(join(root, 'packages'), { recursive: true });
+    if (kind === 'archimap') { adoptArchimap(root); touchRegistry(root); }
+    const path = `packages/${Array(3).fill('界'.repeat(65)).join('/')}/index.ts`;
+    fixtureWrite(root, path, 'export const extra = 1;\n');
+    const owned = { ...noticeOwnership(root), unowned_paths: [path] };
+    const options: ArchctxProviderOptions = { env, run: () => ({ status: 0, signal: null, stderr: '',
+      stdout: JSON.stringify({ schemaVersion: 'archcontext.envelope/v1', requestId: 'checkpoint', ok: true, data: report }) }) };
+    const expected = kind === 'status' ? '[Architecture] inactive:' : kind === 'archimap' ? '[Archimap]' : renderAgentNotice(report!)!.content;
+    const first = collectAgentNotice(root, () => owned, options);
+    expect(first.content).toContain('unowned changed path');
+    expect(first.content).not.toContain(expected);
+    expect(Buffer.byteLength(first.content!)).toBeLessThanOrEqual(800);
+    const second = collectAgentNotice(root, () => owned, options);
+    expect(second.content).toContain(expected);
+    expect(second.content).not.toContain('unowned changed path');
+    expect(second.diagnostics).toBeUndefined();
+    expect(collectAgentNotice(root, () => owned, options)).toEqual({});
+  });
+
+  test.skipIf(process.platform === 'win32').each(['prepare', 'checkpoint', 'node'] as const)('SessionStart %s and cleanup stay inside the shared deadline', phase => {
+    const root = fixture();
+    fixtureGit(root, ['checkout', '-qb', 'feat/3017-notice-deadline']);
+    const owned = noticeOwnership(root);
+    const env = noticeEnv(root);
+    const report = checkpointArchitectureDebt(root, owned, { env })!.report;
+    const node = resolveCompatibleNodeRuntime(env);
+    const consumer = join(root, 'home/consumer');
+    fixtureWrite(consumer, 'node_modules/archctx/package.json', JSON.stringify({ name: 'archctx', version: ARCHCTX_REQUIRED_VERSION,
+      engines: { node: ARCHCONTEXT_NODE_RANGE }, bin: { archctx: 'bin.mjs' } }));
+    fixtureWrite(consumer, 'node_modules/archctx/bin.mjs', `
+      import { appendFileSync } from 'node:fs';
+      const args = process.argv.slice(2);
+      appendFileSync(${JSON.stringify(join(root, 'home/phases'))}, args[0] + '\\n');
+      if (args[0] === ${JSON.stringify(phase)}) {
+        process.on('SIGTERM', () => setTimeout(() => process.exit(0), 250));
+        setInterval(() => {}, 1000);
+      } else console.log(JSON.stringify({ schemaVersion: 'archcontext.envelope/v1', requestId: args[0], ok: true,
+        data: args[0] === 'daemon' ? { running: true, rpcVersionCompatible: true, productVersionCompatible: true } : ${JSON.stringify(report)} }));
+    `);
+    const slowNode = join(root, 'home/slow-node');
+    fixtureWrite(root, 'home/slow-node', `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(join(root, 'home/phases'))}, 'node\\n'); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 250)); setInterval(() => {}, 1000);\n`);
+    chmodSync(slowNode, 0o755);
+    const started = Date.now();
+    const notice = collectAgentNotice(root, () => owned, { consumerRoot: consumer, env: { ...env, REPO_HARNESS_NODE_BIN: phase === 'node' ? slowNode : node } }, 'session-start');
+    const elapsed = Date.now() - started;
+    expect(readFileSync(join(root, 'home/phases'), 'utf8')).toContain(`${phase}\n`);
+    expect(notice.diagnostics).toBe(`${NOTICE_TIMEOUT}\n`);
+    expect(elapsed).toBeLessThanOrEqual(3_000);
+  });
+
   test('SessionStart with no daemon uses the pinned status probe and never invokes prepare', () => {
     const root = fixture();
     fixtureGit(root, ['checkout', '-qb', 'feat/2874-no-daemon']);
@@ -342,7 +399,7 @@ describe('AgentNotice', () => {
     expect(Buffer.byteLength(first.content!)).toBeLessThanOrEqual(800);
     expect(first.systemMessage).toBe(`Architecture: 1 debt item in ${NOTICE_CAPABILITY}; run rh arch debt --json.`);
     expect(first.diagnostics).toBeUndefined();
-    const key = createHash('sha256').update(JSON.stringify(['feature', measured.report.items.map(item => item.id).sort(), []])).digest('hex');
+    const key = createHash('sha256').update(JSON.stringify(['feature', measured.report.items.map(item => item.id).sort(), [], 'checkpoint'])).digest('hex');
     expect(readFileSync(join(root, '.ai/harness/state/agent-notice'), 'utf8').trim()).toBe(key);
     expect(collectAgentNotice(root, () => ownership, options)).toEqual({});
     fixtureWrite(root, 'docs/architecture/.projection-manifest.json', '{"profile":"repo-harness/v1","targets":{}}\n');

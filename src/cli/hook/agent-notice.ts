@@ -38,6 +38,8 @@ const noticeItems = (report: ArchitectureDebtReportV1) => report.items.filter(it
 export interface NoticeBlock {
   readonly content: string;
   readonly systemMessage: string;
+  /** Commit delivery only after this complete block fits the output budget. */
+  readonly deliver?: () => void;
 }
 
 type Status =
@@ -310,7 +312,29 @@ function claim(repoRoot: string, path: string, key: string, options: ArchctxProv
   return true;
 }
 
-/** One line per readiness change. A failure never touches the debt marker, so a later success still delivers the debt. */
+/** Keep only current block keys. Shared markers retain each block's delivery independently. */
+function undelivered(repoRoot: string, path: string, entries: readonly { key: string; block: NoticeBlock }[], options: ArchctxProviderOptions): NoticeBlock[] {
+  const marker = join(repoRoot, path);
+  assertSafeRepoWritePath(repoRoot, marker);
+  let previous: string[] = [];
+  try { previous = readFileSync(marker, 'utf8').trim().split('\n'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const delivered = new Set(previous.filter(key => entries.some(entry => entry.key === key)));
+  const pending = entries.filter(entry => !delivered.has(entry.key));
+  // Check Git before optional prepare spends the remaining time. Delivery itself
+  // only writes local state, so a prepare timeout cannot discard measured debt.
+  if (pending.length > 0 && !ignored(repoRoot, path, options)) throw new Error(`${path} is not Git-ignored`);
+  return pending.map(({ key, block }) => ({
+    ...block,
+    deliver: () => {
+      const keys = [...delivered, key];
+      writeHookStateFile(repoRoot, marker, `${keys.join('\n')}\n`);
+      delivered.add(key);
+    },
+  }));
+}
+
+/** One line per readiness change. A failure never touches the debt marker. */
 function statusNotice(repoRoot: string, options: ArchctxProviderOptions, status: Status): NoticeBlock | null {
   switch (status.kind) {
     // A Claude Stop block for a timeout would start one more turn with nothing to do.
@@ -319,10 +343,10 @@ function statusNotice(repoRoot: string, options: ArchctxProviderOptions, status:
       // The active key ends the previous state, so a cause that returns prints again.
       if (existsSync(join(repoRoot, STATUS_MARKER))) claim(repoRoot, STATUS_MARKER, digest(['active']), options);
       return null;
-    case 'inactive': return claim(repoRoot, STATUS_MARKER, digest(['inactive', status.cause]), options) ? inactiveBlock(status.cause) : null;
+    case 'inactive': return undelivered(repoRoot, STATUS_MARKER, [{ key: digest(['inactive', status.cause]), block: inactiveBlock(status.cause) }], options)[0] ?? null;
     case 'failure': {
       const key = digest(['failure', currentBranch(repoRoot, options), failureCode(status.error)]);
-      return claim(repoRoot, STATUS_MARKER, key, options) ? failureBlock(status.error) : null;
+      return undelivered(repoRoot, STATUS_MARKER, [{ key, block: failureBlock(status.error) }], options)[0] ?? null;
     }
   }
 }
@@ -333,16 +357,18 @@ function debtNotice(repoRoot: string, options: ArchctxProviderOptions, observati
   // A failed or timed-out checkpoint has no measured set. Claiming the unowned paths alone would
   // make every recovery print them again.
   if (observation.status.kind === 'failure' || observation.status.kind === 'timeout' || (!unowned && !debt)) return [];
-  const key = digest([debt?.branch ?? currentBranch(repoRoot, options), debt?.ids ?? [], unowned?.paths ?? []]);
-  if (!claim(repoRoot, MARKER, key, options)) return [];
-  return [unowned?.block, debt?.block].filter((block): block is NoticeBlock => block !== undefined);
+  const key = [debt?.branch ?? currentBranch(repoRoot, options), debt?.ids ?? [], unowned?.paths ?? []];
+  return undelivered(repoRoot, MARKER, [
+    ...(unowned ? [{ key: digest([...key, 'unowned']), block: unowned.block }] : []),
+    ...(debt ? [{ key: digest([...key, 'checkpoint']), block: debt.block }] : []),
+  ], options);
 }
 
 /** Its own marker, so the map reminder never consumes or repeats the debt notice. */
 function archimapNotice(repoRoot: string, options: ArchctxProviderOptions, observation: Observation): NoticeBlock[] {
   const { archimap } = observation;
   if (!archimap) return [];
-  return claim(repoRoot, ARCHIMAP_MARKER, digest([currentBranch(repoRoot, options), archimap.paths]), options) ? [archimap.block] : [];
+  return undelivered(repoRoot, ARCHIMAP_MARKER, [{ key: digest([currentBranch(repoRoot, options), archimap.paths]), block: archimap.block }], options);
 }
 
 /**
@@ -433,7 +459,10 @@ export function collectAgentNotice(repoRoot: string, ownership: (options: Archct
       }
     }
   }
-  const chosen = fitNoticeBlocks(blocks);
+  const chosen = fitNoticeBlocks(blocks).filter(block => {
+    try { block.deliver?.(); return true; }
+    catch (error) { problems.add(error); return false; }
+  });
   const diagnostics = problems.lines();
   return {
     ...(chosen.length > 0 ? { content: chosen.map(block => block.content).join('\n'), systemMessage: chosen.map(block => block.systemMessage).join('\n') } : {}),

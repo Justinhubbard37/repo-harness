@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "child_process";
-import { existsSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { capProcessOutput, runProcess } from "../src/effects/process-runner";
@@ -60,14 +60,24 @@ describe("process runner", () => {
     expect(result.stderr).toContain("process timed out after 20ms");
   });
 
-  test("supervised runs stop at an absolute deadline", () => {
-    const result = runProcess(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
-      processGroup: true,
-      deadlineMs: Date.now() + 200,
-    });
+  test("supervised runs include TERM-resistant process cleanup inside an absolute deadline", () => {
+    const root = mkdtempSync(join(tmpdir(), "process-runner-deadline-"));
+    try {
+      const marker = join(root, "started");
+      const started = Date.now();
+      const result = runProcess(process.execPath, ["-e", `process.on('SIGTERM', () => {}); require('fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1000)`], {
+        processGroup: true,
+        deadlineMs: started + 3_000,
+      });
 
-    expect(result.ok).toBe(false);
-    expect(result.timedOut).toBe(true);
+      expect(existsSync(marker)).toBe(true);
+      expect(processExists(Number(readFileSync(marker, 'utf8')))).toBe(false);
+      expect(result.ok).toBe(false);
+      expect(result.timedOut).toBe(true);
+      expect(Date.now() - started).toBeLessThanOrEqual(3_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("an expired deadline refuses to start the supervised command", () => {

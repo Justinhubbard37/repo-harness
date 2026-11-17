@@ -1073,7 +1073,7 @@ describe('package-local ArchContext projection provider', () => {
 
   test('charges Node runtime selection to the caller deadline', () => {
     const f = fixture();
-    const slowNode = writeNodeStub(join(f.root, 'slow-node'), { version: '24.18.0', delayMs: 2_000 });
+    const slowNode = writeNodeStub(join(f.root, 'slow-node'), { version: '24.18.0', delayMs: 6_000 });
     const providerModule = join(import.meta.dir, '..', 'src', 'effects', 'architecture', 'archctx-provider.ts');
     const script = join(f.root, 'node-deadline.ts');
     writeFileSync(script, [
@@ -1088,6 +1088,12 @@ describe('package-local ArchContext projection provider', () => {
     expect((result.error as NodeJS.ErrnoException | undefined)?.code).not.toBe('ETIMEDOUT');
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('RH_ARCHCTX_TIMEOUT: architecture projection timeout before Node runtime selection');
+    // A per-candidate timeout must still permit the next trusted candidate when
+    // the caller has time left. Only the shared deadline ends selection.
+    const node = resolveCompatibleNodeRuntime(process.env);
+    const started = Date.now();
+    expect(resolveCompatibleNodeRuntime({ PATH: '' }, () => [slowNode, node], { deadlineMs: started + 10_000 })).toBe(node);
+    expect(Date.now() - started).toBeLessThanOrEqual(10_000);
   });
 
   test('exposes projection commands without a separate acceptance authority', () => {

@@ -19,7 +19,7 @@ export interface RunProcessOptions {
   readonly inheritEnv?: boolean;
   readonly stdio?: "pipe" | "inherit" | "ignore";
   readonly timeoutMs?: number;
-  /** Absolute epoch-ms deadline, exclusive with `timeoutMs`. The process-group supervisor enforces it as given. */
+  /** Absolute epoch-ms deadline, exclusive with `timeoutMs`. Includes supervision and cleanup. */
   readonly deadlineMs?: number;
   readonly maxOutputBytes?: number;
   readonly redactions?: readonly ProcessOutputRedaction[];
@@ -87,9 +87,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "");
 }
 
-function terminateAbandonedProcessGroup(pid: number, taskkillBin?: string): string {
+function terminateAbandonedProcessGroup(pid: number, taskkillBin?: string, deadlineMs?: number): string {
   try {
-    const termination = terminateProcessGroupSync(pid, PROCESS_SUPERVISOR_TERMINATION_GRACE_MS, { taskkillBin });
+    const termination = terminateProcessGroupSync(pid, PROCESS_SUPERVISOR_TERMINATION_GRACE_MS, {
+      taskkillBin,
+      ...(deadlineMs === undefined ? {} : { initialSignal: 'SIGKILL', confirmMs: Math.max(0, deadlineMs - Date.now()) }),
+    });
     return termination.confirmed ? "" : `supervisor backstop could not prove process group ${pid} exited`;
   } catch (error) {
     return `supervisor backstop failed for process group ${pid}: ${errorMessage(error)}`;
@@ -128,7 +131,7 @@ function runSupervisedProcess(
       "--parent-pid", String(process.pid),
       ...(opts.deadlineMs === undefined
         ? ["--timeout-ms", String(timeoutMs)]
-        : ["--deadline-ms", String(opts.deadlineMs)]),
+        : ["--deadline-ms", String(opts.deadlineMs - (2 * PROCESS_SUPERVISOR_TERMINATION_GRACE_MS))]),
       "--capture-bytes", String(maxOutputBytes + 1),
       "--stdio", stdio,
     ];
@@ -140,7 +143,12 @@ function runSupervisedProcess(
     }
     if (opts.taskkillBin) supervisorArgs.push("--taskkill-bin", opts.taskkillBin);
     supervisorArgs.push("--", command, ...args);
-    const supervisorHardTimeoutMs = timeoutMs + PROCESS_SUPERVISOR_HARD_TIMEOUT_OVERHEAD_MS;
+    // Absolute budgets include TERM grace, KILL confirmation and supervisor startup.
+    // If the supervisor stalls during cleanup, leave the final grace interval for
+    // the caller to force the group down and confirm its absence.
+    const supervisorHardTimeoutMs = opts.deadlineMs === undefined
+      ? timeoutMs + PROCESS_SUPERVISOR_HARD_TIMEOUT_OVERHEAD_MS
+      : Math.max(1, opts.deadlineMs - PROCESS_SUPERVISOR_TERMINATION_GRACE_MS - Date.now());
     const result = spawnSync(process.execPath, supervisorArgs, {
       cwd: opts.cwd,
       encoding: stdio === "pipe" ? "utf8" : undefined,
@@ -179,7 +187,7 @@ function runSupervisedProcess(
       || receipt.completed !== true
       || (receipt.processGroupPid !== null && processGroupPid === null);
     if (envelopeMismatch) {
-      const cleanupError = processGroupPid === null ? "" : terminateAbandonedProcessGroup(processGroupPid, opts.taskkillBin);
+      const cleanupError = processGroupPid === null ? "" : terminateAbandonedProcessGroup(processGroupPid, opts.taskkillBin, opts.deadlineMs);
       const envelopeError = supervisorTimedOut
         ? `process supervisor exceeded hard timeout after ${supervisorHardTimeoutMs}ms`
         : [
@@ -221,8 +229,8 @@ export function runProcess(command: string, args: readonly string[], opts: RunPr
   const maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_PROCESS_MAX_OUTPUT_BYTES;
   const redactions = opts.redactions ?? DEFAULT_REDACTIONS;
   const redactedCommand = [command, ...args].map((part) => redactProcessOutput(part, redactions));
-  if (remainingMs !== undefined && remainingMs <= 0) {
-    const message = `process deadline expired before start: ${redactedCommand.join(" ")}`;
+  if (remainingMs !== undefined && remainingMs <= (opts.processGroup ? 2 * PROCESS_SUPERVISOR_TERMINATION_GRACE_MS : 0)) {
+    const message = `process deadline has no execution budget before cleanup: ${redactedCommand.join(" ")}`;
     return {
       ok: false, status: 1, signal: null, timedOut: true,
       command: redactedCommand, stdout: "",

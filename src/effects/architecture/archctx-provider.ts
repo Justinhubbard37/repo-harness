@@ -14,16 +14,17 @@ import { selectCompatibleNode } from '../runtime/node-runtime';
 import { runProcess } from '../process-runner';
 import type { CapabilityOwnership } from '../../core/capabilities/registry';
 import { ARCHCTX_REQUIRED_VERSION, ArchctxClientError, assertArchctxVersion, assertProjectionApplyReadbackResult, assertProjectionResult, decodeArchitectureDebtReport, decodeDocsAnchorsReport } from '../../core/architecture/projection';
-import type { ArchctxProcessResult, ArchctxProviderOptions, RunArchctxProcess, ArchitectureDaemonStopFailure, ArchitectureDaemonStopReportV1, ResolvedArchctxPackage, ArchitectureProjectionReadinessV1 } from '../../core/architecture/contracts';
+import type { ArchctxProcessResult, ArchctxProviderOptions, ArchitectureDaemonStopFailure, ArchitectureDaemonStopReportV1, ResolvedArchctxPackage, ArchitectureProjectionReadinessV1 } from '../../core/architecture/contracts';
 import { gitExecFileSync } from '../git/runner';
 
 const ARCHCTX_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
-const DEFAULT_RUNNER: RunArchctxProcess = (binary, args, options) => {
+const DEFAULT_RUNNER = (binary: string, args: readonly string[], options: { cwd: string; timeoutMs?: number; deadlineMs?: number; env: NodeJS.ProcessEnv }): ArchctxProcessResult => {
   const result = runProcess(binary, args, {
     cwd: options.cwd,
     env: options.env,
     inheritEnv: false,
     timeoutMs: options.timeoutMs,
+    deadlineMs: options.deadlineMs,
     maxOutputBytes: ARCHCTX_MAX_OUTPUT_BYTES,
     redactions: [],
     processGroup: true,
@@ -79,15 +80,22 @@ export function resolveCompatibleNodeRuntime(
   budget: Pick<ArchctxProviderOptions, 'deadlineMs' | 'nowMs'> = {},
 ): string {
   const version = (candidate: string): string | null => {
+    const callerLimitsProbe = budget.deadlineMs !== undefined && budget.deadlineMs - (budget.nowMs ?? Date.now)() <= 5_000;
+    const timeoutMs = remainingTimeout(budget, 5_000, 'Node runtime selection');
+    const deadlineMs = budget.deadlineMs === undefined ? undefined : budget.nowMs === undefined
+      ? Math.min(budget.deadlineMs, Date.now() + timeoutMs)
+      : Date.now() + timeoutMs;
     const result = runProcess(candidate, ['--version'], {
       env,
       inheritEnv: false,
-      timeoutMs: remainingTimeout(budget, 5_000, 'Node runtime selection'),
+      ...(deadlineMs === undefined ? { timeoutMs } : { deadlineMs }),
       maxOutputBytes: 4 * 1024,
       redactions: [],
       processGroup: true,
     });
-    if (result.timedOut && budget.deadlineMs !== undefined) remainingTimeout(budget, 5_000, 'Node runtime selection');
+    if (result.timedOut && callerLimitsProbe) {
+      throw new ArchctxClientError({ code: 'RH_ARCHCTX_TIMEOUT', action: 'retry', message: 'architecture projection timeout before Node runtime selection' });
+    }
     return result.ok ? result.stdout.trim().replace(/^v/, '') : null;
   };
   const pathValue = env.PATH ?? '';
@@ -123,10 +131,14 @@ function runArchctxProcess(
 ): ArchctxProcessResult {
   const env = options.env ?? process.env;
   if (options.run) return options.run(resolved.binaryPath, args, { cwd, timeoutMs, env });
-  const now = options.nowMs ?? Date.now;
-  const deadlineMs = options.deadlineMs ?? now() + timeoutMs;
-  const nodeExecutable = resolveCompatibleNodeRuntime(env, options.trustedNodeCandidateSource, { deadlineMs, nowMs: now });
-  return DEFAULT_RUNNER(nodeExecutable, [resolved.binaryPath, ...args], { cwd, timeoutMs: remainingTimeout({ deadlineMs, nowMs: now }, timeoutMs, commandLabel(args)), env });
+  // Subprocess supervision uses epoch wall time. Translate an injected clock's
+  // remaining budget once, then preserve that wall deadline through Node selection.
+  const deadlineMs = options.nowMs === undefined
+    ? Math.min(options.deadlineMs ?? Infinity, Date.now() + timeoutMs)
+    : Date.now() + timeoutMs;
+  const nodeExecutable = resolveCompatibleNodeRuntime(env, options.trustedNodeCandidateSource, { deadlineMs });
+  remainingTimeout({ deadlineMs }, timeoutMs, commandLabel(args));
+  return DEFAULT_RUNNER(nodeExecutable, [resolved.binaryPath, ...args], { cwd, deadlineMs, env });
 }
 
 /** One transport and envelope reader for projection, refactor and ownership. */
