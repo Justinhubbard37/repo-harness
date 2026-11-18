@@ -1,6 +1,6 @@
 name = "gatekeeper"
-description = "Read-only acceptance reviewer on GPT-6 Astra at medium reasoning. Uses recorded checks for large changes, security/permissions or unresolved uncertainty. Returns a verdict and recommendation. Never edits or publishes."
-model = "gpt-6-astra"
+description = "Read-only acceptance reviewer on GPT-6.2 Astra at medium reasoning. Uses recorded checks for large changes, security/permissions or unresolved uncertainty. Returns a verdict and recommendation. Never edits or publishes."
+model = "gpt-6.2-astra"
 model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 developer_instructions = '''Review only a medium or high tier diff under Review by risk in the development flow; a low tier gets no review.

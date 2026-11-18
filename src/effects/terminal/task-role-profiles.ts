@@ -13,12 +13,12 @@ export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 // the Claude-side family default.
 export const AGENT_TARGET_OVERRIDES: Record<string, { model: string; effort: string; targetDescription: string }> = {
   explorer: { model: "gpt-6-luna", effort: "high", targetDescription: "GPT-6 Luna at high reasoning" },
-  "deep-reasoner": { model: "gpt-6-astra", effort: "high", targetDescription: "GPT-6 Astra at high reasoning" },
-  "fast-worker": { model: "gpt-6.1-sol", effort: "medium", targetDescription: "GPT-6.1 Sol at medium reasoning" },
-  "deep-worker": { model: "gpt-6.1-sol", effort: "high", targetDescription: "GPT-6.1 Sol at high reasoning" },
-  gatekeeper: { model: "gpt-6-astra", effort: "medium", targetDescription: "GPT-6 Astra at medium reasoning" },
-  "root-cause-prover": { model: "gpt-6-astra", effort: "high", targetDescription: "GPT-6 Astra at high reasoning" },
-  "harness-evaluator": { model: "gpt-6-astra", effort: "medium", targetDescription: "GPT-6 Astra at medium reasoning" },
+  "deep-reasoner": { model: "gpt-6.2-astra", effort: "high", targetDescription: "GPT-6.2 Astra at high reasoning" },
+  "fast-worker": { model: "gpt-6.2-sol", effort: "medium", targetDescription: "GPT-6.2 Sol at medium reasoning" },
+  "deep-worker": { model: "gpt-6.2-sol", effort: "high", targetDescription: "GPT-6.2 Sol at high reasoning" },
+  gatekeeper: { model: "gpt-6.2-astra", effort: "medium", targetDescription: "GPT-6.2 Astra at medium reasoning" },
+  "root-cause-prover": { model: "gpt-6.2-astra", effort: "high", targetDescription: "GPT-6.2 Astra at high reasoning" },
+  "harness-evaluator": { model: "gpt-6.2-astra", effort: "medium", targetDescription: "GPT-6.2 Astra at medium reasoning" },
 };
 
 export function parseRoleNameScalar(rawValue: unknown): string | undefined {

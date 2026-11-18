@@ -1315,7 +1315,7 @@ describe("check-agent-tooling", () => {
           turn_id: "turn-hook-e2e",
           agent_id: "agent-hook-e2e",
           agent_type: "fast-worker",
-          model: "gpt-6.1-sol",
+          model: "gpt-6.2-sol",
         },
         identity: { host: "codex", sessionId: "session-hook-e2e", runId: null, turnId: "turn-hook-e2e" },
       });
@@ -1338,7 +1338,7 @@ describe("check-agent-tooling", () => {
       expect(report.tools.agent_fleet.native_role_routing.observations).toEqual([
         expect.objectContaining({
           agent_type: "fast-worker",
-          observed_model: "gpt-6.1-sol",
+          observed_model: "gpt-6.2-sol",
           reasoning_effort_status: "configured_unverified",
         }),
       ]);

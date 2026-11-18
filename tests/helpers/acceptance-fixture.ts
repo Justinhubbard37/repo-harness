@@ -57,9 +57,9 @@ export const piReferenceResolver = (_agentDirectory: string, reference: string) 
 export const inOneHour = () => Date.now() + 3_600_000;
 /** The generated review configuration (#2764): magpie constants only. */
 const MAGPIE_PI_MODELS = { providers: { magpie: { baseUrl: 'http://127.0.0.1:3425/v1', api: 'openai-completions', apiKey: 'magpie',
-  models: [{ id: 'codex/gpt-6-astra', reasoning: true }] } } };
-const MAGPIE_PI_SETTINGS = { defaultProvider: 'magpie', defaultModel: 'codex/gpt-6-astra', defaultThinkingLevel: 'high' };
-export const MAGPIE_CODEX_CONFIG = 'model = "codex/gpt-6-astra"\nmodel_provider = "magpie"\n\n[model_providers.magpie]\nname = "magpie"\n'
+  models: [{ id: 'codex/gpt-6.2-astra', reasoning: true }] } } };
+const MAGPIE_PI_SETTINGS = { defaultProvider: 'magpie', defaultModel: 'codex/gpt-6.2-astra', defaultThinkingLevel: 'high' };
+export const MAGPIE_CODEX_CONFIG = 'model = "codex/gpt-6.2-astra"\nmodel_provider = "magpie"\n\n[model_providers.magpie]\nname = "magpie"\n'
   + 'base_url = "http://127.0.0.1:3425/v1"\nwire_api = "responses"\nexperimental_bearer_token = "magpie"\n'
   + 'http_headers = { "x-openai-actor-authorization" = "magpie" }\n';
 /** Each generated file is a 0600 regular file, never a link; pi's auth.json is the empty map. */

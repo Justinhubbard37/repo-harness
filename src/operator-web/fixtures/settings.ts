@@ -48,7 +48,7 @@ const SUB_AGENTS = [
   { name: 'harness-evaluator', writable: true },
 ];
 
-const CODEX_MODELS = ['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'];
+const CODEX_MODELS = ['gpt-6-luna', 'gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6.1-sol'];
 
 /** The ranges the server derives from the fleet role profiles, written out for the in-page store. */
 function seatsRanges(enabled: readonly string[]) {

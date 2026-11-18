@@ -1,6 +1,6 @@
 name = "root-cause-prover"
-description = "Bugfix diagnosis specialist on GPT-6 Astra at high reasoning. Proves a cause with a real reproduction and command evidence. Returns CONFIRMED, LIKELY or BLOCKED. Never fixes production source or changes gates."
-model = "gpt-6-astra"
+description = "Bugfix diagnosis specialist on GPT-6.2 Astra at high reasoning. Proves a cause with a real reproduction and command evidence. Returns CONFIRMED, LIKELY or BLOCKED. Never fixes production source or changes gates."
+model = "gpt-6.2-astra"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = '''Prove or falsify the assigned bug in the named isolated worktree.

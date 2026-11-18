@@ -79,7 +79,9 @@ const CODEX_MODELS = [...new Set([...Object.values(AGENT_TARGET_OVERRIDES).map(t
   ...SEAT_IDS.flatMap(id => {
     const seat = DEFAULT_SEATS_CONFIG[id];
     return seat?.runtime === 'codex' && seat.model !== null ? [seat.model] : [];
-  })])];
+  }),
+  // A full-section save also checks seats that still use these earlier models.
+  'gpt-6-astra', 'gpt-6.1-sol'])];
 
 const RUNTIME_RANGES: Readonly<Record<SeatRuntime, Omit<SeatRuntimeRangeV1, 'id' | 'enabled'>>> = {
   claude: { models: Object.keys(MODEL_FAMILY_LABELS), effort: true, fleet: true },

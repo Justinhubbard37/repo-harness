@@ -63,12 +63,12 @@ Before each dispatch wave, run `rh quota`. Launch each task with `rh seats argv 
 | Seat | Default runtime, model and effort |
 |---|---|
 | `worker` | Codex, `gpt-6.1-terra`, high |
-| `worker-deep` | Codex, `gpt-6.1-sol`, high |
+| `worker-deep` | Codex, `gpt-6.2-sol`, high |
 | `worker-important` | Claude, `opus`, medium |
 | `worker-important-fast` | Claude, `sonnet`, medium |
 | `worker-light` | Pi, `magpie/cursor/deepseek-v41-flash-1017`, no effort and no account; worker tool groups; no fleet. A Pi seat on `magpie/codex/<model>` ("pi-gpt") is a user-selected alternative to a Codex seat: it runs the same GPT models, takes an effort (`--thinking`) and counts against the `chatgpt` account |
 | `gatekeeper` | Codex, `gpt-6.1-terra`, high; read, shell and network |
-| `gatekeeper-deep` | Codex, `gpt-6.1-sol`, high; read, shell and network, no fleet. An optional second Codex review row on a different model than `gatekeeper`; the board review plan does not start it |
+| `gatekeeper-deep` | Codex, `gpt-6.2-sol`, high; read, shell and network, no fleet. An optional second Codex review row on a different model than `gatekeeper`; the board review plan does not start it |
 | `gatekeeper-fallback` | `null` (not configured); when configured, the gatekeeper ranges: read, shell and network, no fleet |
 | `reviewer` | Claude, `opus`, high; read, shell and network |
 

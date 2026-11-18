@@ -77,7 +77,7 @@ describe('seat quota routing', () => {
       routing: { ...DEFAULT_SEATS_CONFIG.routing, unavailable_pi_providers: ['magpie/anthropic'] } };
     const lines = formatSeatRoutes(seats, seatAccountQuotas([claude({ seven_day: week(95, 84) })], seats.routing)).split('\n');
     expect(lines.filter(line => line.startsWith('route important_'))).toEqual([
-      'route important_deep: worker-deep (codex gpt-6.1-sol high; chatgpt unknown); skipped worker-important: pi provider magpie/anthropic unavailable',
+      'route important_deep: worker-deep (codex gpt-6.2-sol high; chatgpt unknown); skipped worker-important: pi provider magpie/anthropic unavailable',
       'route important_fast: none (pi provider magpie/anthropic unavailable)',
     ]);
   });
@@ -196,7 +196,7 @@ describe('seat quota routing', () => {
       return formatSeatRoutes(seats, seatAccountQuotas([codex, claude({ seven_day: week(claudeUsed, 84) })], seats.routing))
         .split('\n').includes('gatekeeper-deep: none (same model as gatekeeper)');
     };
-    const sol = { ...DEFAULT_SEATS_CONFIG.gatekeeper, model: 'gpt-6.1-sol' };
+    const sol = { ...DEFAULT_SEATS_CONFIG.gatekeeper, model: 'gpt-6.2-sol' };
     const exhaustedClaude = { gatekeeper: DEFAULT_SEATS_CONFIG.reviewer };
     expect(repeats({ ...exhaustedClaude, 'gatekeeper-fallback': sol }, 100)).toBe(true);
     expect(repeats({ ...exhaustedClaude, 'gatekeeper-fallback': { ...sol, model: 'gpt-6.1-terra' } }, 100)).toBe(false);
@@ -212,7 +212,7 @@ describe('seat quota routing', () => {
     const funded = { hasCredits: true, unlimited: false, balance: '34410.83' };
     const routes = (account: ReturnType<typeof codex>, codex_credit_mode: CodexCreditMode, codex_credit_floor = 0) =>
       formatSeatRoutes(DEFAULT_SEATS_CONFIG, seatAccountQuotas([account], { ...DEFAULT_SEATS_CONFIG.routing, codex_credit_mode, codex_credit_floor }));
-    const writer = 'route important_deep: worker-deep (codex gpt-6.1-sol high; chatgpt exhausted, on credits); skipped worker-important: claude unknown';
+    const writer = 'route important_deep: worker-deep (codex gpt-6.2-sol high; chatgpt exhausted, on credits); skipped worker-important: claude unknown';
     const gatekeeper = 'gatekeeper: gatekeeper (codex gpt-6.1-terra high; chatgpt exhausted, on credits)';
     expect(routes(codex(funded), 'off')).toContain('route important_deep: worker-important (claude opus medium; claude unknown)');
     expect(routes(codex(funded), 'off')).toContain('gatekeeper: none (chatgpt exhausted)');
@@ -501,7 +501,7 @@ describe('rh quota', () => {
     expect(lines.slice(2, 4)).toEqual(['claude mode: saving (5% left < 20%)', 'codex mode: normal (90% left)']);
     for (const expected of ['route simple_fast: worker (codex gpt-6.1-terra high',
       'route simple_deep: worker-deep (pi magpie/codex/gpt-6.1-sol medium',
-      'gatekeeper: gatekeeper (codex gpt-6.1-terra high', 'gatekeeper-deep: gatekeeper-deep (codex gpt-6.1-sol high',
+      'gatekeeper: gatekeeper (codex gpt-6.1-terra high', 'gatekeeper-deep: gatekeeper-deep (codex gpt-6.2-sol high',
       'advisor: advisor (pi magpie/codex/gpt-6-astra)']) expect(text.stdout).toContain(expected);
     expect(lines.slice(4).map(line => line.split(':')[0])).toEqual(['route important_deep', 'route important_fast', 'route simple_deep', 'route simple_fast', 'route frontend', 'explorer', 'gatekeeper', 'gatekeeper-deep', 'reviewer', 'advisor']);
   });

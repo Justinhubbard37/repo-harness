@@ -701,19 +701,19 @@ mapping.
 
 | Source `model` | Codex `model` | Source `effort` | Codex `model_reasoning_effort` |
 |---|---|---|---|
-| `opus` | `gpt-6-astra` | `low`, `medium`, `high`, `xhigh`, `max` | same string, unchanged |
+| `opus` | `gpt-6.2-astra` | `low`, `medium`, `high`, `xhigh`, `max` | same string, unchanged |
 | `sonnet`, `haiku` | `gpt-6-luna` | `low`, `medium`, `high`, `xhigh`, `max` | same string, unchanged |
-| `fable` | `gpt-6.1-sol` | `low`, `medium`, `high`, `xhigh`, `max` | same string, unchanged |
+| `fable` | `gpt-6.2-sol` | `low`, `medium`, `high`, `xhigh`, `max` | same string, unchanged |
 
 Seven per-agent target overrides are applied after tuple validation, on top of
 the family row above, and are the only model/effort remaps in the generator:
 `explorer` (`sonnet`/`medium`) targets `gpt-6-luna` at `high` reasoning;
-`deep-reasoner` (`opus`/`xhigh`) targets `gpt-6-astra` at `high` reasoning;
-`fast-worker` (`sonnet`/`high`) targets `gpt-6.1-sol` at `medium` reasoning;
-`deep-worker` (`opus`/`high`) targets `gpt-6.1-sol` at `high` reasoning;
-`gatekeeper` (`opus`/`high`) targets `gpt-6-astra` at `medium` reasoning;
-`root-cause-prover` (`opus`/`xhigh`) targets `gpt-6-astra` at `high` reasoning;
-`harness-evaluator` (`opus`/`high`) targets `gpt-6-astra` at `medium` reasoning.
+`deep-reasoner` (`opus`/`xhigh`) targets `gpt-6.2-astra` at `high` reasoning;
+`fast-worker` (`sonnet`/`high`) targets `gpt-6.2-sol` at `medium` reasoning;
+`deep-worker` (`opus`/`high`) targets `gpt-6.2-sol` at `high` reasoning;
+`gatekeeper` (`opus`/`high`) targets `gpt-6.2-astra` at `medium` reasoning;
+`root-cause-prover` (`opus`/`xhigh`) targets `gpt-6.2-astra` at `high` reasoning;
+`harness-evaluator` (`opus`/`high`) targets `gpt-6.2-astra` at `medium` reasoning.
 `orchestrator` has no Codex target.
 
 `fast-worker`, `deep-worker`, `root-cause-prover`, and `harness-evaluator`

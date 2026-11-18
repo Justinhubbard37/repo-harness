@@ -554,7 +554,7 @@ describe('seat settings contract without transport', () => {
     writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS, seats: { ...DEFAULT_SEATS_CONFIG, worker } }));
     const env = { HOME: home }, before = readSeatsSettings(env), route = seatsSettingsWriteRoute(env);
     const addedModels = ['magpie/opencode-go/deepseek-v4.1-flash', 'magpie/group/deepseek-v4.1-flash', 'magpie/zcode/GLM-5.3', 'magpie/zcode/GLM-5.3-Flash'];
-    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, ...addedModels.slice(0, 2), 'zai/glm-5.3', ...addedModels.slice(2), 'magpie/agy-cli/gemini-4-carbon', ...['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra'].map(m => `magpie/codex/${m}`)]);
+    expect(before.ranges.runtimes.find(runtime => runtime.id === 'pi')?.models).toEqual([model, ...addedModels.slice(0, 2), 'zai/glm-5.3', ...addedModels.slice(2), 'magpie/agy-cli/gemini-4-carbon', ...['gpt-6-luna', 'gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6.1-sol'].map(m => `magpie/codex/${m}`)]);
     const { revision, ...section } = before.config;
     const saved = await route.decode({ expected_revision: revision, seats: { ...section, advisor: { ...section.advisor, effort: 'medium' } } }, []).execute();
     expect(saved.status).toBe(200);
@@ -574,24 +574,31 @@ describe('seat settings contract without transport', () => {
       .rejects.toMatchObject({ status: 422, code: 'seat_model_invalid' });
   });
 
-  test('the Pi model magpie/agy-cli/gemini-4-carbon saves on the advisor seat and becomes its pi provider and model', async () => {
-    const model = 'magpie/agy-cli/gemini-4-carbon';
-    const advisor = { ...DEFAULT_SEATS_CONFIG.advisor, runtime: 'pi' as const, model, effort: 'high', fleet: [] };
-    const home = mkdtempSync(join(tmpdir(), 'seats-pi-agy-cli-'));
+  test.each([
+    ['pi', 'magpie/agy-cli/gemini-4-carbon', ['pi', '--provider', 'magpie', '--model', 'agy-cli/gemini-4-carbon', '--thinking', 'high']],
+    ['pi', 'magpie/codex/gpt-6.2-sol', ['pi', '--provider', 'magpie', '--model', 'codex/gpt-6.2-sol', '--thinking', 'high']],
+    ['pi', 'magpie/codex/gpt-6.2-astra', ['pi', '--provider', 'magpie', '--model', 'codex/gpt-6.2-astra', '--thinking', 'high']],
+    ['codex', 'gpt-6.2-sol', ['codex', '-m', 'gpt-6.2-sol', '-c', 'model_reasoning_effort="high"']],
+    ['codex', 'gpt-6.2-astra', ['codex', '-m', 'gpt-6.2-astra', '-c', 'model_reasoning_effort="high"']],
+  ] as const)('saves a %s advisor on %s and builds its launch argv', async (runtime, model, expectedArgv) => {
+    const advisor = { ...DEFAULT_SEATS_CONFIG.advisor, runtime, model, effort: 'high', fleet: [] };
+    const home = mkdtempSync(join(tmpdir(), 'seats-model-launch-'));
     cleanups.push(() => rmSync(home, { recursive: true, force: true }));
     mkdirSync(join(home, '.repo-harness'));
-    writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS, seats: { ...DEFAULT_SEATS_CONFIG, advisor } }));
+    const gatekeeperDeep = { ...DEFAULT_SEATS_CONFIG['gatekeeper-deep'], model: 'gpt-6-astra' };
+    writeFileSync(join(home, '.repo-harness', 'config.json'), JSON.stringify({ agents: PANE_AGENTS,
+      seats: { ...DEFAULT_SEATS_CONFIG, 'gatekeeper-deep': gatekeeperDeep } }));
     const env = { HOME: home }, before = readSeatsSettings(env), route = seatsSettingsWriteRoute(env);
     const { revision, ...section } = before.config;
     const saved = await route.decode({ expected_revision: revision, seats: { ...section, advisor } }, []).execute();
     expect(saved.status).toBe(200);
-    expect(readSeatsSettings(env).config.advisor).toMatchObject({ runtime: 'pi', model, effort: 'high', fleet: [] });
-    // The argv that `rh seats argv advisor` prints, built by the same function that the command projects.
-    const launch = buildSeatLaunch('advisor', readSeatsSettings(env).config.advisor, 'seats', []);
-    expect(launch.runtime).toBe('pi');
-    const start = launch.argv.indexOf('pi');
-    expect(launch.argv.slice(start, start + 6)).toEqual(['pi', '--provider', 'magpie', '--model', 'agy-cli/gemini-4-carbon', '--thinking']);
-    expect(launch.argv[start + 6]).toBe('high');
+    const { advisor: stored, 'gatekeeper-deep': storedGatekeeper } = readSeatsSettings(env).config;
+    expect(storedGatekeeper.model).toBe('gpt-6-astra');
+    expect(stored).toMatchObject({ runtime, model, effort: 'high', fleet: [] });
+    const launch = buildSeatLaunch('advisor', stored, 'seats', []);
+    expect(launch.runtime).toBe(runtime);
+    const start = launch.argv.indexOf(runtime);
+    expect(launch.argv.slice(start, start + expectedArgv.length)).toEqual([...expectedArgv]);
   });
 
   test('Pi models require a provider and model id', () => {
