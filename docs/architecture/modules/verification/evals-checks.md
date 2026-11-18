@@ -161,7 +161,7 @@ sequenceDiagram
 6. **protected path 检查是只读门禁。** `scripts/check-protected-paths.ts` 读取受保护目录的暂存或跟踪路径，报告冲突；它不改文件，也不运行测试。
 7. **agent tooling gate 只做诊断。** `check-agent-tooling.sh` 检查外部工具和 hook 配置，并报告 JSON 诊断。旧的 task workflow 和 task sync gate 已随 helper 删除（#1182）。
 8. **昂贵 benchmark 串行。** profile benchmark 在执行前获取 expensive-run lock（`scripts/run-harness-profile-benchmark.ts:1501`）。
-9. **有界命令按进程组回收。** Verification Plan 执行器把一个绝对截止时间传给 `runProcess({ processGroup: true, deadlineMs })`（`src/effects/evidence/verification-execution.ts:1037`）。进程组监督器在截止时间终止整个进程组，并在组长退出后继续等待进程组消失（`src/effects/process-supervisor.ts:279-281,312-337`）。
+9. **有界命令按进程组回收。** Verification Plan 执行器把一个绝对截止时间传给 `runProcess({ processGroup: true, deadlineMs })`（`src/effects/evidence/verification-execution.ts#executeCheck`）。进程组监督器在截止时间终止整个进程组，并在组长退出后继续等待进程组消失（`src/effects/process-supervisor.ts:279-281,312-337`）。
 
 ### 3.2 关键权衡
 
@@ -192,7 +192,7 @@ test-suite 是 expandable 组件。需要独立 owner 时，按运行边界（cl
 ### 3.4 prose 与源码的冲突和开放问题
 
 - 本节以前的 §3 原文已移到 §4 末尾。以下历史说法与当前源码不符：
-  - 旧 contract verifier 的 evidence-producer guard 和固定 600 秒预算。该脚本已随 helper 删除（#1182）。当前 Verification Plan 执行器的默认预算是 3600 秒，`--timeout-ms` 可以覆盖（`src/effects/evidence/verification-execution.ts:1258`、`scripts/verification-plan.ts:96`）。
+  - 旧 contract verifier 的 evidence-producer guard 和固定 600 秒预算。该脚本已随 helper 删除（#1182）。当前 Verification Plan 执行器的默认预算是 3600 秒，`--timeout-ms` 可以覆盖（`src/effects/evidence/verification-execution.ts#executePrepared`、`scripts/verification-plan.ts:96`）。
   - `verify-sprint --prepare-acceptance`、frozen-subject criterion retry 和 `--force-expensive-rerun`。当前 `verify-sprint.sh` 拒绝 workflow-stage acceptance 参数（`verify-sprint.sh:17`）。
   - 旧的 task-sync digest 绑定已随 helper 删除（#1182）。
   - 根 `## Required Checks` 是唯一清单来源。当前根 `AGENTS.md` 和 `CLAUDE.md` 没有这一节。
@@ -414,7 +414,7 @@ authority; missing or malformed evidence fails closed.
 
 **与现有 prose 的冲突（以源码为准）：**
 
-- §4 的 2026-07-14 段落写旧 contract verifier 是 "one fixed 600-second deadline"。当前 Verification Plan 执行器的默认预算是 3600 秒（`src/effects/evidence/verification-execution.ts:1258`）。历史段落按 append-only 原样保留。
+- §4 的 2026-07-14 段落写旧 contract verifier 是 "one fixed 600-second deadline"。当前 Verification Plan 执行器的默认预算是 3600 秒（`src/effects/evidence/verification-execution.ts#executePrepared`）。历史段落按 append-only 原样保留。
 - `assets/skill-commands/repo-harness-check/SKILL.md` 把 Codex 必需 skill 写作 `health`/`check`/`mermaid`，仓库根 `CLAUDE.md` 写的是 `health`、`check`、`diagram-design`。两处未对齐，本文不替任一方裁定。
 
 **10x 规模下先垮的点。** 不是 verifier，而是全量测试成本与证据生产延迟：183 个测试文件 / 66,345 LOC 已是 `bun test` 的主要壁钟成本，而 3×9 矩阵单次授权跑受 50 分钟绝对预算约束。当前拆分让小切片跑聚焦测试、release/pre-merge 才跑全量 gate；再放大一个量级时，先撑不住的是 benchmark 的 evidence-production latency 与 expensive lane 的串行度，而不是有界验证本身。
