@@ -255,8 +255,10 @@ preflight_skill_root() {
   local name source
   while IFS=$'\t' read -r name source; do
     [[ -n "$name" ]] || continue
-    facade_selected "$name" || continue
+    # Sparse packages can declare many facades without shipping their trees.
+    # Skip them before scanning the selected-name list for each host.
     [[ -d "$SOURCE_ROOT/$source" && -f "$SOURCE_ROOT/$source/SKILL.md" ]] || continue
+    facade_selected "$name" || continue
     assert_managed_dest "$root/$name" || exit 1
   done <<< "$FACADE_SOURCES"
 }
@@ -304,9 +306,9 @@ sync_command_facades() {
   local name source facade_src dest
   while IFS=$'\t' read -r name source; do
     [[ -n "$name" ]] || continue
-    facade_selected "$name" || continue
     facade_src="$SOURCE_ROOT/$source"
     [[ -d "$facade_src" && -f "$facade_src/SKILL.md" ]] || continue
+    facade_selected "$name" || continue
     dest="$root/$name"
     if [[ "$mode" == "link" ]]; then
       remove_managed_dest "$dest"
