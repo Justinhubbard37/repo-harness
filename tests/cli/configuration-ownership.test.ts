@@ -6,7 +6,7 @@ import { configurationReceiptPath } from '../../src/cli/installer/configuration-
 import { migrateCodexConfigRecords, planCodexConfigMigration } from '../../src/cli/installer/codex-config-migration';
 import { migrateJsonConfigRecords, planJsonConfigMigration } from '../../src/cli/installer/json-config-migration';
 import { buildManagedHooks, canonicalManagedHookProjection, managedStatusLine } from '../../src/cli/installer/managed-entries';
-import { beginInstallHostTransaction, installProfileTransactionPaths, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
+import { beginInstallHostTransaction, installProfileTransactionPaths, prepareInstallSelectionSwitch, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
 import { installProfileStatePath } from '../../src/cli/installer/install-state';
 import { MANAGED_TAG } from '../../src/core/adoption/managed-hook-config';
 import { sha256Prefixed } from '../../src/core/evidence/sha256';
@@ -16,7 +16,7 @@ import { runUserUninstall } from '../../src/cli/installer/uninstall';
 import { codexConfigFragment, tomlFragment } from '../../src/core/host-config/toml-fragment';
 import { planFile } from '../../src/core/host-config/plan';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
-import { seedGlobalPackageFixture } from '../helpers/install-ownership';
+import { recordPluginSelection, seedGlobalPackageFixture } from '../helpers/install-ownership';
 import { acquireRuntimeTransactionLock, globalRuntimeScope, runtimeTransactionRoot, withRuntimeTransactionLock } from '../../src/effects/locking/runtime-transaction-lock';
 
 function fixture(run: (home: string, env: NodeJS.ProcessEnv) => void) {
@@ -228,7 +228,7 @@ test('refuses a configuration receipt with the retired Codex MCP selector or a r
   });
 });
 
-test('a legacy receipt table at the end of a file with no final newline keeps every byte under the architecture revert', () => {
+test('pre-separator ledger records keep every byte under the architecture revert without conversion', () => {
   // The old receipt does not prove that rh wrote the line break before the table.
   for (const [lineBreak, before] of [['\n', null], ['\r\n', null], ['\n', '[mcp_servers.codegraph]\ncommand = "user"\n']]) fixture((home, env) => {
     const path = join(home, '.codex/config.toml');
@@ -238,9 +238,35 @@ test('a legacy receipt table at the end of a file with no final newline keeps ev
     writeFileSync(path, content);
     mkdirSync(join(home, '.repo-harness'));
     writeFileSync(configurationReceiptPath(home), JSON.stringify({ protocol: 1, changes: [{ path, selector: 'mcp_servers.codegraph', before, installed, active: true }] }));
+    const adoption = planCodexConfigMigration(env)!.adoption!;
+    // Seed the record that earlier versions wrote, without separator proof.
+    openHostConfigGate({ env }).adopt(path, { ...adoption, fragments: adoption.fragments.map(({ owner, selector, kind }) => ({ owner, selector, kind, inserted: '' })) });
     migrateCodexConfigRecords(env);
     openHostConfigGate({ env }).revert([path], { owner: 'architecture' });
     expect(readFileSync(path, 'utf8'), JSON.stringify([lineBreak, before])).toBe(content);
+  });
+});
+
+test('a profile switch removes the legacy EOF table and keeps the user separator and restored table bytes', () => {
+  for (const lineBreak of ['\n', '\r\n']) for (const before of [null, `[mcp_servers.codegraph]${lineBreak}command = "user"${lineBreak}`]) for (const refresh of [false, true]) fixture((home, env) => {
+    const path = join(home, '.codex/config.toml');
+    const installed = `[mcp_servers.codegraph]${lineBreak}command = "codegraph"`;
+    const user = `# user config${lineBreak}model = "user"${lineBreak}`;
+    mkdirSync(join(home, '.codex'));
+    writeFileSync(path, user + installed);
+    mkdirSync(join(home, '.repo-harness'));
+    writeFileSync(configurationReceiptPath(home), JSON.stringify({ protocol: 1, changes: [{ path, selector: 'mcp_servers.codegraph', before, installed, active: true }] }));
+    recordPluginSelection(env);
+    expect(readFileSync(path, 'utf8')).toBe(user + installed);
+    if (refresh) {
+      migrateCodexConfigRecords(env);
+      const result = openHostConfigGate({ env }).apply([{ path, fragments: [{ owner: 'architecture', selector: 'mcp_servers.codegraph', kind: 'refresh', strategy: tomlFragment, value: `[mcp_servers.codegraph]${lineBreak}command = "codegraph"${lineBreak}args = ["serve"]` }] }]);
+      expect(result.skipped).toEqual([]);
+      expect(readFileSync(path, 'utf8')).toBe(`${user}${installed}${lineBreak}args = ["serve"]`);
+    }
+    prepareInstallSelectionSwitch([], env, join(home, 'transaction'));
+    expect(readFileSync(path, 'utf8'), JSON.stringify({ lineBreak, before })).toBe(user + (before ?? ''));
+    expect(openHostConfigGate({ env }).recorded(path)).toEqual([]);
   });
 });
 

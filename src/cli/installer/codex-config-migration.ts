@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { sha256Prefixed } from '../../core/evidence/sha256';
 import { CODEX_CONFIG_FRAGMENTS, codexConfigFragment, isCodexConfigSelector, namingTomlFile, tomlFragment, type CodexConfigSelector } from '../../core/host-config/toml-fragment';
-import { HostConfigError } from '../../core/host-config/types';
-import { openHostConfigGate, type AdoptedFragment, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
+import { HostConfigError, type FragmentRecord } from '../../core/host-config/types';
+import { openHostConfigGate, type HostConfigAdoption, type HostConfigRevertEntry } from '../../effects/host-config/gate';
 import { configurationReceiptPath, hostConfigurationRoot, readRawConfigurationReceipt, saveConfigurationReceipt, type ConfigurationReceipt } from './configuration-ownership';
 import { CODEGRAPH_CONFIG_MARKER } from './install-profile';
 import { readLegacyManifest, type LegacyManifestSurface } from './install-state';
@@ -89,7 +89,8 @@ function manifestFragments(manifest: ReturnType<typeof readLegacyManifest>, path
   const current = codexConfigFragment(content, 'mcp_servers.codegraph');
   const intact = current !== null && surfaces.some((surface) => surface.content_hash === projectionHash(current));
   return {
-    fragments: intact ? [{ selector: 'mcp_servers.codegraph', before: null, installed: current }] : [],
+    // The trimmed manifest hash proves the table, but not its leading line break.
+    fragments: intact ? [{ selector: 'mcp_servers.codegraph', before: null, installed: current.replace(/^\r?\n/, '') }] : [],
     // A recorded table that the user changed keeps the file out of a revert, as the old uninstall preserved it.
     changed: surfaces.length > 0 && current !== null && !intact,
     present: true,
@@ -105,22 +106,24 @@ function adoption(content: string, fragments: readonly OldFragment[], manifestCh
   if (!fragments.length && !manifestChanged) return null;
   let backup = content;
   let externalChange = manifestChanged;
-  const adopted: AdoptedFragment[] = [];
+  const adopted: Omit<FragmentRecord, 'file'>[] = [];
   for (const fragment of fragments) {
     const current = codexConfigFragment(content, fragment.selector);
     let inserted = fragment.installed ?? '';
+    let separator: FragmentRecord['separator'];
     if (current === fragment.installed) backup = setFragment(backup, fragment.selector, fragment.before);
     else if (inserted !== '' && (current === `\n${inserted}` || current === `\r\n${inserted}`) && backup.endsWith(inserted)) {
-      // A table that ends the file with no final newline: the span holds the line break before its header,
-      // and the old receipt does not prove that rh wrote it. The record keeps no text, so no fragment edit
-      // takes the table out; only a whole-file revert of the unchanged file does, to the old uninstall's bytes.
+      // The receipt proves the table bytes, but not the preceding line break.
+      // Record the full span for the gate's intact check and keep the break on removal.
       backup = backup.slice(0, -inserted.length) + (fragment.before ?? '');
-      inserted = '';
+      separator = current.startsWith('\r\n') ? '\r\n' : '\n';
+      inserted = current;
     } else externalChange = true;
-    adopted.push({ owner: CODEX_CONFIG_FRAGMENTS[fragment.selector], selector: fragment.selector, kind: fragment.before === null ? 'add' : 'override', inserted });
+    adopted.push({ owner: CODEX_CONFIG_FRAGMENTS[fragment.selector], selector: fragment.selector, kind: fragment.before === null ? 'add' : 'override', inserted, ...(separator !== undefined ? { separator } : {}) });
   }
-  // The old uninstall removed a file that was blank after its restore: rh created it.
-  return { backup: backup.trim() ? Buffer.from(backup, 'utf8') : null, fragments: adopted, externalChange };
+  // A whitespace-only backup still holds user bytes when the separator is unproven.
+  const keepBackup = backup.trim() !== '' || adopted.some((fragment) => fragment.separator !== undefined);
+  return { backup: keepBackup ? Buffer.from(backup, 'utf8') : null, fragments: adopted, externalChange };
 }
 
 /** Plan the migration without writing; null when no old record names the file. */

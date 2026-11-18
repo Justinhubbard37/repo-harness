@@ -89,6 +89,8 @@ export interface FragmentRecord {
   readonly kind: FragmentKind;
   /** The text rh wrote at the selector: a refresh over other text is a user's change. Empty when rh's text is not known: the fragment stays. */
   readonly inserted: string;
+  /** A leading line break in `inserted` that rh cannot prove it wrote; a TOML removal or restore keeps it. Absent on older records. */
+  readonly separator?: '\n' | '\r\n';
   /** The outermost container that rh's insert created on the selector's path; a revert removes an emptied container only on this proof. */
   readonly created?: string;
   /** For a fragment that the one-shot migration adopted: its text when adopted, kept across refreshes so that a refreshed value stays recoverable. */

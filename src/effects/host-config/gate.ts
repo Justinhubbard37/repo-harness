@@ -316,6 +316,7 @@ function fileFragments(plan: FilePlan, recorded: readonly FragmentRecord[]): Fra
     ...plan.fragments.map(({ owner, selector, kind, previous, text, created }): FragmentRecord => {
       const container = previous?.created ?? created;
       return { file: plan.file, owner, selector, kind: previous?.kind ?? kind, inserted: text, ...(container ? { created: container } : {}),
+        ...(previous?.separator !== undefined ? { separator: previous.separator } : {}),
         ...(previous?.preimage !== undefined ? { preimage: previous.preimage } : {}) };
     }),
   ];

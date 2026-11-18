@@ -14,12 +14,21 @@ export interface FragmentFormat {
   empty(content: string): boolean;
 }
 
+function editTomlFragment(content: string, selector: string, value: string, records: readonly FragmentRecord[]): FragmentEdit {
+  const separator = records.find((record) => record.selector === selector)?.separator;
+  if (separator === undefined) return tomlFragment.apply(content, selector, value);
+  const edit = tomlFragment.apply(content, selector, '');
+  // The backup span can include its own leading separator. Keep the current one once,
+  // and restore the table's exact bytes, including a final line break.
+  return { ...edit, inserted: separator + value.replace(/^\r?\n/, '') };
+}
+
 const TOML: FragmentFormat = {
   strategy: tomlFragment,
-  remove: (content, selector) => tomlFragment.apply(content, selector, ''),
-  restore: (content, selector, backup) => {
+  remove: (content, selector, records) => editTomlFragment(content, selector, '', records),
+  restore: (content, selector, backup, records) => {
     const range = tomlFragment.locate(backup, selector);
-    return tomlFragment.apply(content, selector, range ? backup.slice(range.start, range.end) : '');
+    return editTomlFragment(content, selector, range ? backup.slice(range.start, range.end) : '', records);
   },
   empty: (content) => content.trim() === '',
 };
