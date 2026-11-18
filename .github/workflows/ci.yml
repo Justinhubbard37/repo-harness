@@ -159,10 +159,16 @@ jobs:
     needs: selection
     if: needs.selection.outputs.mode == 'daily' || (needs.selection.outputs.mode == 'affected' && needs.selection.outputs.native_oar != 'false')
     runs-on: macos-15-intel
-    # Each file gets its own 10-minute budget. On Intel, acceptance-receipt
-    # took 471 s after 106 s of setup, leaving no room for lifecycle (#2983).
+    # Slow macos-15-intel hosts take 2.4 to 2.8 times as long for setup
+    # and tests (#3152).
+    # Each file keeps its own job budget. On Intel, acceptance-receipt took
+    # 471 s after 106 s of setup, leaving no room for lifecycle in the same
+    # job (#2983).
+    # --timeout 60000 sets the unchanged Bun default of 60 s per case.
+    # A case override in the test file still wins, so a hung case fails at
+    # its own case timeout, not at 60 s.
     # A leg's failure must not cancel the other legs' evidence (#1296).
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

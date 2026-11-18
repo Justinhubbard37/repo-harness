@@ -798,7 +798,7 @@ describe('single affected verification and daily fallback', () => {
     expect(workflow.jobs.required.steps[0].env.NATIVE_OAR).toBe('${{ needs.selection.outputs.native_oar }}');
     expect(workflow.jobs.required.steps[0].env.HOME_ISOLATION).toBe('${{ needs.selection.outputs.home_isolation }}');
     expect(job['runs-on']).toBe('macos-15-intel');
-    expect(job['timeout-minutes']).toBe(10);
+    expect(job['timeout-minutes']).toBe(20);
     expect(job.strategy).toEqual({ 'fail-fast': false, matrix: { test: [
       'tests/generic-review.test.ts', 'tests/generic-review-oar-seam.test.ts', 'tests/acceptance-receipt.test.ts', 'tests/herdr-task-lifecycle.test.ts',
     ] } });
