@@ -1,4 +1,4 @@
-import { bunGlobalPackageRoot, isBunGlobalPackageSource, skillLinkMatches } from "../installer/skill-projection";
+import { bunGlobalPackageRoot, isBunGlobalPackageSource } from "../installer/skill-projection";
 import { architecturePort, isArchitectureUnavailable } from '../../core/architecture/contracts';
 /**
  * Existing-repo harness adoption implementation.
@@ -11,16 +11,12 @@ import { architecturePort, isArchitectureUnavailable } from '../../core/architec
  * reports what is missing.
  */
 
-import { homedir, userInfo } from "os";
+import { userInfo } from "os";
+import { requireHome } from "../../effects/repo-harness-home";
 import { spawnSync } from "child_process";
 import {
-  cpSync,
   existsSync,
-  mkdirSync,
-  lstatSync,
   readFileSync,
-  rmSync,
-  symlinkSync,
 } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -32,9 +28,9 @@ import {
 } from "../../core/skill-surface/catalog";
 import type { PluginId } from "../../core/skill-surface/plugin-manifest";
 import { hostSkillRoot, SKILL_HOSTS, type SkillHost } from "../../effects/host-skill-roots";
-import { skillTreeSha256 } from "../../effects/skill-tree-integrity";
-import { ownedPath, pathRecordIsCurrent, pathRecordKey } from '../../effects/host-config/path-records';
-import { assertArchitecturePolicySelection, beginInstallHostTransaction, commitInstallHostTransaction, rollbackInstallHostTransaction, readInstallState } from "../installer/install-profile";
+import { pathRecordKey } from "../../effects/host-config/path-records";
+import { openHostConfigGate, type HostConfigPathWrite } from "../../effects/host-config/gate";
+import { assertArchitecturePolicySelection, withHostConfigTransaction } from "../installer/install-profile";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 import { validateRepoAdoptionTarget } from "../repo-adoption/target";
 import { runAdoptionApply, runAdoptionPlan } from "./adoption-plan";
@@ -47,7 +43,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..", "..");
  * Host-scoped skills bundled under `assets/skills/<skill>`. The cross-review
  * skill is host-aware; task-agent owns persistent plan consultation.
  */
-type BundledHostSkill = { skill: string; host: SkillHost; step: string };
+type BundledHostSkill = { skill: string; host: SkillHost; step: string; owner: string };
 
 /**
  * Reads and parses sourceRoot's skill-surface manifest. Parameterized by
@@ -81,7 +77,7 @@ function crossReviewSkillsFromCatalog(catalog: SkillSurfaceCatalog, plugins?: re
   const placements = catalogHostSkillPlacements(catalog, plugins);
   const entries: BundledHostSkill[] = [];
   for (const host of SKILL_HOSTS) {
-    for (const skill of placements[host]) entries.push({ skill, host, step: `cross-review skill ${skill}` });
+    for (const skill of placements[host]) entries.push({ skill, host, step: `cross-review skill ${skill}`, owner: host === "pi" ? "pi" : catalog.packages.find(pkg => pkg.name === skill)!.owner });
   }
   return entries;
 }
@@ -150,7 +146,7 @@ function hostIds(target: InstallTargetSpec): Array<"codex" | "claude"> {
 }
 
 function homeDir(env?: NodeJS.ProcessEnv): string | null {
-  return env?.HOME ?? env?.USERPROFILE ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir() ?? null;
+  return requireHome(env ?? process.env);
 }
 
 /**
@@ -209,70 +205,38 @@ function syncBundledItemsAtHome(
   home: string | null,
   skills: ReadonlyArray<BundledHostSkill>,
   env?: NodeJS.ProcessEnv,
+  transaction?: string,
 ): InitStep[] {
   const steps: InitStep[] = [];
-  const ownerEnv = { ...env, HOME: home ?? undefined };
-  const installed = home ? readInstallState(ownerEnv) : null;
+  const ownerEnv = { ...(env ?? process.env), HOME: home ?? undefined };
   const globalRoot = bunGlobalPackageRoot(env);
-  const globalSource = isBunGlobalPackageSource(sourceRoot, env);
-  const useLinks = globalSource
+  const useLinks = isBunGlobalPackageSource(sourceRoot, env)
     && (env ?? process.env).REPO_HARNESS_LINK_INSTALLED_COPIES !== '0';
-  for (const { skill, host, step } of skills) {
-    if (target !== "both" && target !== host) continue;
-    if (!home) {
-      steps.push({ step, status: "failed", detail: "HOME is required to resolve host skill roots" });
-      continue;
-    }
-    const root = hostSkillRoot(home, host, env);
-    // Install initializes the optional Pi root. Generic sync must not opt in
-    // a new Pi host outside the install ownership transaction.
-    if (host === 'pi' && !existsSync(root)) continue;
-    const source = join(sourceRoot, "assets", "skills", skill);
-    const srcSkill = join(source, "SKILL.md");
-    if (!existsSync(srcSkill)) {
-      steps.push({ step, status: "skipped", detail: `bundled source not found at ${source}` });
-      continue;
-    }
-    const dest = join(root, skill);
-    const destSkill = join(dest, "SKILL.md");
-    mkdirSync(root, { recursive: true });
-    const correctGlobalLink = globalRoot !== null
-      && skillLinkMatches(dest, join(globalRoot, 'assets', 'skills', skill));
-    // Keep user links to the current checkout. Discovery does not own them.
-    // A stable installed link remains valid when init runs from another source.
-    if ((!globalSource && skillLinkMatches(dest, source))
-      || (correctGlobalLink && (!globalSource || useLinks))) {
-      steps.push({ step, status: 'ok', detail: 'already present' });
-      continue;
-    }
-    let stat: ReturnType<typeof lstatSync> | null = null;
-    try { stat = lstatSync(dest); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    const identicalCopy = stat?.isDirectory() === true
-      && existsSync(destSkill) && skillTreeSha256(dest) === skillTreeSha256(source);
-    if (!useLinks && identicalCopy) {
-      steps.push({ step, status: 'ok', detail: 'already present' });
-      continue;
-    }
-    if (stat) {
-      const owned = installed ? ownedPath(ownerEnv, dest) : null;
-      if (!correctGlobalLink && !identicalCopy && (!owned || !pathRecordIsCurrent(pathRecordKey(ownerEnv, dest), owned))) {
-        steps.push({ step, status: 'failed', detail: `refusing to overwrite unowned or modified skill at ${dest}; preserve or move this path, then run: rh install --target ${host}` });
-        continue;
+  try {
+    withHostConfigTransaction(ownerEnv, transaction, root => {
+      const writes: HostConfigPathWrite[] = [];
+      for (const { skill, host, step, owner } of skills) {
+        if (target !== 'both' && target !== host) continue;
+        if (!home) throw new Error('HOME is required to resolve host skill roots');
+        const destinationRoot = hostSkillRoot(home, host, env);
+        if (host === 'pi' && !existsSync(destinationRoot)) continue;
+        const source = join(sourceRoot, 'assets', 'skills', skill);
+        if (!existsSync(join(source, 'SKILL.md'))) {
+          steps.push({ step, status: 'skipped', detail: 'bundled source not found at ' + source });
+          continue;
+        }
+        writes.push({ path: join(destinationRoot, skill), owner,
+          entry: useLinks ? { type: 'symlink', target: join(globalRoot!, 'assets', 'skills', skill) } : { type: 'directory', source } });
+        steps.push({ step, status: 'ok', detail: 'synced ' + join(destinationRoot, skill) });
       }
-    }
-    const transaction = beginInstallHostTransaction([dest], { HOME: home });
-    try {
-      if (stat) rmSync(dest, { recursive: true });
-      if (useLinks) symlinkSync(join(globalRoot!, 'assets', 'skills', skill), dest, 'dir');
-      else cpSync(source, dest, { recursive: true });
-      commitInstallHostTransaction(transaction);
-      steps.push({ step, status: 'ok', detail: `synced ${dest}` });
-    } catch (error) {
-      rollbackInstallHostTransaction(transaction);
-      steps.push({ step, status: 'failed', detail: `cannot update bundled skill ${dest}: ${String(error)}` });
-    }
+      const written = openHostConfigGate({ env: ownerEnv }).writePaths(writes, { transaction: root });
+      for (const step of steps) {
+        const path = step.detail?.startsWith('synced ') ? step.detail.slice('synced '.length) : null;
+        if (path && !written.includes(pathRecordKey(ownerEnv, path))) step.detail = 'already present';
+      }
+    });
+  } catch (error) {
+    return [{ step: 'cross-review skills', status: 'failed', detail: String(error) }];
   }
   return steps;
 }
@@ -282,9 +246,10 @@ export function syncCrossReviewSkills(
   target: InstallTargetSpec,
   env?: NodeJS.ProcessEnv,
   plugins?: readonly PluginId[],
+  transaction?: string,
 ): InitStep[] {
   const catalog = loadSkillSurfaceCatalog(sourceRoot);
-  return syncBundledItemsAtHome(sourceRoot, target, homeDir(env), crossReviewSkillsFromCatalog(catalog, plugins), env);
+  return syncBundledItemsAtHome(sourceRoot, target, homeDir(env), crossReviewSkillsFromCatalog(catalog, plugins), env, transaction);
 }
 
 const READINESS_STEP = 'architecture projection readiness';

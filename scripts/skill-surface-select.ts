@@ -62,11 +62,14 @@ function loadCatalog(): SkillSurfaceCatalog {
 
 async function main(argv: readonly string[]): Promise<void> {
   const [subcommand, ...rest] = argv;
-  if (subcommand === "remove-dangling-links") {
-    const { removeOwnedDanglingSkillLinks } = await import("../src/effects/skill-tree-integrity");
-    for (const link of removeOwnedDanglingSkillLinks(join(SCRIPT_DIR, ".."), rest)) {
-      console.log(`[sync-installed] removed dangling skill symlink: ${link}`);
-    }
+  if (subcommand === 'sync-installed-copies') {
+    if (rest.length) { console.error('skill-surface-select: retired sync arguments'); process.exit(2); }
+    const { syncInstalledSkillCopies } = await import('../src/cli/installer/skill-sync');
+    try {
+      const result = syncInstalledSkillCopies(process.env.REPO_HARNESS_SOURCE_ROOT ?? join(SCRIPT_DIR, '..'), process.env, process.env.REPO_HARNESS_RUNTIME_TRANSACTION, join(SCRIPT_DIR, 'sync-codex-installed-copies.sh'));
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
+    } catch (error) { fail((error as Error).message); }
     return;
   }
   if (subcommand === "managed-tree-hash") {
@@ -150,7 +153,7 @@ async function main(argv: readonly string[]): Promise<void> {
     for (const name of placements.codex) console.log(`codex ${name}`);
     return;
   }
-  fail(`unknown or missing subcommand "${subcommand ?? ""}"; expected audience-sources|facades|selection-projection|facade-sources|external-skills|host-placements|managed-tree-hash|remove-dangling-links`);
+  fail(`unknown or missing subcommand "${subcommand ?? ""}"; expected audience-sources|facades|selection-projection|facade-sources|external-skills|host-placements|managed-tree-hash|sync-installed-copies`);
 }
 
 await main(process.argv.slice(2));

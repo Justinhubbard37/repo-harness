@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { requireHome } from '../../effects/repo-harness-home';
 import { join } from 'node:path';
 import { isRecord } from '../../core/evidence/is-record';
 import type { PathRecord } from '../../core/host-config/types';
@@ -20,7 +20,7 @@ import { migrateJsonConfigRecords } from './json-config-migration';
 const FLEET_RECEIPT = 'agent-fleet-user-managed.json';
 
 function fleetReceiptPath(env: NodeJS.ProcessEnv): string {
-  return join(env.HOME ?? homedir(), '.repo-harness', FLEET_RECEIPT);
+  return join(requireHome(env), '.repo-harness', FLEET_RECEIPT);
 }
 
 /** True when the state still is protocol 3, so the next entry point migrates it. */

@@ -7,7 +7,7 @@ import { spawnSync } from 'child_process';
 import { PassThrough, Writable } from 'stream';
 import { createHash } from 'crypto';
 import { checkMcpLocalConfigFile } from '../../src/cli/mcp/local-config-check';
-import { migrateSeatsConfiguration, ownFreshWazaSharedRules, runGlobalRuntimeSetup, verifyInstalledManagedRuntime } from '../../src/cli/commands/global-runtime';
+import { migrateSeatsConfiguration, runGlobalRuntimeSetup, verifyInstalledManagedRuntime } from '../../src/cli/commands/global-runtime';
 import { DEFAULT_SEATS_CONFIG, decodeSeatsConfig } from '../../src/core/board/seats-settings';
 import { registerArchitecturePlugin, resolveOptionalRuntimeDeps, runCli, runTransactionalRuntimeRefresh } from '../../src/cli/index';
 import { copyPackageRuntimeFixture, writeBunWrapper, writeShellExecutableFixture } from '../helpers/repo-fixture';
@@ -16,9 +16,8 @@ import { dependencies, devDependencies } from '../../package.json';
 import { installStateFixturePath, recordInstallOwnership, recordPluginSelection, RETIRED_CLI_LINES, seedGlobalPackageFixture, seedPathRecords } from '../helpers/install-ownership';
 import { writeFakeHc } from '../helpers/fake-hc';
 import wazaRules from '../../src/core/skill-surface/waza-shared-rules.json';
-import { applyInstallSelection, beginInstallHostTransaction, installProfileHostMutationPaths, readInstallState, recordRefreshedInstallOwnership, loadSkillSurfaceCatalog, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
-import { buildManagedHooks } from '../../src/cli/installer/managed-entries';
-import { MANAGED_AGENTS } from '../../src/effects/terminal/task-role-profiles';
+import { syncWazaSharedRules } from "../../src/cli/installer/waza-rules";
+import { beginInstallHostTransaction, installProfileHostMutationPaths, installProfileTransactionPaths, readInstallState, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
 import { applyGlobalContextRefresh, GLOBAL_RULES_EDITED, GLOBAL_RULES_END, inspectGlobalContext, preflightGlobalContextRefresh, renderGlobalRulesBlock, setReportingLanguage } from '../../src/cli/installer/global-context';
 import { CandidateRequestProtocolRetiredError, encodeCandidateRequest, parseCandidateRequest, type CandidateReconciliationRequest } from '../../src/cli/commands/candidate-reconciliation';
 import type { PluginId } from '../../src/core/skill-surface/plugin-manifest';
@@ -437,7 +436,6 @@ describe('registry-bound CLI update (#701)', () => {
     channel?: 'latest' | 'next';
     version?: string;
     installExit?: number;
-    noGlobalRoot?: boolean;
   } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'repo-harness-registry-update-'));
     const home = join(root, 'home');
@@ -476,11 +474,6 @@ describe('registry-bound CLI update (#701)', () => {
         PATH: `${bin}:${process.env.PATH ?? ''}`,
         REPO_HARNESS_BUN_EXECUTABLE: join(bin, 'bun'),
       };
-      if (options.noGlobalRoot) {
-        delete env.HOME;
-        delete env.BUN_INSTALL;
-        delete env.USERPROFILE;
-      }
       const result = runGlobalRuntimeSetup({
         sourceRoot: source, cwd: root, plugins: [], target: 'codex',
         installSpec: `repo-harness@${options.version ?? options.channel ?? 'latest'}`, updateMode: true,
@@ -530,13 +523,6 @@ describe('registry-bound CLI update (#701)', () => {
     expect(commands).toContain('pm view repo-harness@next version --json --no-cache');
     expect(commands).toContain('add -g repo-harness@0.23.0-rc.1 --no-cache');
     expect(result.lines).toContain('[runtime] ok: install repo-harness CLI - spec=repo-harness@0.23.0-rc.1; 0.21.2 -> 0.23.0-rc.1');
-  });
-
-  test('fails before the registry lookup when the Bun global package root is unresolved', () => {
-    const { result, commands } = runUpdateFixture({ noGlobalRoot: true });
-    expect(result.exitCode).toBe(1);
-    expect(result.steps.at(-1)).toMatchObject({ step: 'install repo-harness CLI', status: 'failed', detail: 'unable to resolve Bun global package root' });
-    expect(commands.some(command => command.startsWith('pm view '))).toBe(false);
   });
 
   test('stops before installing when the registry lookup fails', () => {
@@ -960,10 +946,10 @@ exit 0
         pi_packages: [],
         previous: null,
       }, null, 2)}\n`);
-      seedPathRecords({ HOME: home }, Object.fromEntries(['obsidian-markdown', 'obsidian-cli'].map((skill) => [
+      seedPathRecords({ HOME: home }, { ...readPathRecords({ HOME: home }), ...Object.fromEntries(['obsidian-markdown', 'obsidian-cli'].map((skill) => [
         pathRecordKey({ HOME: home }, join(home, '.agents', 'skills', skill)),
         { owner: 'strategy-memory', host: 'staged', kind: 'created', baseline: { state: 'unknown' }, committed: { type: 'directory', sha256: singleFileManagedTreeHash(`# old ${skill}\n`) } },
-      ] as const)));
+      ] as const)) });
 
       rmSync(join(home, '.codex', 'skills', 'obsidian-cli'));
       const verifiedUpdate = runGlobalRuntimeSetup({
@@ -1022,7 +1008,7 @@ exit 0
       }
       const stagingRules = wazaRules.files.map((rule) => join(home, '.agents', 'rules', rule));
       recordInstallOwnership([], { HOME: home });
-      recordRefreshedInstallOwnership(stagingRules, { HOME: home }, stagingRules);
+      recordInstallOwnership([...stagingRules, ...wazaRules.files.map(rule => join(home, '.codex/rules', rule))], { HOME: home });
       writeFakeCodegraph(fakeBin, codegraphLog);
       writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
       writeFakeSkillsCli(fakeBin);
@@ -1469,44 +1455,25 @@ exit 0
     }
   });
 
-  test('rejects symlinked host skill roots without writing outside HOME', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-obsidian-skill-host-root-symlink-'));
-    const source = join(tmp, 'source');
-    const home = join(tmp, 'home');
-    const repo = join(tmp, 'repo');
-    const outside = join(tmp, 'outside');
+  test('linked host skill roots follow the gate and keep unrelated user entries', () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'rh-linked-host-'));
+    const source = join(temporary, 'source'), home = join(temporary, 'home'), outside = join(temporary, 'outside'), bin = join(temporary, 'bin');
     try {
-      mkdirSync(join(home, '.codex'), { recursive: true });
-      mkdirSync(repo, { recursive: true });
-      mkdirSync(outside, { recursive: true });
-      setupFakeSource(source);
-      setObsidianSkillIntegrities(source);
-      symlinkSync(outside, join(home, '.codex', 'skills'), 'dir');
-
-      const result = runGlobalRuntimeSetup({
-        sourceRoot: source,
-        cwd: repo,
-        target: 'codex',
-        plugins: ['strategy-memory'],
-        installCli: false,
-        syncSkill: false,
-        hostAdapters: false,
-        externalSkills: false,
-        obsidianSkills: true,
-        codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home },
-      });
-
-      expect(result.exitCode).toBe(1);
-      expect(result.steps.find((step) => step.step === 'configure Obsidian companion Skills')).toMatchObject({
-        status: 'failed',
-        detail: expect.stringContaining('refusing non-canonical host skill root'),
-      });
-      expect(existsSync(join(outside, 'obsidian-markdown'))).toBe(false);
-      expect(existsSync(join(home, '.agents', 'skills', 'obsidian-markdown'))).toBe(false);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+      mkdirSync(join(home, '.codex'), { recursive: true }); mkdirSync(outside); mkdirSync(bin);
+      setupFakeSource(source); setObsidianSkillIntegrities(source); writeFakeHc(bin); writeFakeSkillsCli(bin);
+      writeExecutable(join(bin, 'bun'), '#!/bin/bash\nif [[ "$1" == --version ]]; then echo 1.4.0; exit 0; fi\nexit 0\n');
+      writeExecutable(join(bin, 'bunx'), '#!/bin/bash\nfor skill in obsidian-markdown obsidian-cli; do mkdir -p "$HOME/.agents/skills/$skill"; printf "# %s\\n" "$skill" > "$HOME/.agents/skills/$skill/SKILL.md"; done\n');
+      writeFileSync(join(outside, 'keep.txt'), 'user\n'); symlinkSync(outside, join(home, '.codex/skills'), 'dir');
+      const env = { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: bin + ':' + process.env.PATH, REPO_HARNESS_BUN_EXECUTABLE: join(bin, 'bun') };
+      const result = runGlobalRuntimeSetup({ sourceRoot: source, cwd: temporary, target: 'codex', plugins: ['strategy-memory'], installCli: false,
+        syncSkill: false, hostAdapters: false, externalSkills: false, obsidianSkills: true, codegraph: false, env });
+      expect(result.exitCode, result.stderr).toBe(0);
+      for (const name of ['obsidian-markdown', 'obsidian-cli']) {
+        expect(readFileSync(join(outside, name, 'SKILL.md'), 'utf8')).toBe('# ' + name + '\n');
+        expect(ownedPath(env, join(home, '.codex/skills', name))?.owner).toBe('strategy-memory');
+      }
+      expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('user\n');
+    } finally { rmSync(temporary, { recursive: true, force: true }); }
   });
 
   test('dangling host skill roots return a failed step and compensate committed staging', () => {
@@ -2339,11 +2306,11 @@ exit 0
         plugins: FULL_PLUGINS,
         obsidianSkills: true,
         env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun') },
-      }, () => {
+      }, options => {
         mkdirSync(staging, { recursive: true });
         writeFileSync(join(staging, 'SKILL.md'), '# obsidian-markdown\n');
         mkdirSync(join(home, '.codex', 'skills'), { recursive: true });
-        symlinkSync(staging, projected, 'dir');
+        openHostConfigGate({ env: { ...sanitizedChildEnv(), HOME: home } }).writePaths([{ path: projected, owner: 'strategy-memory', entry: { type: 'symlink', target: staging } }], { transaction: options.transaction });
         return {
           exitCode: 1,
           steps: [
@@ -2364,34 +2331,17 @@ exit 0
     }
   });
 
-  test('runtime host transaction lock uses process HOME when an injected env omits HOME', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-runtime-lock-home-'));
-    const home = join(tmp, 'home');
-    const repo = join(tmp, 'repo');
-    const previousHome = process.env.HOME;
+  test('an injected environment without HOME refuses instead of using process HOME', () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'rh-injected-home-'));
     try {
-      mkdirSync(home, { recursive: true });
-      mkdirSync(repo, { recursive: true });
-      process.env.HOME = home;
-
-      let observedExpectedLock = false;
-      const result = runTransactionalRuntimeRefresh({
-        cwd: repo,
-        target: 'codex',
-        plugins: FULL_PLUGINS,
-        env: { BUN_INSTALL: join(home, '.bun') },
-      }, () => {
-        observedExpectedLock = existsSync(join(home, '.repo-harness', 'transactions', 'global-runtime.lock'));
+      let ran = false;
+      expect(() => runTransactionalRuntimeRefresh({ plugins: [], env: { BUN_INSTALL: join(temporary, '.bun') } }, () => {
+        ran = true;
         return { exitCode: 0, steps: [], lines: [], stdout: '', stderr: '' };
-      });
-
-      expect(result.exitCode).toBe(0);
-      expect(observedExpectedLock).toBe(true);
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-      rmSync(tmp, { recursive: true, force: true });
-    }
+      })).toThrow('HOME is required and must be an absolute path');
+      expect(ran).toBe(false);
+      expect(readdirSync(temporary)).toEqual([]);
+    } finally { rmSync(temporary, { recursive: true, force: true }); }
   });
 
   test('candidate runtime fixture copies published inputs and excludes local state', () => {
@@ -2843,14 +2793,15 @@ test('a fleet failure after the CLI install restores the predecessor hoisted arc
 
 describe('Waza shared rule refresh', () => {
   /** The ledger's path records, keyed as the product keys a host path. */
-  const recordsOf = (env: NodeJS.ProcessEnv) => Object.entries(readPathRecords(env));
+  const recordsOf = (env: NodeJS.ProcessEnv) => Object.entries(readPathRecords(env)).filter(([key]) => wazaRules.files.some(rule => key.endsWith('/rules/' + rule)));
   const keysOf = (env: NodeJS.ProcessEnv, paths: readonly string[]) => paths.map(path => pathRecordKey(env, path)).sort();
   const staleRecords = (env: NodeJS.ProcessEnv) => recordsOf(env).filter(([key, record]) => !pathRecordIsCurrent(key, record)).map(([key]) => key);
   /** The state and ledger bytes: the ownership records live in the ledger. */
   const storedBytes = (env: NodeJS.ProcessEnv) => [installStateFixturePath(env), hostConfigPaths(env).ledger].map(path => existsSync(path) ? readFileSync(path) : null);
   function withRules(body: (fixture: {
     home: string; upstream: string; fakeBin: string; env: NodeJS.ProcessEnv;
-    paths: string[]; run: (refresh?: boolean, target?: 'both' | 'claude' | 'codex') => ReturnType<typeof runGlobalRuntimeSetup>;
+    paths: string[]; run: (refresh?: boolean, target?: 'both' | 'claude' | 'codex') => ReturnType<typeof syncWazaSharedRules>;
+    setup: (refresh?: boolean) => ReturnType<typeof runGlobalRuntimeSetup>;
   }) => void): void {
     const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-waza-refresh-'));
     const home = join(tmp, 'home');
@@ -2875,7 +2826,7 @@ describe('Waza shared rule refresh', () => {
         writeFileSync(join(home, '.agents', 'skills', skill, 'SKILL.md'), `# ${skill}\n`);
       }
       recordInstallOwnership([], { HOME: home });
-      recordRefreshedInstallOwnership(paths, { HOME: home }, paths);
+      recordInstallOwnership(paths, { HOME: home });
       writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; fi\n');
       // Skills CLI does not write shared rules.
       writeExecutable(join(fakeBin, 'bunx'), '#!/bin/bash\nexit 0\n');
@@ -2902,8 +2853,10 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
 `);
       const env = { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), WAZA_FIXTURE_UPSTREAM: upstream,
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_BUN_EXECUTABLE: join(fakeBin, 'bun') };
-      body({ home, upstream, fakeBin, env, paths, run: (refresh = true, target = 'both') => runGlobalRuntimeSetup({
-        sourceRoot: ROOT, cwd: tmp, env, target, plugins: [],
+      body({ home, upstream, fakeBin, env, paths,
+        run: (refresh = true, target = 'both') => syncWazaSharedRules(home, target === 'both' ? ['claude', 'codex'] : [target], env, refresh),
+        setup: (refresh = false) => runGlobalRuntimeSetup({
+        sourceRoot: ROOT, cwd: tmp, env, target: 'both', plugins: [],
         installCli: false, syncSkill: false, hostAdapters: false, codegraph: false,
         externalSkills: true, updateMode: refresh,
       }) });
@@ -2912,334 +2865,139 @@ if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
     }
   }
 
-  test.each(['both', 'codex'] as const)('refresh repairs stale receipts for %s without claiming unselected files', (target) => {
+  test.each(['both', 'codex'] as const)('refresh keeps current receipts and leaves unselected files alone: %s', target => {
+    withRules(({ home, upstream, env, paths, run }) => {
+      const unselected = paths.filter(path => target === 'codex' && path.includes('/.claude/'));
+      const before = unselected.map(path => ({ bytes: readFileSync(path), record: ownedPath(env, path), ino: lstatSync(path).ino }));
+      expect(run(true, target).status).toBe('ok');
+      expect(unselected.map(path => ({ bytes: readFileSync(path), record: ownedPath(env, path), ino: lstatSync(path).ino }))).toEqual(before);
+      expect(staleRecords(env)).toEqual([]);
+      for (const path of paths.filter(path => !unselected.includes(path))) expect(readFileSync(path)).toEqual(readFileSync(join(upstream, path.split('/').at(-1)!)));
+      writeFileSync(join(upstream, 'english.md'), '# next English\n');
+      expect(run(true, target).status).toBe('ok');
+      expect(readFileSync(join(home, '.codex/rules/english.md'), 'utf8')).toBe('# next English\n');
+      expect(unselected.map(path => ({ bytes: readFileSync(path), record: ownedPath(env, path), ino: lstatSync(path).ino }))).toEqual(before);
+    });
+  });
+
+  test.each(['both', 'codex'] as const)('a stale receipt refuses even when the bytes match upstream: %s', target => {
     withRules(({ upstream, env, paths, run }) => {
-      // Model an interrupted refresh: rule writes finished, receipt persistence did not.
       for (const path of paths) writeFileSync(path, readFileSync(join(upstream, path.split('/').at(-1)!)));
-      const selected = keysOf(env, paths.filter(path => target === 'both' || !path.includes('/.claude/')));
-      const unselected = () => recordsOf(env).filter(([key]) => !selected.includes(key));
-      const unselectedBefore = unselected();
-      expect(staleRecords(env).length).toBeGreaterThan(0);
-      expect(run(true, target).exitCode).toBe(0);
-      expect(staleRecords(env).filter(key => selected.includes(key))).toEqual([]);
-      expect(unselected()).toEqual(unselectedBefore);
-      writeFileSync(join(upstream, 'english.md'), '# next English\n');
-      expect(run(true, target).exitCode).toBe(0);
-      for (const path of paths.filter(path => selected.includes(pathRecordKey(env, path)) && path.endsWith('/english.md'))) expect(readFileSync(path, 'utf8')).toBe('# next English\n');
-      expect(unselected()).toEqual(unselectedBefore);
+      const before = paths.map(path => readFileSync(path)), records = storedBytes(env);
+      expect(run(true, target).status).toBe('failed');
+      expect(paths.map(path => readFileSync(path))).toEqual(before);
+      expect(storedBytes(env)).toEqual(records);
     });
   });
 
-  test('refreshes both hosts and keeps ownership current for the next upstream revision', () => {
-    withRules(({ home, upstream, env, paths, run }) => {
-      expect(run().exitCode).toBe(0);
-      for (const path of paths) expect(readFileSync(path, 'utf-8')).toBe(`# new ${path.split('/').at(-1)}\npassword=example\n`);
-      expect(readFileSync(join(home, 'fetch.log'), 'utf-8').trim().split('\n'))
-        .toEqual(wazaRules.files.map((rule) => `${wazaRules.rawBaseUrl}/rules/${rule}`));
-      expect(staleRecords(env)).toEqual([]);
-      writeFileSync(join(upstream, 'english.md'), '# next English\n');
-      expect(run().exitCode).toBe(0);
-      expect(readFileSync(join(home, '.codex', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
-      const probe = spawnSync('bash', [join(ROOT, 'scripts/check-agent-tooling.sh'), '--json', '--check-updates', '--host', 'both'], {
-        cwd: ROOT, env, encoding: 'utf-8',
-      });
-      expect(probe.status).toBe(0);
-      const waza = JSON.parse(probe.stdout).tools.waza;
-      expect(waza.update_status).toBe('up-to-date');
-      expect(waza.hosts.claude.shared_rules_stale_status).toBe('up-to-date');
-      expect(waza.hosts.codex.shared_rules_stale_status).toBe('up-to-date');
-    });
-  });
-
-  test('records newly staged rules so a later upstream revision can refresh them', () => {
+  test('new rules are recorded by the gate without an install state', () => {
     withRules(({ home, upstream, env, paths, run }) => {
       for (const path of paths) rmSync(path);
-      recordInstallOwnership([], env);
-      expect(run().exitCode).toBe(0);
+      recordInstallOwnership([], env); rmSync(installStateFixturePath(env));
+      expect(run().status).toBe('ok');
       expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths));
-      expect(staleRecords(env)).toEqual([]);
+      expect(readInstallState(env)).toBeNull();
       writeFileSync(join(upstream, 'english.md'), '# next English\n');
-      expect(run().exitCode).toBe(0);
+      expect(run().status).toBe('ok');
       expect(staleRecords(env)).toEqual([]);
-      expect(readFileSync(join(home, '.agents', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
-      expect(readFileSync(join(home, '.codex', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
+      expect(readFileSync(join(home, '.agents/rules/english.md'), 'utf8')).toBe('# next English\n');
     });
   });
 
-  test('a fresh install owns the rules once after its install state write', () => {
-    withRules(({ home, env, paths, run }) => {
+  test('a fresh setup records its rules before the selection commit', () => {
+    withRules(({ home, env, paths, setup }) => {
       for (const root of ['.agents', '.claude', '.codex']) rmSync(join(home, root, 'rules'), { recursive: true });
-      const setup = run(false);
-      expect(setup.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({ status: 'skipped' });
-      recordInstallOwnership([], env);
-      const owned = ownFreshWazaSharedRules(setup, 'both', env, {});
-      expect(owned.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({ status: 'ok' });
+      rmSync(installStateFixturePath(env));
+      const runtime = setup(false);
+      expect(runtime.exitCode, runtime.stderr).toBe(0);
+      expect(runtime.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({ status: 'ok' });
       expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths));
       expect(staleRecords(env)).toEqual([]);
-      expect(ownFreshWazaSharedRules(owned, 'both', env, {})).toBe(owned);
+      expect(readInstallState(env)).toBeNull();
     });
   });
 
-  test('a non-directory staging rules path fails the rule step', () => {
-    withRules(({ home, run }) => {
-      rmSync(join(home, '.agents', 'rules'), { recursive: true });
-      writeFileSync(join(home, '.agents', 'rules'), 'not a directory\n');
-      const setup = run(false);
-      expect(setup.exitCode).toBe(1);
-      expect(setup.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({ status: 'failed', detail: expect.stringContaining('ENOTDIR') });
-    });
-  });
-
-  test('requires an install state before it creates new staging rules', () => {
-    withRules(({ home, paths, run }) => {
-      for (const path of paths) rmSync(path);
-      rmSync(installStateFixturePath({ HOME: home }));
-      const result = run();
-      expect(result.exitCode).toBe(1);
-      expect(result.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({
-        status: 'failed', detail: expect.stringContaining('an install state is required'),
-      });
-      expect(paths.some((path) => existsSync(path))).toBe(false);
-    });
-  });
-
-  test('core-only selection reconciliation keeps ownership of explicitly requested new rules', () => {
-    withRules(({ home, upstream, env, paths, run }) => {
-      seedGlobalPackageFixture(env);
-      for (const path of paths) rmSync(path);
-      recordInstallOwnership([], env);
-      mkdirSync(join(home, '.codex', 'skills'), { recursive: true });
-      symlinkSync(ROOT, join(home, '.codex', 'skills', 'repo-harness'), 'dir');
-      writeFileSync(join(home, '.codex', 'hooks.json'), JSON.stringify({ hooks: buildManagedHooks('codex', env) }));
-      mkdirSync(join(home, '.bun', 'bin'), { recursive: true });
-      symlinkSync(CLI, join(home, '.bun', 'bin', 'rh'));
-      // Core owns its facades and the agent fleet, so a core-only state needs them present.
-      for (const pkg of loadSkillSurfaceCatalog().packages.filter(entry => entry.kind === 'facade' && entry.owner === 'core' && !entry.explicitOnly)) {
-        mkdirSync(join(home, '.codex', 'skills', pkg.name), { recursive: true });
-        writeFileSync(join(home, '.codex', 'skills', pkg.name, 'SKILL.md'), `# ${pkg.name}\n`);
-      }
-      mkdirSync(join(home, '.codex', 'agents'), { recursive: true });
-      for (const agent of MANAGED_AGENTS) writeFileSync(join(home, '.codex', 'agents', `${agent}.toml`), `name = "${agent}"\n`);
-      applyInstallSelection([], [], env);
-      expect(run().exitCode).toBe(0);
-      applyInstallSelection([], [], env);
-      const ruleRecords = () => recordsOf(env).filter(([key]) => keysOf(env, paths).includes(key));
-      expect(ruleRecords()).toHaveLength(paths.length);
-      writeFileSync(join(upstream, 'english.md'), '# next English\n');
-      expect(run().exitCode).toBe(0);
-      applyInstallSelection([], [], env);
-      expect(readFileSync(join(home, '.agents', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
-      expect(readFileSync(join(home, '.codex', 'rules', 'english.md'), 'utf-8')).toBe('# next English\n');
-      expect(ruleRecords().filter(([key, record]) => !pathRecordIsCurrent(key, record))).toEqual([]);
-    });
-  });
-
-  for (const ownership of ['managed', 'legacy'] as const) {
-    for (const nextTarget of ['claude', 'both'] as const) {
-      test(`targeted Waza refresh supports ${ownership} copies from codex to ${nextTarget} and back to both`, () => {
-        withRules(({ home, upstream, env, paths, run }) => {
-          if (ownership === 'legacy') recordInstallOwnership([], env);
-          const claudePaths = wazaRules.files.map((rule) => join(home, '.claude', 'rules', rule));
-          const unchangedHost = (hostPaths: string[]) => hostPaths.map((path) => {
-            const stat = lstatSync(path);
-            return { content: readFileSync(path), ino: stat.ino, mtimeMs: stat.mtimeMs };
-          });
-          const claudeBefore = unchangedHost(claudePaths);
-          expect(run(true, 'codex').exitCode).toBe(0);
-          expect(unchangedHost(claudePaths)).toEqual(claudeBefore);
-          for (const path of paths) {
-            const receipt = ownedPath(env, path);
-            expect(receipt).not.toBeNull();
-            expect(pathRecordIsCurrent(pathRecordKey(env, path), receipt!)).toBe(true);
-          }
-          for (const rule of wazaRules.files) writeFileSync(join(upstream, rule), `# second ${rule}\n`);
-          const codexPaths = wazaRules.files.map((rule) => join(home, '.codex', 'rules', rule));
-          const codexBefore = unchangedHost(codexPaths);
-          const second = run(true, nextTarget);
-          expect(second.exitCode, second.stdout).toBe(0);
-          if (nextTarget === 'claude') expect(unchangedHost(codexPaths)).toEqual(codexBefore);
-          for (const rule of wazaRules.files) writeFileSync(join(upstream, rule), `# third ${rule}\n`);
-          expect(run(true, 'both').exitCode).toBe(0);
-          for (const path of paths) expect(readFileSync(path, 'utf-8')).toBe(`# third ${path.split('/').at(-1)}\n`);
-          expect(staleRecords(env)).toEqual([]);
-        });
-      });
-    }
-
-    test(`targeted Waza refresh preserves an edited ${ownership} host that has no current ownership proof`, () => {
-      withRules(({ home, upstream, env, paths, run }) => {
-        if (ownership === 'legacy') recordInstallOwnership([], env);
-        const edited = join(home, '.claude', 'rules', 'english.md');
-        writeFileSync(edited, '# local Claude rule\n');
-        expect(run(true, 'codex').exitCode).toBe(0);
-        expect(readFileSync(edited, 'utf-8')).toBe('# local Claude rule\n');
-        const receipt = ownedPath(env, edited);
-        if (ownership === 'legacy') expect(receipt).toBeNull();
-        else expect(pathRecordIsCurrent(pathRecordKey(env, edited), receipt!)).toBe(false);
-        for (const rule of wazaRules.files) writeFileSync(join(upstream, rule), `# next ${rule}\n`);
-        const before = paths.map((path) => readFileSync(path));
-        const beforeState = storedBytes(env);
-        const result = run(true, 'claude');
-        expect(result.exitCode).toBe(1);
-        expect(result.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({
-          status: 'failed', detail: expect.stringContaining(`refusing to overwrite unowned rule ${edited}`),
-        });
-        expect(paths.map((path) => readFileSync(path))).toEqual(before);
-        expect(storedBytes(env)).toEqual(beforeState);
-      });
-    });
-  }
-
-  test('targeted Waza refresh keeps non-update sync fail closed without changing receipts', () => {
-    withRules(({ home, upstream, env, paths, run }) => {
-      expect(run(true, 'codex').exitCode).toBe(0);
-      const before = paths.map((path) => readFileSync(path));
-      const beforeState = storedBytes(env);
-      expect(run(false, 'claude').exitCode).toBe(1);
-      expect(paths.map((path) => readFileSync(path))).toEqual(before);
-      expect(storedBytes(env)).toEqual(beforeState);
-      const destination = join(home, '.claude', 'rules', 'english.md');
-      expect(pathRecordIsCurrent(pathRecordKey(env, destination), ownedPath(env, destination)!)).toBe(true);
-      writeFileSync(join(upstream, 'english.md'), '# next English\n');
-      expect(run(true, 'codex').exitCode).toBe(0);
-      expect(run(true, 'claude').exitCode).toBe(0);
-      expect(readFileSync(destination, 'utf-8')).toBe('# next English\n');
-    });
-  });
-
-  for (const upstreamState of ['stale', 'current'] as const) {
-    test(`adopts ${upstreamState} legacy staging with matching host copies and records ownership`, () => {
+  for (const upstreamState of ['stale', 'current'] as const) for (const evidence of ['matching', 'mismatched', 'no hosts', 'one host', 'unselected host', 'binary'] as const) {
+    test('unrecorded rules stay unrecorded: ' + upstreamState + ', ' + evidence, () => {
       withRules(({ home, upstream, env, paths, run }) => {
         recordInstallOwnership([], env);
-        if (upstreamState === 'current') {
-          for (const rule of wazaRules.files) {
-            copyFileSync(join(home, '.agents', 'rules', rule), join(upstream, rule));
-          }
-        }
-        expect(run().exitCode).toBe(0);
-        expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths));
-        expect(staleRecords(env)).toEqual([]);
-        for (const path of paths) expect(readFileSync(path, 'utf-8')).toBe(readFileSync(join(upstream, path.split('/').at(-1)!), 'utf-8'));
-        writeFileSync(join(upstream, 'english.md'), '# next legacy English\n');
-        expect(run().exitCode).toBe(0);
-        expect(readFileSync(join(home, '.agents', 'rules', 'english.md'), 'utf-8')).toBe('# next legacy English\n');
-        expect(readFileSync(join(home, '.codex', 'rules', 'english.md'), 'utf-8')).toBe('# next legacy English\n');
+        if (upstreamState === 'current') for (const rule of wazaRules.files) copyFileSync(join(home, '.agents/rules', rule), join(upstream, rule));
+        if (evidence === 'mismatched') writeFileSync(join(home, '.codex/rules/english.md'), '# user host edit\n');
+        if (evidence === 'no hosts' || evidence === 'one host') for (const rule of wazaRules.files) rmSync(join(home, '.claude/rules', rule));
+        if (evidence === 'no hosts' || evidence === 'unselected host') for (const rule of wazaRules.files) rmSync(join(home, '.codex/rules', rule));
+        if (evidence === 'binary') for (const root of ['.agents', '.claude', '.codex']) writeFileSync(join(home, root, 'rules/english.md'), Buffer.from([35, 32, root === '.codex' ? 129 : 128, 10]));
+        const snapshot = () => paths.map(path => existsSync(path) ? readFileSync(path) : null);
+        const before = snapshot(), state = storedBytes(env);
+        const result = run(true, evidence === 'unselected host' ? 'codex' : 'both');
+        expect(result.status).toBe('failed');
+        expect(result.detail).toContain('rh has no record of it');
+        expect(snapshot()).toEqual(before);
+        expect(storedBytes(env)).toEqual(state);
+        expect(recordsOf(env)).toHaveLength(0);
       });
     });
-
-    for (const failure of ['mismatched host', 'no host copy'] as const) {
-      test(`rejects ${upstreamState} legacy staging with ${failure} before any rule or receipt changes`, () => {
-        withRules(({ home, upstream, env, paths, run }) => {
-          recordInstallOwnership([], env);
-          if (upstreamState === 'current') {
-            for (const rule of wazaRules.files) copyFileSync(join(home, '.agents', 'rules', rule), join(upstream, rule));
-          }
-          if (failure === 'mismatched host') writeFileSync(join(home, '.codex', 'rules', 'english.md'), '# local host edit\n');
-          else {
-            rmSync(join(home, '.claude', 'rules', 'english.md'));
-            rmSync(join(home, '.codex', 'rules', 'english.md'));
-          }
-          const snapshot = () => paths.map((path) => existsSync(path) ? readFileSync(path) : null);
-          const before = snapshot();
-          const beforeState = storedBytes(env);
-          const result = run();
-          expect(result.exitCode).toBe(1);
-          expect(result.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({
-            status: 'failed', detail: expect.stringContaining('refusing to refresh unowned or drifted staging rule'),
-          });
-          expect(snapshot()).toEqual(before);
-          expect(storedBytes(env)).toEqual(beforeState);
-        });
-      });
-    }
   }
 
-  test('adopts legacy staging with only one matching host copy', () => {
-    withRules(({ home, env, run }) => {
-      recordInstallOwnership([], env);
-      for (const rule of wazaRules.files) rmSync(join(home, '.claude', 'rules', rule));
-      expect(run().exitCode).toBe(0);
-      for (const rule of wazaRules.files) {
-        const source = join(home, '.agents', 'rules', rule);
-        expect(ownedPath(env, source)).not.toBeNull();
-        expect(readFileSync(join(home, '.claude', 'rules', rule))).toEqual(readFileSync(source));
-      }
-    });
-  });
-
-  test('legacy staging adoption uses selected evidence and preserves unmatched unselected rules', () => {
+  test('a targeted refresh keeps an edited unselected host and refuses it when selected', () => {
     withRules(({ home, env, paths, run }) => {
-      recordInstallOwnership([], env);
-      const unselected = join(home, '.claude', 'rules', 'english.md');
-      writeFileSync(unselected, '# unselected local host edit\n');
-      expect(run(true, 'codex').exitCode).toBe(0);
-      expect(readFileSync(unselected, 'utf-8')).toBe('# unselected local host edit\n');
-      expect(recordsOf(env).map(([key]) => key).sort()).toEqual(keysOf(env, paths.filter((path) => path !== unselected)));
-    });
-  });
-
-  test('legacy staging needs a selected host copy even when an unselected copy matches', () => {
-    withRules(({ home, env, paths, run }) => {
-      recordInstallOwnership([], env);
-      for (const rule of wazaRules.files) rmSync(join(home, '.codex', 'rules', rule));
-      const before = paths.map((path) => existsSync(path) ? readFileSync(path) : null);
-      expect(run(true, 'codex').exitCode).toBe(1);
-      expect(paths.map((path) => existsSync(path) ? readFileSync(path) : null)).toEqual(before);
-      expect(recordsOf(env)).toHaveLength(0);
-    });
-  });
-
-  test('legacy staging evidence compares file bytes without UTF-8 replacement', () => {
-    withRules(({ home, env, paths, run }) => {
-      recordInstallOwnership([], env);
-      for (const root of ['.agents', '.claude', '.codex']) {
-        writeFileSync(join(home, root, 'rules', 'english.md'), Buffer.from([0x23, 0x20, root === '.codex' ? 0x81 : 0x80, 0x0a]));
-      }
-      const before = paths.map((path) => readFileSync(path));
-      expect(run().exitCode).toBe(1);
-      expect(paths.map((path) => readFileSync(path))).toEqual(before);
-      expect(recordsOf(env)).toHaveLength(0);
-    });
-  });
-
-  test('owned staging cannot use matching host copies to bypass a drifted receipt', () => {
-    withRules(({ home, env, paths, run }) => {
-      for (const root of ['.agents', '.claude', '.codex']) writeFileSync(join(home, root, 'rules', 'english.md'), '# local edit in all copies\n');
-      const before = paths.map((path) => readFileSync(path));
-      const beforeState = readInstallState(env);
-      expect(run().exitCode).toBe(1);
-      expect(paths.map((path) => readFileSync(path))).toEqual(before);
-      expect(readInstallState(env)).toEqual(beforeState);
+      const edited = join(home, '.claude/rules/english.md'); writeFileSync(edited, '# user edit\n');
+      expect(run(true, 'codex').status).toBe('ok');
+      expect(readFileSync(edited, 'utf8')).toBe('# user edit\n');
+      expect(pathRecordIsCurrent(pathRecordKey(env, edited), ownedPath(env, edited)!)).toBe(false);
+      const before = paths.map(path => readFileSync(path)), state = storedBytes(env);
+      expect(run(true, 'claude').status).toBe('failed');
+      expect(paths.map(path => readFileSync(path))).toEqual(before);
+      expect(storedBytes(env)).toEqual(state);
     });
   });
 
   for (const failure of ['fetch', 'empty', 'staging edit', 'host edit'] as const) {
-    test(`${failure} fails before any staging or host rule changes`, () => {
-      withRules(({ home, upstream, paths, run }) => {
+    test(failure + ' leaves every rule and receipt unchanged', () => {
+      withRules(({ home, upstream, env, paths, run }) => {
         if (failure === 'fetch') writeFileSync(join(upstream, 'fail-english.md'), 'fail');
         if (failure === 'empty') writeFileSync(join(upstream, 'english.md'), '');
-        if (failure === 'staging edit') writeFileSync(join(home, '.agents', 'rules', 'english.md'), '# local staging edit\n');
-        if (failure === 'host edit') writeFileSync(join(home, '.codex', 'rules', 'english.md'), '# local host edit\n');
-        const before = paths.map((path) => readFileSync(path, 'utf-8'));
+        if (failure === 'staging edit') writeFileSync(join(home, '.agents/rules/english.md'), '# user staging edit\n');
+        if (failure === 'host edit') writeFileSync(join(home, '.codex/rules/english.md'), '# user host edit\n');
+        const before = paths.map(path => readFileSync(path)), state = storedBytes(env);
         const result = run();
-        expect(result.exitCode).toBe(1);
-        expect(result.steps.find(({ step }) => step === 'sync Waza shared rules')).toMatchObject({
-          status: 'failed', detail: expect.stringContaining(failure === 'fetch' ? 'fixture HTTP 503'
-            : failure === 'empty' ? 'empty response'
-              : failure === 'host edit' ? 'refusing to overwrite unowned rule'
-                : 'refusing to refresh unowned or drifted staging rule'),
-        });
-        expect(paths.map((path) => readFileSync(path, 'utf-8'))).toEqual(before);
+        expect(result.status).toBe('failed');
+        expect(result.detail).toContain(failure === 'fetch' ? 'fixture HTTP 503' : failure === 'empty' ? 'empty response' : 'it changed since rh wrote it');
+        expect(paths.map(path => readFileSync(path))).toEqual(before);
+        expect(storedBytes(env)).toEqual(state);
       });
     });
   }
 
-  test('non-update setup does not fetch or replace existing staging content', () => {
-    withRules(({ home, paths, run }) => {
-      const before = paths.map((path) => readFileSync(path, 'utf-8'));
-      expect(run(false).exitCode).toBe(0);
+  test('a non-directory staging rules path fails without changing host rules or receipts', () => {
+    withRules(({ home, env, paths, run }) => {
+      const staging = join(home, '.agents/rules');
+      const hosts = paths.filter(path => !path.startsWith(staging + '/'));
+      const before = hosts.map(path => readFileSync(path)), state = storedBytes(env);
+      rmSync(staging, { recursive: true }); writeFileSync(staging, 'user file\n');
+      const result = run();
+      expect(result.status).toBe('failed');
+      expect(result.detail).toContain(staging);
+      expect(readFileSync(staging, 'utf8')).toBe('user file\n');
+      expect(hosts.map(path => readFileSync(path))).toEqual(before);
+      expect(storedBytes(env)).toEqual(state);
+    });
+  });
+
+  test('non-update sync uses current ownership and never fetches staging content', () => {
+    withRules(({ home, env, paths, run }) => {
+      const before = paths.map(path => readFileSync(path)), state = storedBytes(env);
+      expect(run(false).status).toBe('ok');
       expect(existsSync(join(home, 'fetch.log'))).toBe(false);
-      expect(paths.map((path) => readFileSync(path, 'utf-8'))).toEqual(before);
+      expect(paths.map(path => readFileSync(path))).toEqual(before);
+      expect(storedBytes(env)).toEqual(state);
+    });
+  });
+
+  test('a current host can advance from owned staging during non-update sync', () => {
+    withRules(({ home, run }) => {
+      expect(run(true, 'codex').status).toBe('ok');
+      expect(run(false, 'claude').status).toBe('ok');
+      expect(readFileSync(join(home, '.claude/rules/english.md'))).toEqual(readFileSync(join(home, '.agents/rules/english.md')));
     });
   });
 });
@@ -3270,23 +3028,26 @@ describe('Codex Waza projection', () => {
         // The core agent fleet helper runs its stdin script on the real Bun.
         writeExecutable(join(bin, 'bun'), `#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "$1" == "-" ]]; then exec "${process.execPath}" "$@"; fi\nexit 9\n`);
         writeExecutable(join(bin, 'bunx'), '#!/bin/bash\nexit 9\n');
+        writeExecutable(join(bin, 'curl'), '#!/bin/bash\nwhile [[ $# -gt 0 ]]; do if [[ "$1" == --output ]]; then out="$2"; shift; fi; shift; done\nprintf "# rule\\n" > "$out"\n');
         const env = { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${bin}:${process.env.PATH ?? ''}` };
         const result = runGlobalRuntimeSetup({ sourceRoot: ROOT, cwd: tmp, target: 'codex', plugins: [],
           installCli: false, syncSkill: false, hostAdapters: false, externalSkills: true, codegraph: false, env });
         const waza = result.steps.find(step => step.step === 'configure Waza skills');
-        expect(waza?.status).toBe(mode === 'unknown-directory' ? 'failed' : 'ok');
-        if (mode === 'unknown-directory') {
+        expect(waza?.status).toBe(mode === 'missing' ? 'ok' : 'failed');
+        if (mode !== 'missing') {
           expect(result.exitCode).toBe(1);
           expect(waza?.detail).toContain('refusing to refresh unowned host skill');
           expect(waza?.detail).toContain('then run: rh install --target codex');
-          expect(lstatSync(think).isDirectory()).toBe(true);
-          expect(readFileSync(join(think, 'SKILL.md'), 'utf8')).toBe('user instructions\n');
+          if (mode === 'unknown-directory') {
+            expect(lstatSync(think).isDirectory()).toBe(true);
+            expect(readFileSync(join(think, 'SKILL.md'), 'utf8')).toBe('user instructions\n');
+          } else expect(readlinkSync(think)).toBe(mode === 'relative' ? '../../.agents/skills/think' : join(home, '.agents/skills/think'));
         } else {
           expect(result.exitCode, result.stderr).toBe(0);
           for (const name of ['think', 'hunt', 'check', 'health']) {
             const dest = join(home, '.codex/skills', name);
             expect(lstatSync(dest).isSymbolicLink()).toBe(true);
-            expect(readlinkSync(dest)).toBe(mode === 'relative' ? `../../.agents/skills/${name}` : join(home, '.agents/skills', name));
+            expect(readlinkSync(dest)).toBe(join(home, '.agents/skills', name));
           }
         }
       } finally { rmSync(tmp, { recursive: true, force: true }); }
@@ -3533,7 +3294,7 @@ describe('Global Working Rules refresh during install and update', () => {
     writeFileSync(path, mixedLegacy);
     writeFileSync(target, claude);
     symlinkSync(target, claudePath);
-    const transaction = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
+    const transaction = beginInstallHostTransaction(installProfileTransactionPaths(env), env);
     const applied = applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, home, ['codex', 'claude'], 'en'), home);
     expect(applied.status).toBe('ok');
     expect(readFileSync(path, 'utf-8')).not.toBe(mixedLegacy);
@@ -3548,7 +3309,7 @@ describe('Global Working Rules refresh during install and update', () => {
     rmSync(path);
     writeFileSync(legacyTarget, mixedLegacy);
     symlinkSync(legacyTarget, path);
-    const linked = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
+    const linked = beginInstallHostTransaction(installProfileTransactionPaths(env), env);
     expect(applyGlobalContextRefresh(preflightGlobalContextRefresh(ROOT, home, ['codex'], 'en'), home).status).toBe('ok');
     expect(readFileSync(legacyTarget, 'utf-8')).not.toBe(mixedLegacy);
     rollbackInstallHostTransaction(linked);
@@ -3618,7 +3379,7 @@ describe('Global Working Rules refresh during install and update', () => {
     expect(readFileSync(path, 'utf-8')).toBe(mixedLegacy);
   }), 60_000);
 
-  test('an unrecorded block needs a flag, and install also runs the refresh', () => withRulesRuntime(({ home, path, run }) => {
+  test('an unrecorded block needs a flag, and install also runs the refresh', () => withRulesRuntime(({ path, run }) => {
     const unrecorded = `${userBefore}${releasedUnrecorded}`;
     writeFileSync(path, unrecorded);
     const unsynced = run(undefined, false);

@@ -1,23 +1,26 @@
+import { requireHome } from "../../effects/repo-harness-home";
+import { syncInstalledSkillCopies } from "../installer/skill-sync";
+import { openHostConfigGate } from "../../effects/host-config/gate";
 import { configureRequiredHerdrSkill } from "./herdr-skill";
 import type { RuntimeTransactionContext } from '../../effects/locking/runtime-transaction-lock';
-import { bunGlobalPackageRoot, isBunGlobalPackageSource, skillLinkMatches } from "../installer/skill-projection";
+import { bunGlobalPackageRoot, isBunGlobalPackageSource } from "../installer/skill-projection";
 import { installPiPackage } from '../installer/pi-package';
 import { realPathOrResolved } from '../../effects/path-identity';
 import type { SkillHost } from '../../effects/host-skill-roots';
-import { ownedPath, pathRecordIsCurrent, pathRecordKey, type PathRecords } from '../../effects/host-config/path-records';
+import { ownedPath, pathRecordIsCurrent, pathRecordKey, readPathRecords } from '../../effects/host-config/path-records';
 import { architecturePort, isArchitectureUnavailable } from '../../core/architecture/contracts';
 import { globalConfigurationWriter, mutateGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { DEFAULT_SEATS_CONFIG, INTRODUCED_ROUTING_DEFAULTS, ROUTING_CLASSES, SeatsConfigMigrationRequiredError, decodeSeatsConfig } from '../../core/board/seats-settings';
 import { checkSeatRoutingModels, seatsRanges } from '../../effects/board/seats-configuration';
-import { chmodSync, closeSync, constants, cpSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, closeSync, constants, cpSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "fs";
 import { syncDirectoryDurably, writeAllSync } from '../../effects/atomic-append';
 import { renderJsonObjectUpdate } from "../../effects/adoption/standard-plan";
 import { retireUserExcludesBlock, writeRepositoryExcludes } from "../installer/repository-excludes";
 import { sha256Hex } from "../../core/evidence/sha256";
-import { homedir, tmpdir, userInfo } from "os";
-import { delimiter, dirname, join, relative, resolve, sep } from "path";
+import { tmpdir, userInfo } from "os";
+import { delimiter, dirname, join, resolve, sep } from "path";
 import { fileURLToPath } from "url";
-import { syncWazaSharedRules, wazaStagingRulesAbsent } from "../installer/waza-rules";
+import { syncWazaSharedRules } from "../installer/waza-rules";
 import { applyGlobalContextRefresh, GLOBAL_RULES_BEGIN, GLOBAL_RULES_END, globalContextPath, preflightGlobalContextRefresh, type GlobalContextRefreshPlan, type ReportLanguageFlag } from "../installer/global-context";
 import { CLI_NAME, namesRetiredCli, RETIRED_CLI_NAME } from "../../core/skill-surface/cli-name";
 import { shellQuote } from "../../core/shell-quote";
@@ -30,7 +33,10 @@ import { leftoverCheckWarning } from "./upgrade";
 import { commitVerifiedSkillTree, skillTreeSha256 } from "../../effects/skill-tree-integrity";
 import {
   readInstallState,
-  recordVerifiedAgentFleetOwnership,
+  ownerForInstallPath,
+  withHostConfigTransaction,
+  recordStagedExternalSkillWrites,
+  migrateRuntimeHostConfig,
   requireInstallState,
 } from "../installer/install-profile";
 import {
@@ -65,6 +71,7 @@ export interface CandidateHandoffContext {
 }
 
 export interface GlobalRuntimeOptions {
+  transaction?: string;
   runtimeLock?: RuntimeTransactionContext;
   sourceRoot?: string;
   cwd?: string;
@@ -349,7 +356,7 @@ function targetFromHostIds(hosts: readonly SkillHost[]): InstallTargetSpec {
 }
 
 function homeDir(env?: NodeJS.ProcessEnv): string {
-  return env?.HOME ?? process.env.HOME ?? homedir();
+  return requireHome(env ?? process.env);
 }
 
 function isNpxCacheSource(sourceRoot: string): boolean {
@@ -366,7 +373,7 @@ function packageVersion(sourceRoot: string): string | null {
   try {
     const pkg = JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf-8"));
     return typeof pkg.version === "string" ? pkg.version : null;
-  } catch (_error) {
+  } catch {
     return null;
   }
 }
@@ -375,7 +382,7 @@ function packageName(sourceRoot: string): string | null {
   try {
     const pkg = JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf-8"));
     return typeof pkg.name === "string" ? pkg.name : null;
-  } catch (_error) {
+  } catch {
     return null;
   }
 }
@@ -389,7 +396,7 @@ function parsePackedTarballFilename(stdout: string): string | null {
     const parsed = JSON.parse(stdout);
     const entry = Array.isArray(parsed) ? parsed[0] : parsed;
     return typeof entry?.filename === "string" ? entry.filename : null;
-  } catch (_error) {
+  } catch {
     return null;
   }
 }
@@ -746,19 +753,13 @@ function removeSupersededPackedTarballs(packDir: string, installed: string): voi
   }
 }
 
-function syncRuntimeSkill(sourceRoot: string, plugins: readonly PluginId[], target: InstallTargetSpec, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
-  const script = join(sourceRoot, "scripts", "sync-codex-installed-copies.sh");
-  if (!existsSync(script)) {
-    return {
-      step: "sync repo-harness skill runtime",
-      status: "skipped",
-      detail: `script not found: ${script}`,
-    };
-  }
-  return withStepName(
-    runProcess("bash", [script], sourceRoot, { ...env, REPO_HARNESS_INSTALL_PLUGINS: plugins.join(','), REPO_HARNESS_INCLUDE_PI: target === 'both' && plugins.includes('pi') ? '1' : '0' }),
-    "sync repo-harness skill runtime",
-  );
+function syncRuntimeSkill(sourceRoot: string, plugins: readonly PluginId[], target: InstallTargetSpec, env: NodeJS.ProcessEnv = process.env, transaction?: string): GlobalRuntimeStep {
+  const script = join(sourceRoot, 'scripts', 'sync-codex-installed-copies.sh');
+  if (!existsSync(script)) return { step: 'sync repo-harness skill runtime', status: 'skipped', detail: 'script not found: ' + script };
+  try {
+    const result = syncInstalledSkillCopies(sourceRoot, { ...env, REPO_HARNESS_INSTALL_PLUGINS: plugins.join(','), REPO_HARNESS_INCLUDE_PI: target === 'both' && plugins.includes('pi') ? '1' : '0' }, transaction);
+    return { step: 'sync repo-harness skill runtime', status: result.ok ? 'ok' : 'failed', stdout: result.stdout, stderr: result.stderr };
+  } catch (error) { return { step: 'sync repo-harness skill runtime', status: 'failed', detail: (error as Error).message }; }
 }
 
 function installHostAdapters(target: InstallTargetSpec, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
@@ -929,7 +930,7 @@ export function updateRegisteredUpgradeSummary(cwd: string, installedCli: boolea
   let payload: unknown;
   try {
     payload = JSON.parse(run.stdout);
-  } catch (_error) {
+  } catch {
     payload = null;
   }
   const record = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
@@ -1043,59 +1044,25 @@ function writeRuntimeIgnoreRules(env: NodeJS.ProcessEnv, updateMode: boolean): G
   return updateMode ? [step, { step: RETIRE_USER_EXCLUDES_STEP, ...retireUserExcludesBlock(env, repositories) }] : [step];
 }
 
-function installAgentFleet(sourceRoot: string, bunExecutable: string, env: NodeJS.ProcessEnv): GlobalRuntimeStep {
+function installAgentFleet(sourceRoot: string, bunExecutable: string, env: NodeJS.ProcessEnv, transaction?: string): GlobalRuntimeStep {
   const script = join(sourceRoot, 'scripts', 'install-agent-fleet.sh');
   if (!existsSync(script)) {
     return { step: AGENT_FLEET_STEP, status: 'failed', detail: `script not found: ${script}` };
   }
   return withStepName(
-    runProcess('bash', [script], sourceRoot, { ...env, REPO_HARNESS_BUN_BIN: bunExecutable }),
+    runProcess('bash', [script], sourceRoot, { ...env, REPO_HARNESS_BUN_BIN: bunExecutable, REPO_HARNESS_RUNTIME_TRANSACTION: transaction }),
     AGENT_FLEET_STEP,
   );
 }
 
 const WAZA_RULES_STEP = "sync Waza shared rules";
 
-/**
- * The Skills CLI never writes ~/.agents/rules, so the setup step skips the
- * rules on a fresh install. The refresh path needs an install state to own
- * new rules. An install therefore runs it once after its state write.
- * That write renews the existing path records, so `priorReceipts` (the ledger's
- * path records from before the transaction) judge whether a host rule may be overwritten.
- */
-export function ownFreshWazaSharedRules(
-  result: GlobalRuntimeResult,
-  target: InstallTargetSpec,
-  env: NodeJS.ProcessEnv,
-  priorReceipts: PathRecords,
-): GlobalRuntimeResult {
-  const index = result.steps.findIndex((step) => step.step === WAZA_RULES_STEP);
-  const wazaInstalled = result.steps.some((step) => step.step === externalSkillStepName("tw93/Waza") && step.status === "ok");
-  const home = homeDir(env);
-  if (index < 0 || !wazaInstalled || !wazaStagingRulesAbsent(home)) return result;
-  const owned: GlobalRuntimeStep = { step: WAZA_RULES_STEP, ...syncWazaSharedRules(home, hostIds(target), env, true, priorReceipts) };
-  return finalizeRuntimeResult(result.steps.map((step, i) => (i === index ? owned : step)));
-}
-
 /** True when the installed candidate process ran the host writes and committed its own install state. */
 export function reconciledByCandidate(result: Pick<GlobalRuntimeResult, 'steps'>): boolean {
   return result.steps.some((step) => step.step === CANDIDATE_RECONCILE_STEP);
 }
 
-/** True only when this run's fleet helper verified every agent target (see applyInstallSelection). */
-export function agentFleetVerified(result: Pick<GlobalRuntimeResult, 'steps'>): boolean {
-  return result.steps.some((step) => step.step === AGENT_FLEET_STEP && step.status === 'ok');
-}
 
-function recordAgentFleetOwnership(env: NodeJS.ProcessEnv): GlobalRuntimeStep {
-  const step = 'record agent fleet ownership';
-  try {
-    recordVerifiedAgentFleetOwnership(env);
-    return { step, status: 'ok' };
-  } catch (error) {
-    return { step, status: 'failed', detail: error instanceof Error ? error.message : String(error) };
-  }
-}
 
 function externalSkillStepName(provider: string): string {
   if (provider === "tw93/Waza") return "configure Waza skills";
@@ -1113,13 +1080,14 @@ function installExternalSkillGroup(
   integrityBySkill: Readonly<Record<string, string | null>>,
   env?: NodeJS.ProcessEnv,
   refresh = false,
+  transaction?: string,
 ): GlobalRuntimeStep {
   const stepName = externalSkillStepName(provider);
   const home = homeDir(env);
   const skillsRoot = stagedSkillRoot(home);
   const canonicalSkillsRoot = stagedSkillRoot(realpathSync(home));
   const committedIntegritySkills = new Set<string>();
-  const replacementBackupRoot = mkdtempSync(join(tmpdir(), "repo-harness-skill-replace-"));
+  const replacementBackupRoot = mkdtempSync(join(transaction!, "skill-replace-"));
   const replacedIntegritySkills = new Set<string>();
   const restoreReplacedSkills = (): void => {
     for (const skill of replacedIntegritySkills) {
@@ -1302,13 +1270,13 @@ function installExternalSkillGroup(
       });
     }
   }
-  const projection = projectStagedSkills(skills, target, piSelected, env, stepName);
+  const projection = projectStagedSkills(skills, target, piSelected, env, stepName, transaction);
   if (projection.status === "failed") return fail(projection);
   rmSync(replacementBackupRoot, { recursive: true, force: true });
   return projection;
 }
 
-function installWazaSkills(sourceRoot: string, target: InstallTargetSpec, piSelected: boolean, env?: NodeJS.ProcessEnv, refresh = false): GlobalRuntimeStep {
+function installWazaSkills(sourceRoot: string, target: InstallTargetSpec, piSelected: boolean, env?: NodeJS.ProcessEnv, refresh = false, transaction?: string): GlobalRuntimeStep {
   const wazaSkills = externalSkillGroupsFromCatalog(loadSkillSurfaceCatalog(sourceRoot)).get("tw93/Waza") ?? [];
   const skillsRoot = stagedSkillRoot(homeDir(env));
   const selected = refresh ? wazaSkills : wazaSkills.filter((skill) => !existsSync(join(skillsRoot, skill, 'SKILL.md')));
@@ -1335,7 +1303,7 @@ function installWazaSkills(sourceRoot: string, target: InstallTargetSpec, piSele
       return withStepName(step, "configure Waza skills", `target=${target}; selected=${selected.join(',')}`);
     }
   }
-  return projectStagedSkills(wazaSkills, target, piSelected, env, 'configure Waza skills');
+  return projectStagedSkills(wazaSkills, target, piSelected, env, 'configure Waza skills', transaction);
 }
 
 /**
@@ -1358,66 +1326,38 @@ function preflightStagedSkillProjection(
 ): GlobalRuntimeStep | null {
   const home = homeDir(env);
   const roots = stagedProjectionRoots(home, target, piSelected, env);
-  for (const root of roots) {
-    const invalid = invalidProjectionRoot(root.path, root.expected);
-    if (invalid) return { step, status: 'failed', detail: invalid };
-  }
-  for (const skill of skills) {
-    const source = join(stagedSkillRoot(home), skill);
-    for (const root of roots) {
-      const destination = join(root.path, skill);
-      if (!pathEntryExists(destination)) continue;
-      if (skillLinkMatches(destination, source)) continue;
-      return { step, status: 'failed', detail: `refusing to refresh unowned host skill ${destination}; preserve or move this path, then run: rh install --target ${target}` };
-    }
+  const records = readPathRecords(env ?? process.env);
+  for (const skill of skills) for (const root of roots) {
+    const destination = join(root.path, skill);
+    if (!pathEntryExists(destination)) continue;
+    const key = pathRecordKey(env ?? process.env, destination);
+    const record = records[key];
+    if (!record || record.kind === 'user_managed' || record.owner !== ownerForInstallPath(destination, env)
+      || !pathRecordIsCurrent(key, record)) return { step, status: 'failed', detail: 'refusing to refresh unowned host skill ' + destination + '; preserve or move this path, then run: rh install --target ' + target };
   }
   return null;
 }
 
 function projectStagedSkills(
-  skills: readonly string[],
-  target: InstallTargetSpec,
-  piSelected: boolean,
-  env: NodeJS.ProcessEnv | undefined,
-  step: string,
+  skills: readonly string[], target: InstallTargetSpec, piSelected: boolean,
+  env: NodeJS.ProcessEnv | undefined, step: string, transaction?: string,
 ): GlobalRuntimeStep {
   const home = homeDir(env);
   const roots = stagedProjectionRoots(home, target, piSelected, env);
-  const projected: string[] = [];
-  const created: string[] = [];
-  const fail = (detail: string): GlobalRuntimeStep => {
-    for (const destination of created.reverse()) rmSync(destination, { recursive: true, force: true });
-    return { step, status: 'failed', detail };
-  };
-  for (const skill of skills) {
-    const source = join(stagedSkillRoot(home), skill);
-    if (!existsSync(join(source, 'SKILL.md'))) {
-      return fail(`staging skill missing after install: ${source}`);
-    }
-    for (const root of roots) {
-      const destination = join(root.path, skill);
-      try {
-        const invalidBefore = invalidProjectionRoot(root.path, root.expected);
-        if (invalidBefore) return fail(invalidBefore);
-        mkdirSync(root.path, { recursive: true });
-        const invalidAfter = invalidProjectionRoot(root.path, root.expected);
-        if (invalidAfter) return fail(invalidAfter);
-        if (pathEntryExists(destination)) {
-          if (skillLinkMatches(destination, source)) {
-            projected.push(destination);
-            continue;
-          }
-          return fail(`refusing to overwrite unowned host skill ${destination}`);
-        }
-        symlinkSync(source, destination, 'dir');
-      } catch (error) {
-        return fail(`cannot project staged skill ${destination}: ${(error as Error).message}`);
-      }
-      created.push(destination);
-      projected.push(destination);
-    }
-  }
-  return { step, status: 'ok', detail: `projected ${projected.length} host skills` };
+  try {
+    const writes = skills.flatMap(skill => {
+      const source = join(stagedSkillRoot(home), skill);
+      if (!existsSync(join(source, 'SKILL.md'))) throw new Error('staging skill missing after install: ' + source);
+      return roots.map(root => {
+        const path = join(root.path, skill);
+        const owner = ownerForInstallPath(path, env);
+        if (owner === null) throw new Error('no skill owner: ' + path);
+        return { path, owner, entry: { type: 'symlink' as const, target: source } };
+      });
+    });
+    withHostConfigTransaction(env ?? process.env, transaction, root => openHostConfigGate({ env }).writePaths(writes, { transaction: root }));
+    return { step, status: 'ok', detail: 'projected ' + writes.length + ' host skills' };
+  } catch (error) { return { step, status: 'failed', detail: (error as Error).message }; }
 }
 
 function pathEntryExists(path: string): boolean {
@@ -1430,34 +1370,7 @@ function pathEntryExists(path: string): boolean {
   }
 }
 
-function prospectiveCanonicalPath(path: string): string {
-  let ancestor = path;
-  while (!pathEntryExists(ancestor)) {
-    const parent = dirname(ancestor);
-    if (parent === ancestor) throw new Error(`cannot resolve an existing ancestor for ${path}`);
-    ancestor = parent;
-  }
-  return resolve(realpathSync(ancestor), relative(ancestor, path));
-}
-
-function invalidProjectionRoot(root: string, expected: string): string | null {
-  let actual: string;
-  try {
-    actual = prospectiveCanonicalPath(root);
-  } catch (error) {
-    return `cannot resolve host skill root ${root}: ${(error as Error).message}`;
-  }
-  if (actual !== expected) {
-    return `refusing non-canonical host skill root: expected=${expected}; actual=${actual}`;
-  }
-  if (!pathEntryExists(root)) return null;
-  const stat = lstatSync(root);
-  return stat.isDirectory() && !stat.isSymbolicLink()
-    ? null
-    : `refusing non-directory host skill root ${root}`;
-}
-
-function installMermaidSkill(sourceRoot: string, target: InstallTargetSpec, piSelected: boolean, env?: NodeJS.ProcessEnv, refresh = false): GlobalRuntimeStep {
+function installMermaidSkill(sourceRoot: string, target: InstallTargetSpec, piSelected: boolean, env?: NodeJS.ProcessEnv, refresh = false, transaction?: string): GlobalRuntimeStep {
   const mermaidSkills = externalSkillGroupsFromCatalog(loadSkillSurfaceCatalog(sourceRoot)).get("BfdCampos/dotfiles") ?? [];
   const installed = join(stagedSkillRoot(homeDir(env)), 'mermaid', 'SKILL.md');
   const preflight = preflightStagedSkillProjection(mermaidSkills, target, piSelected, env, 'configure Mermaid skill');
@@ -1481,7 +1394,7 @@ function installMermaidSkill(sourceRoot: string, target: InstallTargetSpec, piSe
     );
     if (step.status === 'failed') return withStepName(step, "configure Mermaid skill", `target=${target}`);
   }
-  return projectStagedSkills(mermaidSkills, target, piSelected, env, 'configure Mermaid skill');
+  return projectStagedSkills(mermaidSkills, target, piSelected, env, 'configure Mermaid skill', transaction);
 }
 export function configureProtectedHelperPlatform(
   cwd: string,
@@ -1876,9 +1789,35 @@ export function removeBrainRootConfiguration(env: NodeJS.ProcessEnv, runtimeLock
     : { value: false }), { runtimeLock, beforeWrite, render: renderJsonObjectUpdate }).value;
 }
 
-export function runGlobalRuntimeSetup(
-  opts: GlobalRuntimeOptions = {},
-): GlobalRuntimeResult {
+class RuntimeSetupFailure extends Error {
+  constructor(readonly result: GlobalRuntimeResult) { super('runtime setup failed'); }
+}
+
+export function runGlobalRuntimeSetup(opts: GlobalRuntimeOptions = {}): GlobalRuntimeResult {
+  const env = opts.env ?? process.env;
+  requireHome(env);
+  if (opts.transaction !== undefined) return runGlobalRuntimeSetupInTransaction(opts);
+  if (opts.plugins === undefined) requireInstallState(env);
+  try {
+    return withHostConfigTransaction(env, undefined, (transaction, runtimeLock) => {
+      let result: GlobalRuntimeResult;
+      try { result = runGlobalRuntimeSetupInTransaction({ ...opts, transaction, runtimeLock }); }
+      catch (error) {
+        try { recordStagedExternalSkillWrites(transaction, env); }
+        catch (ownershipError) { throw new AggregateError([error, ownershipError], 'runtime setup failed before staging ownership could be recorded'); }
+        throw error;
+      }
+      recordStagedExternalSkillWrites(transaction, env);
+      if (result.exitCode !== 0) throw new RuntimeSetupFailure(result);
+      return result;
+    }, opts.hostAdapters === false ? undefined : () => migrateRuntimeHostConfig(env));
+  } catch (error) {
+    if (error instanceof RuntimeSetupFailure) return error.result;
+    throw error;
+  }
+}
+
+function runGlobalRuntimeSetupInTransaction(opts: GlobalRuntimeOptions): GlobalRuntimeResult {
   const sourceRoot = opts.sourceRoot ?? defaultSourceRoot();
   const cwd = opts.cwd ?? process.cwd();
   const target = opts.target ?? "both";
@@ -2004,14 +1943,13 @@ export function runGlobalRuntimeSetup(
   steps.push(architectureConfiguration);
   if (architectureConfiguration.status === 'failed') return finalizeRuntimeResult(steps);
 
-  if (opts.syncSkill !== false) steps.push(syncRuntimeSkill(sourceRoot, plugins, target, env));
+  if (opts.syncSkill !== false) steps.push(syncRuntimeSkill(sourceRoot, plugins, target, env, opts.transaction));
   else steps.push({ step: "sync repo-harness skill runtime", status: "skipped", detail: "disabled" });
 
   if (opts.hostAdapters !== false) steps.push(installHostAdapters(target, env));
   else steps.push({ step: "install host adapters", status: "skipped", detail: "disabled" });
 
-  steps.push(installAgentFleet(sourceRoot, bunExecutable, env));
-  if (updateMode && agentFleetVerified({ steps })) steps.push(recordAgentFleetOwnership(env));
+  steps.push(installAgentFleet(sourceRoot, bunExecutable, env, opts.transaction));
 
   steps.push({ step: GLOBAL_RULES_REFRESH_STEP, ...applyGlobalContextRefresh(globalRules, homeDir(env)) });
   if (steps.at(-1)?.status === "failed") return finalizeRuntimeResult(steps);
@@ -2020,14 +1958,14 @@ export function runGlobalRuntimeSetup(
 
   const refreshExternalSkills = opts.externalSkills === true;
   if (refreshExternalSkills) {
-    const waza = installWazaSkills(sourceRoot, target, piSelected, env, updateMode);
+    const waza = installWazaSkills(sourceRoot, target, piSelected, env, updateMode, opts.transaction);
     steps.push(waza);
     if (waza.status === "failed") return finalizeRuntimeResult(steps);
     steps.push(waza.status === "ok"
-      ? { step: WAZA_RULES_STEP, ...syncWazaSharedRules(homeDir(env), hostIds(target), env, updateMode) }
+      ? { step: WAZA_RULES_STEP, ...syncWazaSharedRules(homeDir(env), hostIds(target), env, updateMode ? true : 'missing', opts.transaction) }
       : { step: WAZA_RULES_STEP, status: "skipped", detail: "Waza install failed" });
     if (steps.at(-1)?.status === "failed") return finalizeRuntimeResult(steps);
-    const mermaid = installMermaidSkill(sourceRoot, target, piSelected, env, updateMode);
+    const mermaid = installMermaidSkill(sourceRoot, target, piSelected, env, updateMode, opts.transaction);
     steps.push(mermaid);
     if (mermaid.status === "failed") return finalizeRuntimeResult(steps);
   } else {
@@ -2069,6 +2007,7 @@ export function runGlobalRuntimeSetup(
           integrityBySkill,
           env,
           updateMode,
+          opts.transaction,
         ));
         if (steps.at(-1)?.status === "failed") break;
       }
@@ -2082,7 +2021,7 @@ export function runGlobalRuntimeSetup(
   }
 
   if (plugins.includes('cross-review') || plugins.includes('peer-runtime')) {
-    steps.push(...syncCrossReviewSkills(sourceRoot, target, env, plugins));
+    steps.push(...syncCrossReviewSkills(sourceRoot, target, env, plugins, opts.transaction));
   } else {
     steps.push({ step: "cross-review skills", status: "skipped", detail: "cross-review and peer-runtime plugins not selected" });
   }
@@ -2118,7 +2057,7 @@ export function runGlobalRuntimeSetup(
       if (hc.pathEntry !== null) env = { ...env, PATH: [hc.pathEntry, env.PATH].filter(Boolean).join(delimiter) };
     }
   }
-  if (steps.every((step) => step.status !== "failed")) steps.push(configureRequiredHerdrSkill(target, env, undefined, piSelected));
+  if (steps.every((step) => step.status !== "failed")) steps.push(configureRequiredHerdrSkill(target, env, opts.transaction, piSelected));
   if (steps.every((step) => step.status !== 'failed')) {
     const pi = installPiPackage(bunGlobalPackageRoot(env)!, plugins.includes('pi') && target === 'both' && opts.hostAdapters !== false, env);
     steps.push({ ...pi, ...(pi.created ? { owned_pi_package: pi.source } : {}) });

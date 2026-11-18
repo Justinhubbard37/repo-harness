@@ -1,6 +1,6 @@
-import { chmodSync, cpSync, lstatSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { sha256Hex, sha256Prefixed } from '../../core/evidence/sha256';
 import { HostConfigError, type PathCommitted } from '../../core/host-config/types';
 import { retryWindowsSharingRace } from '../atomic-append';
@@ -82,18 +82,25 @@ export function preimagePath(transaction: string, key: string): string {
 /** Keep the first entry of the transaction at the path: a later write in the same transaction does not replace it. */
 export function keepPreimage(transaction: string, key: string): void {
   const target = preimagePath(transaction, key);
-  if (lstatSync(target, { throwIfNoEntry: false })) return;
+  if (lstatSync(target, { throwIfNoEntry: false }) || lstatSync(target + '.absent', { throwIfNoEntry: false })) return;
+  if (!lstatSync(key, { throwIfNoEntry: false })) {
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    writeFileSync(target + '.absent', '', { flag: 'wx', mode: 0o600 });
+    return;
+  }
   cpSync(key, target, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
 }
 
 /** True when the transaction holds an entry for the path. */
 export function hasPreimage(transaction: string, key: string): boolean {
-  return lstatSync(preimagePath(transaction, key), { throwIfNoEntry: false }) !== undefined;
+  const path = preimagePath(transaction, key);
+  return lstatSync(path, { throwIfNoEntry: false }) !== undefined || lstatSync(path + '.absent', { throwIfNoEntry: false }) !== undefined;
 }
 
 /** Put the transaction's entry back at the path, in place of what is there. */
 export function restorePreimage(transaction: string, key: string): void {
   const source = preimagePath(transaction, key);
+  if (lstatSync(source + '.absent', { throwIfNoEntry: false })) { removePathEntry(key); return; }
   const staged = `${key}.${randomUUID()}.rh-stage`;
   cpSync(source, staged, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
   if (lstatSync(key, { throwIfNoEntry: false })) publishPathEntry(staged, key);

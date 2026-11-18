@@ -5,7 +5,9 @@ import { join } from "path";
 import {
   beginInstallHostTransaction,
   rollbackInstallHostTransaction,
+  installProfileTransactionPaths,
 } from "../../src/cli/installer/install-profile";
+import { openHostConfigGate } from "../../src/effects/host-config/gate";
 import { mutationPathSkillNames, type SkillSurfaceCatalog } from "../../src/core/skill-surface/catalog";
 
 function withHome(run: (env: NodeJS.ProcessEnv) => void): void {
@@ -63,68 +65,36 @@ describe("mutation-path coverage: a synthetic new catalog package is picked up w
     expect(repoHarnessSkills).toContain("repo-harness");
   });
 
-  test(
-    "the new package's host-skill destinations are covered by the transaction snapshot, " +
-      "and a mid-transaction failure restores original bytes on both hosts",
-    () => withHome((env) => {
-      const catalog = catalogWithSyntheticPackage("repo-harness-newthing");
-      const { repoHarnessSkills } = mutationPathSkillNames(catalog);
-      const newName = "repo-harness-newthing";
-      expect(repoHarnessSkills).toContain(newName);
+  test("gate preimages restore a catalog tree on both hosts without host snapshots", () => withHome(env => {
+    const source = join(env.HOME!, 'source');
+    writePath(join(source, 'SKILL.md'), '# original\n');
+    const destinations = ['.codex', '.claude'].map(host => join(env.HOME!, host, 'skills', 'repo-harness-newthing'));
+    const gate = openHostConfigGate({ env });
+    const writes = destinations.map(path => ({ path, owner: 'product', entry: { type: 'directory' as const, source } }));
+    gate.writePaths(writes);
+    const transaction = beginInstallHostTransaction(installProfileTransactionPaths(env), env);
+    expect(transaction.snapshots.some(snapshot => destinations.includes(snapshot.path))).toBe(false);
+    writeFileSync(join(source, 'SKILL.md'), '# replacement\n');
+    writeFileSync(join(source, 'NEW-FILE.md'), '# new\n');
+    gate.writePaths(writes, { transaction: transaction.backup_root });
+    rollbackInstallHostTransaction(transaction);
+    for (const path of destinations) {
+      expect(readFileSync(join(path, 'SKILL.md'), 'utf8')).toBe('# original\n');
+      expect(existsSync(join(path, 'NEW-FILE.md'))).toBe(false);
+    }
+  }));
 
-      // Construct the same per-host destination shape
-      // runtimeHostMutationPaths() builds from its own catalog-derived
-      // name lists (join(home, host, 'skills', name) for both hosts), proving
-      // the generic path-construction/transaction machinery correctly covers
-      // whatever names a catalog-driven selector produces -- including one
-      // that did not exist when the transaction code was written.
-      const home = env.HOME!;
-      const destinations = [".codex", ".claude"].map((host) => join(home, host, "skills", newName));
-
-      // Simulate a prior real install: each destination already has managed content on disk.
-      const originalText = new Map<string, string>();
-      for (const dest of destinations) {
-        const content = `# ${newName} original at ${dest}\n`;
-        writePath(join(dest, "SKILL.md"), content);
-        originalText.set(dest, content);
-      }
-
-      const transaction = beginInstallHostTransaction(destinations, env);
-
-      // Mid-transaction failure: one destination gets partially rewritten,
-      // the other gets a brand-new file created under it.
-      writeFileSync(join(destinations[0], "SKILL.md"), "# partially mutated\n");
-      const createdUnderSecond = join(destinations[1], "NEW-FILE.md");
-      writeFileSync(createdUnderSecond, "# should not survive rollback\n");
-
-      rollbackInstallHostTransaction(transaction);
-
-      for (const dest of destinations) {
-        const expected = originalText.get(dest);
-        if (!expected) throw new Error(`missing captured original bytes for ${dest}`);
-        expect(readFileSync(join(dest, "SKILL.md"), "utf-8")).toBe(expected);
-      }
-      expect(existsSync(createdUnderSecond)).toBe(false);
-    }),
-  );
-
-  test(
-    "a newly-created (not pre-existing) destination for the synthetic package is removed entirely on rollback",
-    () => withHome((env) => {
-      const home = env.HOME!;
-      const newName = "repo-harness-newthing";
-      const destinations = [".codex", ".claude"].map((host) => join(home, host, "skills", newName));
-
-      // Nothing exists yet at either destination when the transaction begins.
-      const transaction = beginInstallHostTransaction(destinations, env);
-      for (const dest of destinations) {
-        writePath(join(dest, "SKILL.md"), "# created mid-transaction\n");
-      }
-      rollbackInstallHostTransaction(transaction);
-
-      for (const dest of destinations) {
-        expect(existsSync(dest)).toBe(false);
-      }
-    }),
-  );
+  test("gate rollback removes a new catalog entry and keeps an unrecorded user tree", () => withHome(env => {
+    const source = join(env.HOME!, 'source');
+    writePath(join(source, 'SKILL.md'), '# managed\n');
+    const path = join(env.HOME!, '.codex/skills/repo-harness-newthing');
+    const gate = openHostConfigGate({ env });
+    const transaction = beginInstallHostTransaction(installProfileTransactionPaths(env), env);
+    gate.writePaths([{ path, owner: 'product', entry: { type: 'directory', source } }], { transaction: transaction.backup_root });
+    rollbackInstallHostTransaction(transaction);
+    expect(existsSync(path)).toBe(false);
+    writePath(join(path, 'SKILL.md'), '# user\n');
+    expect(() => gate.writePaths([{ path, owner: 'product', entry: { type: 'directory', source } }])).toThrow();
+    expect(readFileSync(join(path, 'SKILL.md'), 'utf8')).toBe('# user\n');
+  }));
 });

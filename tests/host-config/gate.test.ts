@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FragmentEdit, HostConfigStrategy, HostPath } from '../../src/core/host-config/types';
@@ -417,4 +417,63 @@ test('a delegated writer runs only on paths that rh may write; a replaced path s
   f.gate().apply([f.change(blocks, 'on')]);
   expect(() => f.gate().writePaths([{ path: blocks, owner: 'core', entry: file('rh\n') }]))
     .toThrow(`rh text blocks are recorded in this file, so rh does not write it as a whole path: ${blocks}`);
+});
+
+test('an extra empty directory is kept as an edit during refresh and removal', () => {
+  const f = fixture();
+  const source = mkdtempSync(join(f.home, 'source-'));
+  writeFileSync(join(source, 'SKILL.md'), 'rh\n');
+  const path = join(f.home, '.claude/skills/with-drafts');
+  const write = { path, owner: 'core', entry: { type: 'directory' as const, source } };
+  f.gate().writePaths([write]);
+  const record = f.ledger().paths[path];
+  mkdirSync(join(path, 'drafts'));
+  writeFileSync(join(source, 'SKILL.md'), 'next\n');
+  expect(() => f.gate().writePaths([write])).toThrow('it changed since rh wrote it');
+  expect(f.gate().revertPaths([path])).toEqual([{ path, action: 'kept_edited' }]);
+  expect(readdirSync(join(path, 'drafts'))).toEqual([]);
+  expect(readFileSync(join(path, 'SKILL.md'), 'utf8')).toBe('rh\n');
+  expect(f.ledger().paths[path]).toEqual(record);
+});
+
+test('rollback restores pre-run absence and keeps a path edited after the write', () => {
+  for (const delegated of [false, true]) for (const edited of [false, true]) {
+    const f = fixture();
+    const path = join(f.home, '.claude/agents/absent.md');
+    const write = { path, owner: 'core', entry: { type: 'file' as const, bytes: Buffer.from('rh\n') } };
+    f.gate().writePaths([write]);
+    const snapshot = readFileSync(join(f.root, 'ledger.json'));
+    rmSync(path);
+    const transaction = mkdtempSync(join(f.home, 'tx-'));
+    if (delegated) f.gate().delegate([{ path, owner: 'core' }], ([key]) => writeFileSync(key!, 'rh\n'), { transaction });
+    else f.gate().writePaths([write], { transaction });
+    if (edited) writeFileSync(path, 'user edit\n');
+    expect(rollbackHostConfigTransaction(join(f.home, '.repo-harness'), snapshot, transaction).unresolved).toEqual(edited ? [path] : []);
+    expect(existsSync(path)).toBe(edited);
+    if (edited) expect(readFileSync(path, 'utf8')).toBe('user edit\n');
+    expect(f.ledger().paths[path]).toBeDefined();
+  }
+});
+
+test.each(['absent', 'symlink', 'directory'] as const)('delegate keeps the replacement record after an invalid %s result', result => {
+  for (const alreadyReplaced of [false, true]) {
+    const f = fixture();
+    const path = join(f.home, '.claude/agents/replacement.md');
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, 'user bytes\n');
+    if (alreadyReplaced) f.gate().writePaths([{ path, owner: 'core', replace: true, entry: { type: 'file', bytes: Buffer.from('rh bytes\n') } }]);
+    const before = alreadyReplaced ? f.ledger().paths[path] : undefined;
+    expect(() => f.gate().delegate([{ path, owner: 'core', replace: true }], ([destination]) => {
+      rmSync(destination!);
+      if (result === 'symlink') symlinkSync(f.a, destination!);
+      if (result === 'directory') { mkdirSync(destination!); writeFileSync(join(destination!, 'keep.txt'), 'keep\n'); }
+    })).toThrow('the delegated writer did not leave a file');
+    const record = f.ledger().paths[path];
+    expect(record).toMatchObject({ kind: 'replaced', owner: 'core', committed: { type: 'file' } });
+    expect(f.vault(record.backup)).toBe('user bytes\n');
+    if (alreadyReplaced) expect(record).toEqual(before);
+    if (result === 'absent') expect(existsSync(path)).toBe(false);
+    if (result === 'symlink') expect(lstatSync(path).isSymbolicLink()).toBe(true);
+    if (result === 'directory') expect(readFileSync(join(path, 'keep.txt'), 'utf8')).toBe('keep\n');
+  }
 });

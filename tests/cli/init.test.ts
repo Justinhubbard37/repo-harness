@@ -980,13 +980,11 @@ describe("bundled host runtimes", () => {
       const reference = join(source, "assets/skills/repo-harness-cross-review/reference.md");
       writeFileSync(reference, "old reference");
       expect(syncCrossReviewSkills(source, "both", env).every(step => step.status === "ok")).toBe(true);
-      const paths = [".claude", ".codex"].map(host => join(home, host, "skills/repo-harness-cross-review"));
-      recordInstallOwnership(paths, env);
+
       if (change === "skill") writeFileSync(join(source, "assets/skills/repo-harness-cross-review/SKILL.md"), "---\nname: repo-harness-cross-review\n---\nUpdated instructions\n");
       rmSync(reference);
       writeFileSync(join(source, "assets/skills/repo-harness-cross-review/new-reference.md"), "new reference");
       expect(syncCrossReviewSkills(source, "both", env).every(step => step.status === "ok")).toBe(true);
-      recordInstallOwnership(paths, env);
       for (const host of [".claude", ".codex"]) {
         const dest = join(home, host, "skills/repo-harness-cross-review");
         expect(existsSync(join(dest, "reference.md"))).toBe(false);
@@ -994,7 +992,7 @@ describe("bundled host runtimes", () => {
         writeFileSync(join(dest, "new-reference.md"), "user edit");
       }
       const blocked = syncCrossReviewSkills(source, "both", env);
-      expect(blocked.filter(step => step.status === "failed")).toHaveLength(2);
+      expect(blocked.filter(step => step.status === "failed")).toHaveLength(1);
       for (const host of [".claude", ".codex"]) {
         expect(readFileSync(join(home, host, "skills/repo-harness-cross-review/new-reference.md"), "utf8")).toBe("user edit");
       }

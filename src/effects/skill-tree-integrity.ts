@@ -11,10 +11,8 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  statSync,
-  unlinkSync,
 } from "fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import { acquireExclusiveDirectoryLock } from "./locking/exclusive-directory-lock";
 
 export type SkillTreeCommitResult =
@@ -46,50 +44,6 @@ function prospectiveCanonicalPath(path: string): string {
     ancestor = parent;
   }
   return resolve(realpathSync(ancestor), relative(ancestor, path));
-}
-
-/** The link text that the ledger records for a skill link, or null when it records no link there. */
-export type RecordedLinkTarget = (link: string) => string | null;
-
-/** Remove missing-target links with current-package or exact path record proof. */
-export function removeOwnedDanglingSkillLinks(
-  sourceRoot: string,
-  skillRoots: readonly string[],
-  dryRun = false,
-  recordedLinkTarget: RecordedLinkTarget = () => null,
-): string[] {
-  const packageRoot = realpathSync(sourceRoot);
-  const removed: string[] = [];
-  for (const root of skillRoots) {
-    if (!root || !pathEntryExists(root)) continue;
-    // This cleanup does not follow a symlinked skill root.
-    if (!lstatSync(root).isDirectory()) continue;
-    for (const name of readdirSync(root)) {
-      const link = join(root, name);
-      let canonicalTarget: string;
-      let manifestOwned = false;
-      try {
-        if (!lstatSync(link).isSymbolicLink()) continue;
-        try {
-          statSync(link);
-          continue;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
-        }
-        const raw = readlinkSync(link);
-        manifestOwned = recordedLinkTarget(link) === raw;
-        const target = isAbsolute(raw) ? raw : `${dirname(link)}${sep}${raw}`;
-        canonicalTarget = prospectiveCanonicalPath(target);
-      } catch {
-        // Unknown ownership is never permission to remove a shared entry.
-        continue;
-      }
-      if (!manifestOwned && !canonicalTarget.startsWith(`${packageRoot}${sep}`)) continue;
-      if (!dryRun) unlinkSync(link);
-      removed.push(link);
-    }
-  }
-  return removed;
 }
 
 /** Content-address one installed Skill tree without following nested symlinks. */

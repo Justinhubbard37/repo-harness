@@ -3,10 +3,13 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { run, withTempRepo } from "./helpers/repo-fixture";
+import { ownedPath } from "../src/effects/host-config/path-records";
+import { openHostConfigGate } from "../src/effects/host-config/gate";
 import { configureRequiredHerdrSkill } from "../src/cli/commands/herdr-skill";
 import { ensureHerdrCore } from "../src/cli/commands/global-runtime";
 import { startFakeHcRelease } from "./helpers/fake-hc";
 import { HC_MIN_VERSION } from "../src/core/terminal/herdr-pin";
+import { sha256Prefixed } from "../src/core/evidence/sha256";
 
 /**
  * The package file `src/core/terminal/herdr-core-pin.json` is the single herdr
@@ -174,221 +177,76 @@ test("Herdr skill renderer loads from an npm package path under Node", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("required Herdr skill comes from the binary, updates owned copies, and preserves unowned copies", () => {
-  const root = mkdtempSync(join(tmpdir(), "repo-harness-herdr-skill-"));
+test("required Herdr skill records its writes and keeps unrecorded or edited copies", () => {
+  const root = mkdtempSync(join(tmpdir(), 'repo-harness-herdr-gate-'));
   try {
-    const home = join(root, "home");
-    const bin = join(root, "bin");
-    const source = join(root, "skill.md");
-    mkdirSync(home);
-    mkdirSync(bin);
-    const hc = join(bin, "hc");
-    writeFileSync(hc, "#!/bin/sh\ncat \"$FIXTURE_SKILL_FILE\"\n");
-    chmodSync(hc, 0o755);
-    const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, FIXTURE_SKILL_FILE: source };
-    const first = HC_MANUAL;
-    writeFileSync(source, first);
-    // A copy that an earlier release installed from classic `herdr --skill` is still owned.
-    const classicCopy = join(home, ".claude", "skills", "herdr");
-    mkdirSync(classicCopy, { recursive: true });
-    writeFileSync(join(classicCopy, "SKILL.md"), "Check HERDR_ENV.\n");
-    writeFileSync(join(classicCopy, ".repo-harness-owner.json"), JSON.stringify({ owner: "repo-harness", source: "herdr --skill", sha256: `sha256:${createHash("sha256").update("Check HERDR_ENV.\n").digest("hex")}` }));
-    expect(configureRequiredHerdrSkill("both", env).status).toBe("ok");
-    for (const host of [".claude", ".codex"]) {
-      expect(readFileSync(join(home, host, "skills", "herdr", "SKILL.md"), "utf8")).toBe(renderHerdrSkill(first));
-    }
-    // A copy equal to the render keeps its ownership even when its marker is stale,
-    // but a marker that is not a regular file is never replaced.
-    const classicMarker = join(classicCopy, ".repo-harness-owner.json");
-    rmSync(classicMarker);
-    mkdirSync(classicMarker);
-    writeFileSync(join(classicMarker, "keep.txt"), "user\n");
-    expect(configureRequiredHerdrSkill("both", env).status).toBe("ok");
-    expect(readFileSync(join(classicMarker, "keep.txt"), "utf8")).toBe("user\n");
-    rmSync(classicMarker, { recursive: true });
-    writeFileSync(classicMarker, JSON.stringify({ owner: "repo-harness", sha256: "sha256:stale" }));
-    expect(configureRequiredHerdrSkill("both", env).status).toBe("ok");
-    expect(JSON.parse(readFileSync(classicMarker, "utf8")).sha256)
-      .toBe(`sha256:${createHash("sha256").update(renderHerdrSkill(first)).digest("hex")}`);
-
-    const shared = join(home, ".agents", "skills", "herdr");
-    mkdirSync(shared, { recursive: true });
-    for (const file of ["SKILL.md", ".repo-harness-owner.json"]) {
-      writeFileSync(join(shared, file), readFileSync(join(home, ".codex", "skills", "herdr", file)));
-    }
-    const next = `${first}Use hc ls.\n`;
-    writeFileSync(source, next);
-    expect(configureRequiredHerdrSkill("both", env).status).toBe("ok");
-    expect(readFileSync(join(home, ".codex", "skills", "herdr", "SKILL.md"), "utf8")).toBe(renderHerdrSkill(next));
-    expect(readFileSync(join(shared, "SKILL.md"), "utf8")).toBe(renderHerdrSkill(next));
-
-    const afterCleanupFailure = `${next}Keep the installed skill.\n`;
-    writeFileSync(source, afterCleanupFailure);
-    let cleanupCount = 0;
-    const cleanup = configureRequiredHerdrSkill("both", env, (path) => {
-      cleanupCount += 1;
-      if (cleanupCount === 2) throw new Error("fixture cleanup failure");
-      rmSync(path, { recursive: true, force: true });
-    });
-    expect(cleanup.status).toBe("ok");
-    expect(cleanup.detail).toContain("backup cleanup pending");
-    for (const host of [".claude", ".codex"]) {
-      expect(readFileSync(join(home, host, "skills", "herdr", "SKILL.md"), "utf8")).toBe(renderHerdrSkill(afterCleanupFailure));
-    }
-
-    writeFileSync(join(shared, "SKILL.md"), "# shared user change\n");
-    writeFileSync(source, `${afterCleanupFailure}New command.\n`);
-    expect(configureRequiredHerdrSkill("claude", env).status).toBe("ok");
-    expect(readFileSync(join(shared, "SKILL.md"), "utf8")).toBe("# shared user change\n");
-    expect(configureRequiredHerdrSkill("both", env).status).toBe("failed");
-    expect(readFileSync(join(shared, "SKILL.md"), "utf8")).toBe("# shared user change\n");
-    expect(readFileSync(join(home, ".codex", "skills", "herdr", "SKILL.md"), "utf8")).toBe(renderHerdrSkill(afterCleanupFailure));
-    writeFileSync(join(shared, "SKILL.md"), renderHerdrSkill(afterCleanupFailure));
-
-    const claudeSkill = join(home, ".claude", "skills", "herdr", "SKILL.md");
-    writeFileSync(claudeSkill, "# user change\n");
-    writeFileSync(source, `${afterCleanupFailure}One more rule.\n`);
-    const refusal = configureRequiredHerdrSkill("both", env);
-    expect(refusal.status).toBe("failed");
-    expect(refusal.detail).toBe(`refusing to replace unowned or changed Herdr skill: ${join(home, ".claude", "skills", "herdr")}; `
-      + `to keep it and install a fresh owned copy, move it out of ${join(home, ".claude", "skills")} `
-      + `(for example: mv "${join(home, ".claude", "skills", "herdr")}" "${join(home, ".claude", "herdr-skill.moved")}"), `
-      + "then run `rh update` again");
-    expect(readFileSync(claudeSkill, "utf8")).toBe("# user change\n");
-    expect(readFileSync(join(home, ".codex", "skills", "herdr", "SKILL.md"), "utf8")).toBe(renderHerdrSkill(afterCleanupFailure));
-    expect(existsSync(join(home, ".codex", "skills", "herdr", ".repo-harness-owner.json"))).toBe(true);
-
-    writeFileSync(hc, "#!/bin/sh\nkill -TERM $$\n");
-    expect(configureRequiredHerdrSkill("both", env).detail).toBe("hc --skill failed: signal SIGTERM");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("required Herdr skill rejects a symlinked host parent before writing a new skills directory", () => {
-  const root = mkdtempSync(join(tmpdir(), "repo-harness-herdr-parent-"));
-  try {
-    const home = join(root, "home");
-    const outside = join(root, "outside");
-    const bin = join(root, "bin");
-    mkdirSync(home);
-    mkdirSync(outside);
-    mkdirSync(bin);
-    symlinkSync(outside, join(home, ".codex"), "dir");
-    const source = join(root, "skill.md");
-    writeFileSync(source, HC_MANUAL);
-    const hc = join(bin, "hc");
-    writeFileSync(hc, "#!/bin/sh\ncat \"$FIXTURE_SKILL_FILE\"\n");
-    chmodSync(hc, 0o755);
-    const result = configureRequiredHerdrSkill("codex", {
-      ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, FIXTURE_SKILL_FILE: source,
-    });
-    expect(result.status).toBe("failed");
-    expect(result.detail).toContain("non-canonical host skill root");
-    expect(existsSync(join(outside, "skills"))).toBe(false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test.each(["claude", "codex"] as const)("%s skill cleanup recovers old stages and reports unsafe or recent entries", host => {
-  const root = mkdtempSync(join(tmpdir(), "repo-harness-herdr-stages-"));
-  try {
-    const home = join(root, "home");
-    const bin = join(root, "bin");
+    const home = join(root, 'home');
+    const bin = join(root, 'bin');
+    const source = join(root, 'skill.md');
     mkdirSync(home); mkdirSync(bin);
-    const upstream = HC_MANUAL;
-    const content = renderHerdrSkill(upstream);
-    const source = join(root, "skill.md");
-    writeFileSync(source, upstream);
-    writeFileSync(join(bin, "hc"), '#!/bin/sh\ncat "$FIXTURE_SKILL_FILE"\n');
-    chmodSync(join(bin, "hc"), 0o755);
-    const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}`, FIXTURE_SKILL_FILE: source };
-    expect(configureRequiredHerdrSkill(host, env).status).toBe("ok");
-    const skills = join(home, `.${host}`, "skills");
-    const destination = join(skills, "herdr");
-    const marker = readFileSync(join(destination, ".repo-harness-owner.json"), "utf8");
-    const old = new Date(Date.now() - 20 * 60 * 1_000);
-    const stage = (name: string, files: Record<string, string> = {}, stale = true) => {
-      const path = join(skills, name);
-      mkdirSync(path);
-      for (const [name, text] of Object.entries(files)) writeFileSync(join(path, name), text);
-      if (stale) utimesSync(path, old, old);
-      return path;
-    };
-    // This is the on-disk state after destination -> backup and before stage -> destination.
-    const backup = join(skills, ".herdr-stage-abc123-backup");
-    renameSync(destination, backup); utimesSync(backup, old, old);
-    const empty = stage(".herdr-stage-empty1");
-    const partial = stage(".herdr-stage-part12", { "SKILL.md": content });
-    const noPrefix = stage(".herdr-stage-nopre1", { "SKILL.md": "# unrelated skill\n" });
-    const complete = stage(".herdr-stage-full12", { "SKILL.md": content, ".repo-harness-owner.json": marker });
-    const fresh = stage(".herdr-stage-fresh1", {}, false);
-    const extra = stage(".herdr-stage-extra1-backup", { "SKILL.md": content, ".repo-harness-owner.json": marker, "keep": "user file" });
-    const foreign = stage(".herdr-stage-other1-backup", { "SKILL.md": content, ".repo-harness-owner.json": marker.replace("repo-harness", "foreign") });
-    const invalid = stage(".herdr-stage-bad123", { "SKILL.md": content, ".repo-harness-owner.json": "{}" });
-    const markerOnly = stage(".herdr-stage-mark12", { ".repo-harness-owner.json": marker });
-    const target = join(root, "keep"); mkdirSync(target); writeFileSync(join(target, "keep"), "keep");
-    const link = join(skills, ".herdr-stage-link12"); symlinkSync(target, link, "dir");
-    const childLink = stage(".herdr-stage-child1");
-    symlinkSync(source, join(childLink, "SKILL.md")); utimesSync(childLink, old, old);
-    const nested = stage(".herdr-stage-dir123");
-    mkdirSync(join(nested, "SKILL.md")); utimesSync(nested, old, old);
-    const unrelated = [stage(".herdr-stage-x"), stage("herdr-old"), stage("other-skill"), stage(".herdr-stage-abc123-backup-extra")];
-    const result = configureRequiredHerdrSkill(host, env);
-    expect(result.status).toBe("ok");
-    expect(existsSync(noPrefix)).toBe(true);
-    expect(result.detail).toContain(`stage cleanup skipped: ${noPrefix}: stage contents not proved`);
-    expect(readFileSync(join(noPrefix, "SKILL.md"), "utf8")).toBe("# unrelated skill\n");
-    expect(readFileSync(join(destination, "SKILL.md"), "utf8")).toBe(content);
-    for (const path of [backup, empty, partial, complete]) {
-      expect(existsSync(path)).toBe(false);
-      expect(result.detail).toContain(`stage cleanup removed: ${path}`);
+    const hc = join(bin, 'hc');
+    writeFileSync(hc, '#!/bin/sh\ncat "$FIXTURE_SKILL_FILE"\n'); chmodSync(hc, 0o755);
+    const env = { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: bin + ':' + process.env.PATH, FIXTURE_SKILL_FILE: source };
+    writeFileSync(source, HC_MANUAL);
+    const classic = join(home, '.claude/skills/herdr');
+    mkdirSync(classic, { recursive: true });
+    writeFileSync(join(classic, 'SKILL.md'), 'classic user copy\n');
+    expect(configureRequiredHerdrSkill('both', env).status).toBe('failed');
+    expect(readFileSync(join(classic, 'SKILL.md'), 'utf8')).toBe('classic user copy\n');
+    expect(existsSync(join(home, '.codex/skills/herdr'))).toBe(false);
+    rmSync(classic, { recursive: true });
+    expect(configureRequiredHerdrSkill('both', env).status).toBe('ok');
+    const codex = join(home, '.codex/skills/herdr');
+    for (const path of [classic, codex]) {
+      expect(ownedPath(env, path)).toMatchObject({ kind: 'created', owner: 'core' });
+      expect(readFileSync(join(path, 'SKILL.md'), 'utf8')).toBe(renderHerdrSkill(HC_MANUAL));
     }
-    for (const path of [fresh, extra, foreign, invalid, markerOnly, link, childLink, nested]) {
-      expect(lstatSync(path)).toBeDefined();
-      expect(result.detail).toContain(`stage cleanup skipped: ${path}`);
-    }
-    expect(readFileSync(join(target, "keep"), "utf8")).toBe("keep");
-    expect(readFileSync(source, "utf8")).toBe(upstream);
-    for (const path of unrelated) {
-      expect(existsSync(path)).toBe(true);
-      expect(result.detail).not.toContain(path);
-    }
-    // Already-current installs also clean old stages. Cleanup errors remain advisory.
-    const pending = stage(".herdr-stage-fail12");
-    const advisory = configureRequiredHerdrSkill(host, env, () => { throw new Error("fixture cleanup failure"); });
-    expect(advisory.status).toBe("ok");
-    expect(advisory.detail).toContain(`stage cleanup pending: ${pending}: fixture cleanup failure`);
-    expect(existsSync(pending)).toBe(true);
-    const current = configureRequiredHerdrSkill(host, env);
-    expect(current.status).toBe("ok");
-    expect(current.detail).toContain(`stage cleanup removed: ${pending}`);
-    expect(existsSync(pending)).toBe(false);
-    // A backup made from an old installed directory must still count as recent.
-    utimesSync(destination, old, old);
-    writeFileSync(source, `${upstream}Updated binary skill.\n`);
-    let recentBackup = "";
-    let backupMtime = 0;
-    const update = configureRequiredHerdrSkill(host, env, path => {
-      recentBackup = path;
-      backupMtime = lstatSync(path).mtimeMs;
-      throw new Error("keep new backup for age check");
-    });
-    expect(update.status).toBe("ok");
-    expect(recentBackup).not.toBe("");
-    expect(backupMtime).toBeGreaterThan(Date.now() - 10 * 60 * 1_000);
-    expect(update.detail).toContain(`stage cleanup skipped: ${recentBackup}: recent stage`);
-    expect(existsSync(recentBackup)).toBe(true);
-    expect(readFileSync(join(destination, "SKILL.md"), "utf8")).toBe(`${content}Updated binary skill.\n`);
-    const failureStage = stage(".herdr-stage-stop12");
-    const movedRoot = join(root, "moved-skills");
-    renameSync(skills, movedRoot); symlinkSync(movedRoot, skills, "dir");
-    const failed = configureRequiredHerdrSkill(host, env);
-    expect(failed.status).toBe("failed");
-    expect(failed.detail).toContain("non-canonical host skill root");
-    expect(existsSync(failureStage)).toBe(true);
-    expect(failed.detail).not.toContain("stage cleanup");
+    const shared = join(home, '.agents/skills/herdr');
+    openHostConfigGate({ env }).writePaths([{ path: shared, owner: 'core', entry: { type: 'directory', source: codex } }]);
+    const next = HC_MANUAL + 'Use hc ls.\n';
+    writeFileSync(source, next);
+    expect(configureRequiredHerdrSkill('both', env).status).toBe('ok');
+    for (const path of [classic, codex, shared]) expect(readFileSync(join(path, 'SKILL.md'), 'utf8')).toBe(renderHerdrSkill(next));
+    // A marker directory is user content, although the tree hash excludes the marker.
+    const marker = join(codex, '.repo-harness-owner.json');
+    rmSync(marker); mkdirSync(marker); writeFileSync(join(marker, 'keep.txt'), 'keep\n');
+    expect(configureRequiredHerdrSkill('both', env).status).toBe('failed');
+    expect(readFileSync(join(marker, 'keep.txt'), 'utf8')).toBe('keep\n');
+    expect(readFileSync(join(classic, 'SKILL.md'), 'utf8')).toBe(renderHerdrSkill(next));
+    rmSync(marker, { recursive: true });
+    writeFileSync(marker, '{}');
+    writeFileSync(join(shared, 'SKILL.md'), 'user change\n');
+    writeFileSync(source, next + 'New rule.\n');
+    expect(configureRequiredHerdrSkill('both', env).status).toBe('failed');
+    expect(readFileSync(join(shared, 'SKILL.md'), 'utf8')).toBe('user change\n');
+    expect(readFileSync(join(codex, 'SKILL.md'), 'utf8')).toBe(renderHerdrSkill(next));
+    writeFileSync(hc, '#!/bin/sh\nkill -TERM $$\n');
+    expect(configureRequiredHerdrSkill('both', env).detail).toBe('hc --skill failed: signal SIGTERM');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("required Herdr skill follows a linked host parent and leaves retired stages alone", () => {
+  const root = mkdtempSync(join(tmpdir(), 'repo-harness-herdr-parent-'));
+  try {
+    const home = join(root, 'home'), outside = join(root, 'outside'), bin = join(root, 'bin');
+    mkdirSync(home); mkdirSync(outside); mkdirSync(bin);
+    symlinkSync(outside, join(home, '.codex'), 'dir');
+    const stage = join(outside, 'skills', '.herdr-stage-old123');
+    mkdirSync(stage, { recursive: true }); writeFileSync(join(stage, 'keep.txt'), 'keep\n');
+    const cleanStage = join(outside, 'skills', '.herdr-stage-clean1');
+    const oldContent = renderHerdrSkill(HC_MANUAL);
+    mkdirSync(cleanStage); writeFileSync(join(cleanStage, 'SKILL.md'), oldContent);
+    writeFileSync(join(cleanStage, '.repo-harness-owner.json'), JSON.stringify({ owner: 'repo-harness', sha256: sha256Prefixed(oldContent) }));
+    utimesSync(cleanStage, new Date(0), new Date(0));
+    writeFileSync(join(bin, 'hc'), '#!/bin/sh\ncat "$FIXTURE_SKILL_FILE"\n'); chmodSync(join(bin, 'hc'), 0o755);
+    const source = join(root, 'skill.md'); writeFileSync(source, HC_MANUAL);
+    const env = { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: bin + ':' + process.env.PATH, FIXTURE_SKILL_FILE: source };
+    expect(configureRequiredHerdrSkill('codex', env).status).toBe('ok');
+    expect(readFileSync(join(outside, 'skills/herdr/SKILL.md'), 'utf8')).toBe(renderHerdrSkill(HC_MANUAL));
+    expect(ownedPath(env, join(home, '.codex/skills/herdr'))?.kind).toBe('created');
+    expect(readFileSync(join(stage, 'keep.txt'), 'utf8')).toBe('keep\n');
+    expect(readFileSync(join(cleanStage, 'SKILL.md'), 'utf8')).toBe(oldContent);
+    expect(ownedPath(env, join(home, '.codex/skills', '.herdr-stage-clean1'))).toBeNull();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -512,7 +370,7 @@ test.each(HC_STEP_ROWS.map(row => [row.label, row] as const))("herdr-core instal
   }
 }, 30_000);
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, utimesSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

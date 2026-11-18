@@ -1,4 +1,5 @@
-import { homedir, userInfo } from 'os';
+import { requireHome } from '../repo-harness-home';
+import { userInfo } from 'os';
 import { realpathSync } from 'fs';
 import { join } from 'path';
 import { processExists } from '../process-group-termination';
@@ -50,16 +51,12 @@ export function parentRuntimeTransactionContext(
 }
 
 /**
- * The account scope stays at HOME, not REPO_HARNESS_HOME: installer state
- * describes the account. The lock, the install transaction root and
- * candidate reconciliation all resolve the root here, so they share one lock.
+ * The lock, transaction metadata and candidate reconciliation share the Windows
+ * account scope. Host configuration paths use the supplied HOME.
  */
-export function globalRuntimeScope(env?: NodeJS.ProcessEnv): RuntimeTransactionScope {
-  // A partial injected env must not make the lock fall back to a different HOME.
-  const root = process.platform === 'win32'
-    ? userInfo().homedir
-    : env?.HOME ?? process.env.HOME ?? homedir();
-  return { kind: 'global', root };
+export function globalRuntimeScope(env: NodeJS.ProcessEnv = process.env): RuntimeTransactionScope {
+  const home = requireHome(env);
+  return { kind: 'global', root: process.platform === 'win32' ? userInfo().homedir : home };
 }
 
 export function runtimeTransactionRoot(scope: RuntimeTransactionScope): string {

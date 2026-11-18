@@ -3,9 +3,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import wazaRules from '../../core/skill-surface/waza-shared-rules.json';
 import { runProcess } from '../../effects/process-runner';
-import { readInstallState, recordRefreshedInstallOwnership } from './install-profile';
-import { ownedPath, pathRecordIsCurrent, pathRecordKey, readPathRecords, type PathRecords } from '../../effects/host-config/path-records';
-import { atomicWriteFileSync } from './shared';
+import { withHostConfigTransaction } from './install-profile';
+import { openHostConfigGate } from '../../effects/host-config/gate';
+import { requireHome } from '../../effects/repo-harness-home';
 
 interface RulesResult {
   status: 'ok' | 'skipped' | 'failed';
@@ -48,22 +48,21 @@ export function wazaStagingRulesAbsent(home: string): boolean {
   return wazaRules.files.every((rule) => lstatSync(join(home, '.agents', 'rules', rule), { throwIfNoEntry: false }) === undefined);
 }
 
-/**
- * One preflight covers staging and all hosts before the first rule write.
- * `hostReceipts` judges host-rule ownership when a caller's own state write
- * has already renewed the current path records.
- */
+/** The gate owns rule writes; a fresh setup fetches only when staging is absent. */
 export function syncWazaSharedRules(
   home: string | null,
   hosts: readonly ('claude' | 'codex')[],
   env: NodeJS.ProcessEnv,
-  refresh = false,
-  hostReceipts?: PathRecords,
+  refreshMode: boolean | 'missing' = false,
+  transaction?: string,
 ): RulesResult {
   if (!home) return { status: 'failed', detail: 'HOME is required' };
   const sourceDir = join(home, '.agents', 'rules');
   try {
-    if (!refresh && wazaStagingRulesAbsent(home)) {
+    requireHome(env);
+    const absent = wazaStagingRulesAbsent(home);
+    const refresh = refreshMode === 'missing' ? absent : refreshMode;
+    if (!refresh && absent) {
       return { status: 'skipped', detail: `staging rules not found: ${sourceDir}` };
     }
     const previous = new Map(wazaRules.files.map((rule) => [rule, readRule(join(sourceDir, rule))]));
@@ -71,83 +70,10 @@ export function syncWazaSharedRules(
     const missing = wazaRules.files.filter((rule) => next.get(rule) === undefined);
     if (missing.length > 0) return { status: 'failed', detail: `missing ${missing.join(', ')}` };
 
-    const state = refresh ? readInstallState(env) : null;
-    const records = state ? readPathRecords(env) : {};
-    const ownedCurrent = (path: string, from: PathRecords) => {
-      const record = ownedPath(env, path, from);
-      return record !== null && pathRecordIsCurrent(pathRecordKey(env, path), record);
-    };
-    const adoptedPaths: string[] = [];
-    if (refresh) {
-      for (const rule of wazaRules.files) {
-        const current = previous.get(rule);
-        if (current === undefined && state === null) {
-          return { status: 'failed', detail: 'an install state is required to own new Waza rules; run rh install first' };
-        }
-        if (current === undefined) continue;
-        const source = join(sourceDir, rule);
-        const receipt = ownedPath(env, source, records);
-        if (receipt && (current === next.get(rule) || ownedCurrent(source, records))) continue;
-        const hostCopies = hosts.map((host) => join(home, `.${host}`, 'rules', rule));
-        if (!receipt) {
-          const existingHosts = hostCopies.filter((path) => readRule(path) !== undefined);
-          const stagedBytes = readFileSync(source);
-          // The old sync wrote this projection without a receipt. Adopt it only once.
-          if (existingHosts.length > 0 && existingHosts.every((path) => readFileSync(path).equals(stagedBytes))) {
-            if (state === null) {
-              return { status: 'failed', detail: 'an install state is required to own Waza rules; run rh install first' };
-            }
-            adoptedPaths.push(source, ...existingHosts);
-            // Preserve proof of the old projection before shared staging advances.
-            // Unselected host files stay unchanged; only their receipts are recorded.
-            for (const host of ['claude', 'codex'] as const) {
-              if (hosts.includes(host)) continue;
-              const destination = join(home, `.${host}`, 'rules', rule);
-              if (lstatSync(destination, { throwIfNoEntry: false })?.isFile()
-                && readFileSync(destination).equals(stagedBytes)) adoptedPaths.push(destination);
-            }
-            continue;
-          }
-        }
-        return { status: 'failed', detail: `refusing to refresh unowned or drifted staging rule ${source}; move this staging file and any existing host copies (${hostCopies.join(', ')}) to a backup directory before retrying` };
-      }
-    }
-
-    const writes = new Map<string, string>();
-    const createdPaths: string[] = [];
-    for (const host of hosts) {
-      const destDir = join(home, `.${host}`, 'rules');
-      for (const rule of wazaRules.files) {
-        const destination = join(destDir, rule);
-        const current = readRule(destination);
-        const value = next.get(rule)!;
-        if (current !== undefined && current !== value && current !== previous.get(rule)) {
-          if (!ownedCurrent(destination, hostReceipts ?? records)) {
-            return { status: 'failed', detail: `refusing to overwrite unowned rule ${destination}` };
-          }
-        }
-        if (current !== value) writes.set(destination, value);
-        if (current === undefined) createdPaths.push(destination);
-      }
-    }
-    if (refresh) {
-      for (const rule of wazaRules.files) {
-        const value = next.get(rule)!;
-        if (previous.get(rule) !== value) {
-          const source = join(sourceDir, rule);
-          atomicWriteFileSync(source, value);
-          if (previous.get(rule) === undefined) createdPaths.push(source);
-        }
-      }
-    }
-    for (const [destination, value] of writes) atomicWriteFileSync(destination, value);
-    // The candidate update path has no install transaction when it records its selection.
-    // Reconcile existing receipts even when upstream bytes need no write (for example,
-    // a retry after rule writes completed but receipt persistence did not).
-    if (refresh) recordRefreshedInstallOwnership(
-      [...wazaRules.files.flatMap(rule => [join(sourceDir, rule), ...hosts.map(host => join(home, `.${host}`, 'rules', rule))]), ...adoptedPaths],
-      env, [...createdPaths, ...adoptedPaths],
-    );
+    const writes = [...(refresh ? [sourceDir] : []), ...hosts.map(host => join(home, '.' + host, 'rules'))]
+      .flatMap(root => wazaRules.files.map(rule => ({ path: join(root, rule), owner: 'core',
+        entry: { type: 'file' as const, bytes: Buffer.from(next.get(rule)!) } })));
+    withHostConfigTransaction(env, transaction, root => openHostConfigGate({ env }).writePaths(writes, { transaction: root }));
     return { status: 'ok', detail: `${refresh ? 'refreshed staging; ' : ''}synced ${hosts.length * wazaRules.files.length} files` };
   } catch (error) {
     return { status: 'failed', detail: (error as Error).message };

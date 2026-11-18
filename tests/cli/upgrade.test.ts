@@ -10,11 +10,14 @@ import { localMergeMode, planManagedWorktreeSweep, sweepManagedWorktrees, type W
 import { taskWorkspaceKey } from '../../src/effects/git/repository-identity';
 import { legacyPathSnapshot, planLegacyLeftovers } from '../../src/effects/upgrade/legacy-inventory';
 import { rollbackAdoptionTransaction } from '../../src/effects/fs-transaction';
-import { readInstallState } from '../../src/cli/installer/install-profile';
+import { migrateInstallState } from '../../src/cli/installer/install-state-migration';
+import { globalRuntimeScope, withRuntimeTransactionLock } from '../../src/effects/locking/runtime-transaction-lock';
+import { readInstallState, withHostConfigTransaction } from '../../src/cli/installer/install-profile';
+import { stageInstalledSkillCopy } from '../../src/cli/installer/skill-sync';
+import { openHostConfigGate } from '../../src/effects/host-config/gate';
 import { PLUGIN_IDS } from '../../src/core/skill-surface/plugin-manifest';
 import { hashManagedTree } from '../../src/effects/managed-tree';
 import { applyGlobalContextRefresh, preflightGlobalContextRefresh } from '../../src/cli/installer/global-context';
-import { removeOwnedDanglingSkillLinks } from '../../src/effects/skill-tree-integrity';
 import expectedReleaseInventory from './upgrade.expected.json';
 import workflowContract from '../../assets/workflow-contract.v1.json';
 import { copyUpgradeFixture, readUpgradeFixture, upgradeFixtureProvenance as provenance, UPGRADE_BLOBS, type UpgradeFixture } from '../helpers/upgrade-fixtures';
@@ -22,9 +25,9 @@ import { formatRegisteredUpgradeResult, runRegisteredUpgrade, type RegisteredRep
 import { adoptedRepo, commitAll, git, registeredReposFixture, worktreeSnapshot, writeRegistry, type RegisteredReposFixture } from '../helpers/registered-repos';
 // The sweep's process inventory is a fixture input: Linux CI cannot prove that /proc lists every process.
 import '../helpers/controlled-worktree-processes';
-import { installStateFixturePath, RETIRED_CLI_LINES, seedPathRecords } from '../helpers/install-ownership';
+import { installStateFixturePath, recordLegacyInstallOwnership, RETIRED_CLI_LINES, seedPathRecords } from '../helpers/install-ownership';
 import type { PathRecord } from '../../src/core/host-config/types';
-import { ownedPath, pathRecordHost, pathRecordKey } from '../../src/effects/host-config/path-records';
+import { ownedPath, pathRecordHost, pathRecordKey, readPathRecords } from '../../src/effects/host-config/path-records';
 
 const ROOT = join(import.meta.dir, '../..');
 const FIXTURES = join(ROOT, 'tests/fixtures');
@@ -99,7 +102,7 @@ function priorState(version: string) {
 function seedRecord(home: string, path: string, record: Pick<PathRecord, 'owner' | 'committed'>): PathRecord {
   const env = { HOME: home };
   const full: PathRecord = { ...record, host: pathRecordHost(env, path)!, kind: 'created', baseline: { state: 'unknown' } };
-  seedPathRecords(env, { [pathRecordKey(env, path)]: full });
+  seedPathRecords(env, { ...readPathRecords(env), [pathRecordKey(env, path)]: full });
   return full;
 }
 
@@ -192,8 +195,8 @@ describe('upgrade with real release bytes', () => {
     expect(next.hooks.Stop).toContainEqual({ matcher: 'user', hooks: [{ type: 'command', command: 'echo user hook' }] });
     expect(next.first).toBe('preserve'); expect(next.last).toEqual({ enabled: true });
     expect(existsSync(join(opts.home, '.codex/skills/repo-harness-cross-review/SKILL.md'))).toBe(true);
-    expect(readFileSync(join(opts.home, '.codex/skills/repo-harness-cross-review/SKILL.md'), 'utf8')).toBe(readFileSync(join(ROOT, 'assets/skills/repo-harness-cross-review/SKILL.md'), 'utf8'));
-    expect(existsSync(join(opts.home, '.codex/skills/repo-harness-cross-review/references/codex-plugin-mode.md'))).toBe(false);
+    expect(readFileSync(join(opts.home, '.codex/skills/repo-harness-cross-review/SKILL.md'), 'utf8')).toBe(readUpgradeFixture('upgrade-v0.19.5-home', '.codex/skills/repo-harness-cross-review/SKILL.md').toString());
+    expect(existsSync(join(opts.home, '.codex/skills/repo-harness-cross-review/references/codex-plugin-mode.md'))).toBe(true);
     expect(result.items.some((item) => item.ownership !== 'owned-clean' && item.action === 'report')).toBe(true);
   }));
 
@@ -565,20 +568,12 @@ describe('upgrade with real release bytes', () => {
     const target = join(opts.home, 'old-package/missing-skill'); symlinkSync(target, owned); symlinkSync(target, unowned);
     put(installStateFixturePath({ HOME: opts.home }), JSON.stringify(priorState('0.19.5')));
     seedRecord(opts.home, owned, { owner: 'core', committed: { type: 'symlink', target } });
+    const preview = runUpgrade({ ...opts, scope: 'global' });
+    expect(preview.items.find(item => item.path === owned)?.action).toBe('remove');
+    expect(lstatSync(owned).isSymbolicLink()).toBe(true);
     const result = runUpgrade({ ...opts, scope: 'global', apply: true });
     expect(result.exitCode).toBe(0); expect(() => lstatSync(owned)).toThrow(); expect(lstatSync(unowned).isSymbolicLink()).toBe(true);
     expect(result.items.find((item) => item.path === unowned)?.ownership).toBe('unowned');
-  }, false));
-
-  test('existing dangling-link helper uses exact old-package receipt without claiming a sibling', () => sandbox((opts) => {
-    const root = join(opts.home, '.codex/skills'); mkdirSync(root, { recursive: true });
-    const owned = join(root, 'old-owned'); const user = join(root, 'old-user');
-    const target = join(opts.home, 'old-package/missing'); symlinkSync(target, owned); symlinkSync(target, user);
-    const recorded = (link: string) => (link === owned ? target : null);
-    expect(removeOwnedDanglingSkillLinks(ROOT, [root], true, recorded)).toEqual([owned]);
-    expect(lstatSync(owned).isSymbolicLink()).toBe(true);
-    expect(removeOwnedDanglingSkillLinks(ROOT, [root], false, recorded)).toEqual([owned]);
-    expect(lstatSync(user).isSymbolicLink()).toBe(true);
   }, false));
 
   test('symlinked parents never grant ownership for matching release bytes', () => sandbox((opts) => {
@@ -601,28 +596,31 @@ describe('upgrade with real release bytes', () => {
     expect(after).not.toContain('repo-harness hook SessionStart');
   }, false));
 
-  test('still-shipped historical copies refresh from this package and keep user-edited copies', () => sandbox((opts) => {
+  test('unrecorded historical copies are reported and both clean and edited bytes stay', () => sandbox((opts) => {
     seed('upgrade-v0.19.5-home', opts.home);
     const clean = join(opts.home, '.claude/skills/repo-harness-cross-review');
     const edited = join(opts.home, '.codex/skills/repo-harness-cross-review');
     writeFileSync(join(edited, 'SKILL.md'), `${readFileSync(join(edited, 'SKILL.md'), 'utf8')}\nuser edit\n`);
+    const cleanBefore = tree(clean);
     const editedBefore = tree(edited);
     const check = runUpgrade({ ...opts, scope: 'global' });
-    expect(check.items.find((item) => item.path === clean)?.action).toBe('refresh');
+    expect(check.items.find((item) => item.path === clean)?.action).toBe('report');
+    expect(check.items.find((item) => item.path === clean)?.reason).toContain('No ledger record');
     expect(check.items.find((item) => item.path === edited)?.action).toBe('report');
+    expect(formatUpgradeResult(check)).toContain(clean);
     const result = runUpgrade({ ...opts, scope: 'global', apply: true });
-    expect(result.exitCode).toBe(0); expect(result.refreshedPaths).toContain(clean);
-    expect(readFileSync(join(clean, 'SKILL.md'), 'utf8')).toBe(readFileSync(join(ROOT, 'assets/skills/repo-harness-cross-review/SKILL.md'), 'utf8'));
-    expect(existsSync(join(clean, 'references/generic-review.md'))).toBe(true);
-    expect(existsSync(join(clean, 'references/claude-mode.md'))).toBe(false);
+    expect(result.exitCode).toBe(0); expect(result.refreshedPaths).not.toContain(clean);
+    expect(result.status).toBe('partial');
+    expect(result.next).toContain('rh update');
+    expect(tree(clean)).toEqual(cleanBefore);
     expect(tree(edited)).toEqual(editedBefore);
-    expect(runUpgrade({ ...opts, scope: 'global' }).items.some((item) => item.path === clean)).toBe(false);
+    expect(runUpgrade({ ...opts, scope: 'global' }).items.some((item) => item.path === clean)).toBe(true);
     const before = tree(opts.home);
     expect(runUpgrade({ ...opts, scope: 'global', apply: true }).refreshedPaths).toEqual([]);
     expect(tree(opts.home)).toEqual(before);
   }, false));
 
-  test('real v0.10 installer markers prove ownership for still-shipped copied skills', () => sandbox((opts) => {
+  test('real v0.10 installer markers are reported without granting a refresh', () => sandbox((opts) => {
     const source = join(opts.home, 'release-source'); mkdirSync(join(source, 'assets/skill-commands'), { recursive: true });
     copyUpgradeFixture('upgrade-v0.10-home', 'release-source/SKILL.md', join(source, 'SKILL.md'));
     for (const name of ['repo-harness-plan', 'repo-harness-handoff', 'repo-harness-gptpro', 'repo-harness-check']) {
@@ -642,11 +640,17 @@ describe('upgrade with real release bytes', () => {
     const installed = join(opts.home, '.codex/skills/repo-harness-check');
     expect(existsSync(join(installed, '.repo-harness-owner.json')), installerOutput).toBe(true);
     const item = runUpgrade({ ...opts, scope: 'global' }).items.find((item) => item.path === installed);
-    expect(item?.proof).toBe('owner-marker'); expect(item?.action).toBe('refresh');
-    const result = runUpgrade({ ...opts, scope: 'global', apply: true });
-    expect(result.exitCode).toBe(0); expect(result.refreshedPaths).toContain(installed);
+    expect(item?.proof).toBe('owner-marker'); expect(item?.action).toBe('report');
+    const before = tree(installed);
     const router = join(opts.home, '.codex/skills/repo-harness');
-    expect(result.refreshedPaths, JSON.stringify(result.items.find((item) => item.path === router))).toContain(router);
+    const routerBefore = tree(router);
+    const result = runUpgrade({ ...opts, scope: 'global', apply: true });
+    expect(result.exitCode).toBe(0); expect(result.refreshedPaths).not.toContain(installed);
+    expect(result.refreshedPaths, JSON.stringify(result.items.find((item) => item.path === router))).not.toContain(router);
+    expect(tree(installed)).toEqual(before);
+    expect(tree(router)).toEqual(routerBefore);
+    expect(result.status).toBe('partial');
+    expect(ownedPath({ HOME: opts.home }, installed)).toBeNull();
     expect(existsSync(join(router, '.git'))).toBe(false);
     expect(existsSync(join(router, 'node_modules'))).toBe(false);
   }, false));
@@ -685,7 +689,81 @@ describe('upgrade with real release bytes', () => {
     expect(kept.removedPaths).toEqual([]); expect(tree(opts.cwd)).toEqual(before);
   }));
 
-  test('manifest-owned refresh updates its backed-up receipt and remains clean', () => sandbox((opts) => {
+  test('the 0.34.0 protocol 3 manifest moves to the gate before a shipped skill refresh', () => sandbox(opts => {
+    const env = { ...process.env, HOME: opts.home, BUN_INSTALL: join(opts.home, '.bun') };
+    const path = join(opts.home, '.codex/skills/repo-harness-cross-review');
+    copyUpgradeFixture('upgrade-v0.19.5-home', '.codex/skills/repo-harness-cross-review', path);
+    recordLegacyInstallOwnership([path], env);
+    const before = tree(opts.home);
+    const refused = runUpgrade({ ...opts, env, scope: 'global', apply: true });
+    expect(refused.exitCode).toBe(1);
+    expect(refused.error).toContain('rh update');
+    expect(tree(opts.home)).toEqual(before);
+    withRuntimeTransactionLock(globalRuntimeScope(env), () => migrateInstallState(env));
+    expect(readInstallState(env)?.protocol).toBe(4);
+    expect(ownedPath(env, path)?.committed.type).toBe('directory');
+    const refreshed = runUpgrade({ ...opts, env, scope: 'global', apply: true });
+    expect(refreshed.exitCode, refreshed.error).toBe(0);
+    expect(refreshed.refreshedPaths).toContain(path);
+    expect(ownedPath(env, path)?.committed).toEqual({ type: 'directory', sha256: hashManagedTree(path) });
+  }, false));
+
+  test('a gate refusal during legacy staging keeps a new marker directory', () => sandbox(opts => {
+    const path = join(opts.home, '.codex/skills/repo-harness-cross-review');
+    copyUpgradeFixture('upgrade-v0.19.5-home', '.codex/skills/repo-harness-cross-review', path);
+    seedRecord(opts.home, path, { owner: 'cross-review', committed: { type: 'directory', sha256: hashManagedTree(path) } });
+    let edited: ReturnType<typeof tree> | undefined;
+    const result = runUpgrade({ ...opts, scope: 'global', apply: true }, { afterStage(item) {
+      if (item.path !== path) return;
+      const marker = join(path, '.repo-harness-owner.json');
+      rmSync(marker, { force: true }); mkdirSync(marker);
+      put(join(marker, 'keep.txt'), 'new user marker bytes\n');
+      edited = tree(path);
+    } });
+    expect(edited).toBeDefined();
+    expect(tree(path)).toEqual(edited!);
+    expect(result.refreshedPaths).not.toContain(path);
+    expect(result.items.find(item => item.path === path)?.action).toBe('report');
+  }, false));
+
+  test('legacy refresh rollback keeps a skill edited before a later cleanup fails', () => sandbox(opts => {
+    const path = join(opts.home, '.codex/skills/repo-harness-cross-review');
+    copyUpgradeFixture('upgrade-v0.19.5-home', '.codex/skills/repo-harness-cross-review', path);
+    seedRecord(opts.home, path, { owner: 'cross-review', committed: { type: 'directory', sha256: hashManagedTree(path) } });
+    const hook = join(opts.cwd, projectHook);
+    put(hook, readUpgradeFixture('upgrade-v0.10-project', projectHook).toString());
+    let edited: ReturnType<typeof tree> | undefined;
+    const result = runUpgrade({ ...opts, apply: true }, { beforeRemove(item) {
+      if (item.path !== hook) return;
+      expect(readFileSync(join(path, 'SKILL.md'))).toEqual(readFileSync(join(ROOT, 'assets/skills/repo-harness-cross-review/SKILL.md')));
+      put(join(path, 'user-note.txt'), 'user edit after the refresh\n');
+      edited = tree(path);
+      throw new Error('later cleanup failed');
+    } });
+    expect(edited).toBeDefined();
+    expect(result.exitCode).toBe(1);
+    expect(tree(path)).toEqual(edited!);
+    expect(result.error).toContain(path);
+    expect(ownedPath({ HOME: opts.home }, path)?.committed).toEqual({ type: 'directory', sha256: hashManagedTree(join(ROOT, 'assets/skills/repo-harness-cross-review')) });
+  }, false));
+
+  test.each(['drafts', '.repo-harness-owner.json'])('a changed skill entry is reported before a legacy backup: %s', entry => sandbox(opts => {
+    const path = join(opts.home, '.codex/skills/repo-harness-cross-review');
+    copyUpgradeFixture('upgrade-v0.19.5-home', '.codex/skills/repo-harness-cross-review', path);
+    seedRecord(opts.home, path, { owner: 'cross-review', committed: { type: 'directory', sha256: hashManagedTree(path) } });
+    rmSync(join(path, entry), { force: true }); mkdirSync(join(path, entry));
+    if (entry !== 'drafts') put(join(path, entry, 'keep.txt'), 'user marker bytes\n');
+    const before = tree(path);
+    for (const apply of [false, true]) {
+      const result = runUpgrade({ ...opts, scope: 'global', apply });
+      expect(result.items.find(item => item.path === path)).toMatchObject({ action: 'report', reason: expect.stringContaining('changed since rh recorded it') });
+      expect(result.backupPath).toBeUndefined();
+      expect(result.refreshedPaths).toEqual([]);
+      expect(tree(path)).toEqual(before);
+    }
+  }, false));
+
+  test('manifest-owned refresh updates its receipt and leaves only legacy cleanup backups', () => sandbox((opts) => {
     seed('upgrade-v0.19.5-home', opts.home);
     const path = join(opts.home, '.codex/skills/repo-harness-cross-review');
     const statePath = installStateFixturePath({ HOME: opts.home });
@@ -698,8 +776,9 @@ describe('upgrade with real release bytes', () => {
     const current = readInstallState({ ...process.env, HOME: opts.home });
     expect(ownedPath({ HOME: opts.home }, path)?.committed).toEqual({ type: 'directory', sha256: hashManagedTree(path) });
     expect(current?.core.version).toBe(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version);
-    const backup = JSON.parse(readFileSync(join(result.backupPath!, 'manifest.json'), 'utf8')).snapshots.find((snapshot: { path: string }) => snapshot.path === statePath);
-    expect(JSON.parse(readFileSync(backup.backup_path, 'utf8'))).toEqual(state);
+    const snapshots = JSON.parse(readFileSync(join(result.backupPath!, 'manifest.json'), 'utf8')).snapshots as Array<{ path: string }>;
+    expect(snapshots.some(snapshot => [path, statePath, join(opts.home, '.repo-harness/config/ledger.json')].includes(snapshot.path))).toBe(false);
+    expect(readdirSync(join(opts.home, '.repo-harness/transactions'))).toEqual([basename(result.backupPath!)]);
     expect(runUpgrade({ ...opts, scope: 'global' }).items.some((item) => item.path === path)).toBe(false);
   }, false));
 
@@ -721,6 +800,7 @@ describe('upgrade with real release bytes', () => {
     } });
     expect(failed.exitCode).toBe(1);
     expect(readlinkSync(path)).toBe(oldSource);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).transaction_id).toBe('concurrent-writer');
     put(statePath, JSON.stringify(state));
 
     const result = runUpgrade({ ...opts, scope: 'global', apply: true });
@@ -1498,8 +1578,8 @@ describe('legacy sibling worktree cleanup', () => {
   }));
 });
 
-// Use the real v0.10 copy writer to establish ownership. The current writer
-// then stages a real package projection with active worktree residues.
+// The real v0.10 writer supplies the old payload. A current ledger record models
+// gate ownership before these source-projection checks.
 function projectionSandbox(run: (opts: { cwd: string; home: string; packageRoot: string }, router: string) => void): void {
   sandbox((opts) => {
     const oldSource = join(opts.home, 'old-source');
@@ -1512,6 +1592,8 @@ function projectionSandbox(run: (opts: { cwd: string; home: string; packageRoot:
         REPO_HARNESS_INSTALL_PROFILE: 'strict', AGENTIC_DEV_LINK_INSTALLED_COPIES: '0' }, encoding: 'utf8',
     });
     expect(installed.status, installed.stderr).toBe(0);
+    const router = join(opts.home, '.codex/skills/repo-harness');
+    seedRecord(opts.home, router, { owner: 'core', committed: { type: 'directory', sha256: hashManagedTree(router) } });
     const packageRoot = join(opts.home, 'active-source');
     mkdirSync(packageRoot);
     for (const path of ['src', 'scripts', 'assets', 'references', 'SKILL.md', 'package.json']) {
@@ -1572,6 +1654,7 @@ test('a non-root provider uses its declared surface for hashing and real staging
   projectionSandbox((opts) => {
     seed('upgrade-v0.19.5-home', opts.home);
     const provider = join(opts.home, '.codex/skills/repo-harness-cross-review');
+    seedRecord(opts.home, provider, { owner: 'cross-review', committed: { type: 'directory', sha256: hashManagedTree(provider) } });
     const source = join(opts.packageRoot, 'assets/skills/repo-harness-cross-review');
     put(join(source, 'examples/outside-projection.md'), 'source example outside canonical includes\n');
     const planned = runUpgrade({ ...opts, scope: 'global' }).items.find(item => item.path === provider);
@@ -1616,12 +1699,11 @@ function nonRouterSkillSandbox(
   projectionSandbox((opts) => {
     const source = join(opts.packageRoot, 'assets/skills', name);
     const installed = join(opts.home, '.codex/skills', name);
-    const copied = spawnSync('bash', [join(opts.packageRoot, 'scripts/sync-codex-installed-copies.sh'),
-      '--stage-owned-copy', source, installed, 'command-facade'], {
-      env: { ...process.env, HOME: opts.home, BUN_INSTALL: join(opts.home, '.bun'),
-        REPO_HARNESS_SOURCE_ROOT: opts.packageRoot, REPO_HARNESS_LINK_INSTALLED_COPIES: '0' }, encoding: 'utf8',
+    const env = { HOME: opts.home, BUN_INSTALL: join(opts.home, '.bun') };
+    withHostConfigTransaction(env, undefined, transaction => {
+      const copy = stageInstalledSkillCopy(source, 'command-facade', transaction, workflowContract);
+      openHostConfigGate({ env }).writePaths([{ path: installed, owner: 'cross-review', entry: { type: 'directory', source: copy } }], { transaction });
     });
-    expect(copied.status, copied.stdout + copied.stderr).toBe(0);
     put(join(source, 'examples/new-resource.md'), 'new non-router resource\n');
     put(join(source, '.DS_Store'), 'excluded metadata\n');
     run(opts, source, installed);

@@ -6,6 +6,9 @@ import { copyPackageRuntimeFixture, tmpWorkspace, writeBunWrapper } from '../hel
 import { installPiPackage, piPackagePresent, piUserPackageSources, runPi, planPiPackage } from '../../src/cli/installer/pi-package';
 import { installStateStatus, readInstallState, recordPiInstallOwnership, versions } from '../../src/cli/installer/install-profile';
 import { ownedPath } from '../../src/effects/host-config/path-records';
+import { openHostConfigGate } from '../../src/effects/host-config/gate';
+import { jsonFragment } from '../../src/core/host-config/json-fragment';
+import { buildManagedHooks } from '../../src/cli/installer/managed-entries';
 import { hostSkillRoot } from '../../src/effects/host-skill-roots';
 import { checkPiHost } from '../../src/cli/commands/doctor';
 import { dependencies } from '../../package.json';
@@ -29,6 +32,15 @@ function recordPiSelection(env: NodeJS.ProcessEnv): void {
   const path = installStateFixturePath(env);
   const seeded = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
   writeFileSync(path, JSON.stringify({ ...seeded, ...versions(PI_FULL_PLUGINS), selection: PI_FULL_PLUGINS }));
+}
+
+function writeAdapterHook(env: NodeJS.ProcessEnv, path: string, host: 'claude' | 'codex'): void {
+  openHostConfigGate({ env }).apply([{ path, fragments: [{ owner: 'core', selector: 'hooks.Stop[default]',
+    kind: 'add', strategy: jsonFragment, value: buildManagedHooks(host, env).Stop![0] }] }]);
+}
+
+function writeOwnedHostFile(env: NodeJS.ProcessEnv, path: string, content: string, transaction?: string): void {
+  openHostConfigGate({ env }).writePaths([{ path, owner: 'core', entry: { type: 'file', bytes: Buffer.from(content) } }], { transaction });
 }
 
 function fixture(run: (f: ReturnType<typeof createFixture>) => void) {
@@ -207,16 +219,21 @@ describe('Pi package and skill installation', () => {
     const originalPackage = readFileSync(join(f.source, 'package.json'), 'utf8');
     f.write(codex, originalCodex);
     f.write(claude, originalClaude);
-    f.write(skill, '# original skill\n');
+    const writeSkill = (content: string, transaction?: string) => {
+      const source = join(f.root, 'managed-skill-source');
+      f.write(join(source, 'SKILL.md'), content);
+      openHostConfigGate({ env: f.env }).writePaths([{ path: dirname(skill), owner: 'core', entry: { type: 'directory', source } }], { transaction });
+    };
+    writeSkill('# original skill\n');
     const env = { ...f.env, PI_FIXTURE_FAIL_REMOVE: '1' };
     let failure: unknown;
     try {
-      runTransactionalRuntimeRefresh({ env }, () => {
+      runTransactionalRuntimeRefresh({ env }, ({ transaction }) => {
         expect(installPiPackage(f.source, true, env).created).toBe(true);
         recordPiInstallOwnership([f.source], env);
-        f.write(codex, '{"theme":"failed update"}\n');
-        f.write(claude, '{"theme":"failed update"}\n');
-        f.write(skill, '# failed update\n');
+        writeAdapterHook(env, codex, 'codex');
+        writeAdapterHook(env, claude, 'claude');
+        writeSkill('# failed update\n', transaction);
         f.write(join(f.source, 'package.json'), '{"name":"repo-harness","version":"failed-update"}');
         return { exitCode: 1, steps: [], lines: ['candidate reconciliation failed'], stdout: '', stderr: 'candidate reconciliation failed' };
       });
@@ -228,7 +245,8 @@ describe('Pi package and skill installation', () => {
     expect(readInstallState(f.env)?.pi_packages).toContain(f.source);
     expect((failure as Error).message).toContain('candidate reconciliation failed');
     expect((failure as Error).message).toContain('PI_FIXTURE_REMOVE_FAILED');
-    expect(runUserUninstall({ target: 'both', env: f.env }).exitCode).toBe(0);
+    const uninstall = runUserUninstall({ target: 'both', env: f.env });
+    expect(uninstall.exitCode, JSON.stringify(uninstall)).toBe(0);
     expect(piPackagePresent(f.source, f.env)).toBe(false);
     expect(JSON.parse(readFileSync(join(f.root, 'packages.json'), 'utf8'))).toEqual(['npm:other-package']);
   }));
@@ -241,7 +259,7 @@ describe('Pi package and skill installation', () => {
     try {
       runTransactionalRuntimeRefresh({ env, cwd: f.root, plugins: ['pi'] }, () => {
         expect(installPiPackage(f.source, true, env).created).toBe(true);
-        f.write(claude, '{"theme":"failed commit"}\n');
+        writeAdapterHook(env, claude, 'claude');
         return { exitCode: 0, steps: [{ step: 'install Pi package', status: 'ok', owned_pi_package: f.source }], lines: [], stdout: '', stderr: '' };
       });
     } catch (error) { failure = error; }
@@ -251,7 +269,8 @@ describe('Pi package and skill installation', () => {
     expect(installStateStatus(retained, f.env).drift.status).toBe('drift');
     expect((failure as Error).message).toContain('Pi package ownership requires an install state');
     expect((failure as Error).message).toContain('PI_FIXTURE_REMOVE_FAILED');
-    expect(runUserUninstall({ target: 'both', env: f.env }).exitCode).toBe(0);
+    const uninstall = runUserUninstall({ target: 'both', env: f.env });
+    expect(uninstall.exitCode, JSON.stringify(uninstall)).toBe(0);
     expect(readInstallState(f.env)).toBeNull();
   }));
 
@@ -276,25 +295,26 @@ describe('Pi package and skill installation', () => {
 
   test('filesystem rollback errors are reported with the Pi and reconciliation errors', () => fixture(f => {
     recordPiSelection(f.env);
-    const codex = join(f.home, '.codex/hooks.json');
+    const codex = join(f.home, '.codex/rules/english.md');
     const claude = join(f.home, '.claude/settings.json');
     const originalCodex = '{"theme":"missing snapshot fixture"}\n';
-    f.write(codex, originalCodex);
+    writeOwnedHostFile(f.env, codex, originalCodex);
     f.write(claude, '{"theme":"original claude"}\n');
     const env = { ...f.env, PI_FIXTURE_FAIL_REMOVE: '1' };
     let backupRoot = '';
     let failure: unknown;
     try {
-      runTransactionalRuntimeRefresh({ env }, ({ candidateHandoff }) => {
+      runTransactionalRuntimeRefresh({ env }, ({ candidateHandoff, transaction }) => {
         backupRoot = candidateHandoff!.transactionBackupRoot;
         expect(installPiPackage(f.source, true, env).created).toBe(true);
         recordPiInstallOwnership([f.source], env);
-        const backup = readdirSync(backupRoot).map(name => join(backupRoot, name))
+        writeOwnedHostFile(env, codex, '{"theme":"failed update"}\n', transaction);
+        writeAdapterHook(env, claude, 'claude');
+        const preimages = join(backupRoot, 'host-config-paths');
+        const backup = readdirSync(preimages).map(name => join(preimages, name))
           .find(path => statSync(path).isFile() && readFileSync(path, 'utf8') === originalCodex)!;
         expect(backup).toBeDefined();
         rmSync(backup);
-        f.write(codex, '{"theme":"failed update"}\n');
-        f.write(claude, '{"theme":"failed update"}\n');
         return { exitCode: 1, steps: [], lines: ['candidate reconciliation failed'], stdout: '', stderr: 'candidate reconciliation failed' };
       });
     } catch (error) { failure = error; }

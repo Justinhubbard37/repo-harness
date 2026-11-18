@@ -19,7 +19,7 @@ import { openHostConfigGate } from '../../../effects/host-config/gate';
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { requireHome } from '../../../effects/repo-harness-home';
 import type {
   AgentTarget,
   DetectionResult,
@@ -46,11 +46,11 @@ interface HooksFile {
 function globalConfigPath(): string {
   // Prefer $HOME env so tests can isolate via temp dirs; os.homedir() is
   // cached and ignores runtime $HOME mutations in some Node/Bun versions.
-  return path.join(process.env.HOME ?? os.homedir(), '.codex', 'hooks.json');
+  return path.join(requireHome(), '.codex', 'hooks.json');
 }
 
 function globalTomlConfigPath(): string {
-  return path.join(process.env.HOME ?? os.homedir(), '.codex', 'config.toml');
+  return path.join(requireHome(), '.codex', 'config.toml');
 }
 
 const REQUEST_USER_INPUT = 'default_mode_request_user_input';

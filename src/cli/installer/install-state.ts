@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'fs';
-import { homedir } from 'os';
+import { requireHome } from '../../effects/repo-harness-home';
 import { join } from 'path';
 import { version as PACKAGE_VERSION } from '../../../package.json';
 import { isRecord } from '../../core/evidence/is-record';
@@ -53,7 +53,7 @@ export class InstallStateError extends Error {
 }
 
 export function installProfileStatePath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.HOME ?? homedir(), '.repo-harness', 'install-state.json');
+  return join(requireHome(env), '.repo-harness', 'install-state.json');
 }
 
 export function enabledPlugins(state: Pick<RecordedInstallState, 'plugins'>): readonly PluginId[] {

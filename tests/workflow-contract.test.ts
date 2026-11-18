@@ -313,6 +313,7 @@ describe("workflow contract manifest", () => {
       mkdirSync(join(source, ".ai/harness/checks"), { recursive: true });
       mkdirSync(destination);
       mkdirSync(home);
+      writeFileSync(join(source, "SKILL.md"), "# cache exclusion fixture\n");
       // The tracked block and the user-level runtime-state block together form the effective rules.
       writeFileSync(join(source, ".gitignore"), ["runtime.gitignore", "runtime-state.gitignore"].map((name) => readFileSync(join(ROOT, "assets/templates", name), "utf8")).join("\n"));
       expect(spawnSync("git", ["init", "-q"], { cwd: source }).status).toBe(0);
@@ -339,7 +340,13 @@ describe("workflow contract manifest", () => {
       for (const cache of caches) expect(existsSync(join(destination, cache))).toBe(false);
       expect(existsSync(join(destination, ".gitignore"))).toBe(true);
       for (const cache of [oldRuntime, unownedCache]) expect(existsSync(join(destination, cache))).toBe(false);
-      const ownedCopy = spawnSync("bash", [join(ROOT, "scripts/sync-codex-installed-copies.sh"), "--stage-owned-copy", source, ownedDestination, "canonical-skill"], {
+      const ownedCopy = spawnSync(process.execPath, ['-e', [
+        "const fs = require('node:fs'), path = require('node:path');",
+        "const root = process.env.REPO_HARNESS_SOURCE_ROOT;",
+        "const { stageInstalledSkillCopy } = require(path.join(root, 'src/cli/installer/skill-sync.ts'));",
+        "const contract = JSON.parse(fs.readFileSync(path.join(root, 'assets/workflow-contract.v1.json'), 'utf8'));",
+        "fs.renameSync(stageInstalledSkillCopy(process.env.STAGE_SOURCE, 'canonical-skill', process.env.STAGE_TRANSACTION, contract), process.env.STAGE_DESTINATION);",
+      ].join('\n')], {
         cwd: ROOT,
         encoding: "utf8",
         env: {
@@ -350,11 +357,14 @@ describe("workflow contract manifest", () => {
           CODEX_SKILLS_ROOT: join(home, ".codex/skills"),
           CLAUDE_SKILLS_ROOT: join(home, ".claude/skills"),
           REPO_HARNESS_SOURCE_ROOT: ROOT,
+          STAGE_SOURCE: source, STAGE_TRANSACTION: workspace, STAGE_DESTINATION: ownedDestination,
+          BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
           REPO_HARNESS_LINK_INSTALLED_COPIES: "0",
           REPO_HARNESS_INSTALL_PLUGINS: "",
         },
       });
       expect(ownedCopy.status, ownedCopy.stdout + ownedCopy.stderr).toBe(0);
+      expect(readFileSync(join(ownedDestination, "SKILL.md"))).toEqual(readFileSync(join(source, "SKILL.md")));
       for (const cache of [...caches, oldRuntime, unownedCache]) expect(existsSync(join(ownedDestination, cache))).toBe(false);
       const marker = JSON.parse(readFileSync(join(ownedDestination, ".repo-harness-owner.json"), "utf8"));
       expect(marker.owner).toBe("repo-harness");

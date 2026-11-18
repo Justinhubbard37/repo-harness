@@ -13,7 +13,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { requireHome } from '../../../effects/repo-harness-home';
 import { jsonFragment } from '../../../core/host-config/json-fragment';
 import type { FragmentRequest } from '../../../core/host-config/types';
 import { migrateJsonConfigRecords } from '../json-config-migration';
@@ -44,7 +44,7 @@ function userConfigPath(loc: Location): string {
   }
   // Prefer $HOME env so tests can isolate via temp dirs; os.homedir() is
   // cached and ignores runtime $HOME mutations in some Node/Bun versions.
-  return path.join(process.env.HOME ?? os.homedir(), '.claude', 'settings.json');
+  return path.join(requireHome(), '.claude', 'settings.json');
 }
 
 /** The documented one-line pipe that keeps an existing status line and also writes the quota capture. */

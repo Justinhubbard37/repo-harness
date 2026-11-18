@@ -447,7 +447,7 @@ function writeWholePaths(env: NodeJS.ProcessEnv, paths: HostConfigPaths, writes:
         discardStagedEntry(staged);
         continue;
       }
-      if (observed !== null && backup === undefined && options.transaction) keepPreimage(options.transaction, key);
+      if (backup === undefined && options.transaction) keepPreimage(options.transaction, key);
       records[key] = next;
       directories = [...directories, ...createdDirs];
       persist();
@@ -491,7 +491,7 @@ function delegateWholePaths(env: NodeJS.ProcessEnv, paths: HostConfigPaths, decl
   });
   const before = checked.map((entry) => {
     const backup = entry.owned ? undefined : putVault(paths, readFileSync(entry.key));
-    if (entry.observed !== null && entry.owned && options.transaction) keepPreimage(options.transaction, entry.key);
+    if (entry.owned && options.transaction) keepPreimage(options.transaction, entry.key);
     return { ...entry, backup };
   });
   let failure: unknown = null;
@@ -504,9 +504,15 @@ function delegateWholePaths(env: NodeJS.ProcessEnv, paths: HostConfigPaths, decl
   for (const { declaration, key, host, previous, observed, owned, backup } of before) {
     const now = observePathEntry(key);
     if (sameCommitted(now, observed)) continue;
+    // A failed replacement must keep the vault reference, also when the writer removed the entry.
+    if ((backup !== undefined || previous?.kind === 'replaced') && now?.type !== 'file') {
+      records[key] = backup !== undefined
+        ? nextPathRecord(undefined, declaration.owner, host, observed, observed!, backup)
+        : previous!;
+      invalid.push(declaration.path);
+      continue;
+    }
     const next = now === null ? null : nextPathRecord(owned ? previous : undefined, declaration.owner, host, observed, now, backup);
-    // A `replaced` path that the writer made a link or a tree keeps no record; the user file stays in the vault.
-    if (next?.kind === 'replaced' && next.committed.type !== 'file') { delete records[key]; invalid.push(declaration.path); continue; }
     if (next === null) delete records[key]; else records[key] = next;
     changed.push(key);
   }
@@ -772,8 +778,7 @@ const fragmentKey = (record: FragmentRecord): string => `${record.owner}\0${reco
  * the transaction directory that holds the path preimages (`transaction`). It
  * writes the host files and then the ledger: the snapshot's records, except
  * the path record of each entry that it cannot undo, which stays so that the
- * entry keeps its owner. With a null `transaction` it undoes the text writes
- * only: the caller's own snapshot then restores the whole paths and the ledger.
+ * entry keeps its owner.
  * For each file whose records changed, an intact fragment goes back to its
  * state before the transaction: to its snapshot text after a refresh, to its
  * adopted text when the transaction adopted it, out when the transaction
@@ -783,7 +788,7 @@ const fragmentKey = (record: FragmentRecord): string => `${record.owner}\0${reco
  * exist before it and still holds exactly what it wrote. Every other entry
  * stays and is returned.
  */
-export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer | null, transaction: string | null): HostConfigRollbackResult {
+export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer | null, transaction: string): HostConfigRollbackResult {
   const paths = hostConfigPathsAt(harness);
   const before = snapshot === null ? EMPTY_LEDGER : parseLedger(snapshot, `${paths.ledger} (transaction snapshot)`);
   const now = readLedger(paths);
@@ -831,10 +836,6 @@ export function rollbackHostConfigTransaction(harness: string, snapshot: Buffer 
     if (created && all.some((entry) => fragmentFormat(path, entry.selector)?.empty(content) === true)) removeTarget(path, current);
     else if (content !== decode(bytes, path)) replaceTarget(path, Buffer.from(content, 'utf8'), current);
   }
-  if (transaction === null) {
-    removeCreatedDirectories(now.directories.filter((directory) => !before.directories.includes(directory)));
-    return { unresolved };
-  }
   const pathRecords = rollbackWholePaths(paths, before, now, transaction, unresolved);
   const kept = removeCreatedDirectories(now.directories.filter((directory) => !before.directories.includes(directory)));
   const restored: HostConfigLedger = { ...before, paths: pathRecords, directories: [...before.directories, ...kept] };
@@ -856,7 +857,7 @@ function rollbackWholePaths(paths: HostConfigPaths, before: HostConfigLedger, no
   for (const key of new Set([...Object.keys(before.paths), ...Object.keys(now.paths)])) {
     const old = before.paths[key];
     const current = now.paths[key];
-    if (JSON.stringify(old) === JSON.stringify(current)) continue;
+    if (JSON.stringify(old) === JSON.stringify(current) && !hasPreimage(transaction, key)) continue;
     // A claim or release of a file that the user keeps changes no entry.
     if (current?.kind === 'user_managed' || (!current && old?.kind === 'user_managed')) continue;
     if (!current) {

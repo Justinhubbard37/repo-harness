@@ -1,5 +1,14 @@
 #!/bin/bash
 set -euo pipefail
+# Script helpers must not write a Bun transpiler cache outside the gate plan.
+export BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+
+RUNTIME_ROOT="$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)"
+if [[ -z "${REPO_HARNESS_SYNC_DECLARED_PATHS_FILE+x}" ]]; then
+  export REPO_HARNESS_SYNC_SHELL="$BASH"
+  exec bun "$RUNTIME_ROOT/scripts/skill-surface-select.ts" sync-installed-copies "$@"
+fi
+[[ -f "$REPO_HARNESS_SYNC_DECLARED_PATHS_FILE" && -f "${REPO_HARNESS_SYNC_RETIRED_PATHS_FILE:-}" ]] || { echo "[sync-installed] gate path plan files are required" >&2; exit 1; }
 
 SOURCE_ROOT="${REPO_HARNESS_SOURCE_ROOT:-}"
 if [[ -z "$SOURCE_ROOT" ]]; then
@@ -80,7 +89,6 @@ if ! FACADE_SOURCES="$(bun "$SOURCE_ROOT/scripts/skill-surface-select.ts" facade
   exit 1
 fi
 # Resolve copy authority beside the writer, not from an injected source tree.
-RUNTIME_ROOT="$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)"
 if ! bun -e 'const { installedCopyTreeOptions } = await import(process.argv[1]); installedCopyTreeOptions("canonical-skill", await Bun.file(process.argv[2]).json());' \
   "$RUNTIME_ROOT/src/effects/managed-tree.ts" "$RUNTIME_ROOT/assets/workflow-contract.v1.json"; then
   echo "[sync-installed] installed copy projection is invalid." >&2
@@ -142,66 +150,25 @@ refuse_unowned_dest() {
   return 1
 }
 
+path_in_list() {
+  local wanted="$1" declared
+  while IFS= read -r declared; do
+    [[ "$declared" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
 assert_managed_dest() {
   local dest="$1"
-  local expected_source="$2"
-  local expected_surface="$3"
-
-  if [[ ! -e "$dest" && ! -L "$dest" ]]; then
-    return 0
-  fi
-
-  if [[ -L "$dest" ]]; then
-    local target
-    target="$(readlink "$dest" 2>/dev/null || true)"
-    [[ "$target" == "$expected_source" ]] \
-      || refuse_unowned_dest "$dest" "symlink target is not the expected package source"
-    return $?
-  fi
-
-  [[ -d "$dest" ]] || {
-    refuse_unowned_dest "$dest" "path is neither a managed directory nor an expected symlink"
-    return 1
-  }
-  [[ ! -d "$dest/_ops" ]] || {
-    refuse_unowned_dest "$dest" "directory contains _ops/ local state"
-    return 1
-  }
-
-  local marker="$dest/.repo-harness-owner.json"
-  if [[ -f "$marker" ]]; then
-    grep -Fq '"owner":"repo-harness"' "$marker" \
-      || { refuse_unowned_dest "$dest" "ownership marker has an unknown owner"; return 1; }
-    grep -Fq "\"surface\":\"$expected_surface\"" "$marker" \
-      || { refuse_unowned_dest "$dest" "ownership marker has an unexpected surface type"; return 1; }
-    local expected_hash actual_hash
-    expected_hash="$(sed -n 's/.*"content_hash":"\([^"]*\)".*/\1/p' "$marker")"
-    [[ -n "$expected_hash" ]] \
-      || { refuse_unowned_dest "$dest" "ownership marker has no content hash"; return 1; }
-    actual_hash="$(managed_tree_hash "$dest")"
-    [[ "$actual_hash" == "$expected_hash" ]] \
-      || { refuse_unowned_dest "$dest" "managed copy content has drifted"; return 2; }
-    return 0
-  fi
-
-  if [[ -d "$expected_source" ]] && diff -qr "$dest" "$expected_source" >/dev/null 2>&1; then
-    # One-shot migration for an exact package copy created before owner markers.
-    return 0
-  fi
-
-  refuse_unowned_dest "$dest" "directory has no valid owner marker and is not an exact package copy"
+  path_in_list "$dest" < "$REPO_HARNESS_SYNC_DECLARED_PATHS_FILE" \
+    || refuse_unowned_dest "$dest" "path was not declared by the host-config gate"
 }
 
 remove_managed_dest() {
   local dest="$1"
-  local expected_source="$2"
-  local expected_surface="$3"
-  assert_managed_dest "$dest" "$expected_source" "$expected_surface" || exit 1
-  if [[ -L "$dest" ]]; then
-    rm "$dest"
-  elif [[ -e "$dest" ]]; then
-    rm -rf "$dest"
-  fi
+  assert_managed_dest "$dest" || exit 1
+  if [[ -L "$dest" ]]; then rm "$dest"
+  elif [[ -e "$dest" ]]; then rm -rf "$dest"; fi
 }
 
 sync_copy() (
@@ -215,20 +182,11 @@ sync_copy() (
   # Resolve and validate the file list before replacing an owned destination.
   bun "$RUNTIME_ROOT/scripts/skill-surface-select.ts" installed-copy-files "$source" "$surface" \
     "$RUNTIME_ROOT/assets/workflow-contract.v1.json" > "$copy_list"
-  remove_managed_dest "$dest" "$source" "$surface"
+  remove_managed_dest "$dest"
   mkdir -p "$dest"
   rsync -a --from0 --files-from="$copy_list" "$source/" "$dest/"
   write_owner_marker "$dest" "$surface"
 )
-
-# Internal upgrade staging uses the same projection and marker writer. It
-# accepts only a new destination. The upgrade transaction owns replacement.
-if [[ "${1:-}" == "--stage-owned-copy" ]]; then
-  [[ "$#" -eq 4 && -d "$2" && ! -e "$3" && ! -L "$3" ]] || exit 2
-  case "$4" in canonical-skill|command-facade) ;; *) exit 2 ;; esac
-  sync_copy "$3" "$2" "$4"
-  exit 0
-fi
 
 sync_claude_alias_links() {
   if [[ -z "$CLAUDE_SKILLS_ROOT" ]]; then
@@ -237,7 +195,7 @@ sync_claude_alias_links() {
 
   mkdir -p "$CLAUDE_SKILLS_ROOT"
   local alias_dest="$CLAUDE_SKILLS_ROOT/repo-harness"
-  remove_managed_dest "$alias_dest" "$SOURCE_ROOT" canonical-skill
+  remove_managed_dest "$alias_dest"
   create_symlink_or_explain "$SOURCE_ROOT" "$alias_dest"
   echo "[sync-installed] Claude skill alias: $alias_dest -> $SOURCE_ROOT"
 }
@@ -267,7 +225,7 @@ facade_source_for() {
 
 facade_selected() {
   local wanted="$1"
-  grep -Fxq "$wanted" <<< "$SELECTED_FACADES"
+  path_in_list "$wanted" <<< "$SELECTED_FACADES"
 }
 
 provider_skill_for_root() {
@@ -281,53 +239,26 @@ provider_skill_for_root() {
   elif [[ -n "$PI_SKILLS_ROOT" && "$root" == "$PI_SKILLS_ROOT" ]]; then
     host="pi"
   fi
-  [[ -n "$host" ]] && grep -Fxq "$host $wanted" <<< "$PROVIDER_PLACEMENTS"
+  [[ -n "$host" ]] && path_in_list "$host $wanted" <<< "$PROVIDER_PLACEMENTS"
 }
 
 # An integration skill is linked by its own
 # explicit setup command. Facade preflight and retirement never own it.
 integration_skill() {
-  [[ -n "$INTEGRATION_NAMES" ]] && grep -Fxq "$1" <<< "$INTEGRATION_NAMES"
+  [[ -n "$INTEGRATION_NAMES" ]] && path_in_list "$1" <<< "$INTEGRATION_NAMES"
 }
 
 preflight_skill_root() {
   local root="$1"
   [[ -n "$root" ]] || return 0
-  assert_managed_dest "$root/repo-harness" "$SOURCE_ROOT" canonical-skill || exit 1
-  [[ -d "$root" ]] || return 0
-
-  local dest name source_rel source
-  for dest in "$root"/repo-harness-*; do
-    [[ -e "$dest" || -L "$dest" ]] || continue
-    name="$(basename "$dest")"
-    # Provider Skills (for example repo-harness-cross-review) are installed by
-    # their own plugin step after this facade sync. They are not command
-    # facades, so this loop must neither require a command-facade owner marker
-    # nor retire them. Plugin-switch cleanup owns provider retirement.
-    provider_skill_for_root "$root" "$name" && continue
-    integration_skill "$name" && continue
-    source_rel="$(facade_source_for "$name")"
-    source=""
-    [[ -n "$source_rel" ]] && source="$SOURCE_ROOT/$source_rel"
-    # A facade whose canonical source no longer exists in the package (or is
-    # no longer a package at all -- a fully retired name) is a legitimate
-    # retirement candidate, not a preflight failure, as long as the host copy
-    # is still a clean, owner-marked, unmodified copy. assert_managed_dest
-    # proves that from the marker + content hash alone and does not require
-    # $source to exist for that branch; unmarked or drifted content still
-    # fails closed here exactly as before.
-    if assert_managed_dest "$dest" "$source" command-facade; then
-      continue
-    else
-      local ownership_status=$?
-      # Active surfaces still fail closed. Only a verified retired marker
-      # with changed content may proceed to the report-only retirement pass.
-      if [[ "$ownership_status" -eq 2 ]] && ! facade_selected "$name"; then
-        continue
-      fi
-      exit 1
-    fi
-  done
+  assert_managed_dest "$root/repo-harness" || exit 1
+  local name source
+  while IFS=$'\t' read -r name source; do
+    [[ -n "$name" ]] || continue
+    facade_selected "$name" || continue
+    [[ -d "$SOURCE_ROOT/$source" && -f "$SOURCE_ROOT/$source/SKILL.md" ]] || continue
+    assert_managed_dest "$root/$name" || exit 1
+  done <<< "$FACADE_SOURCES"
 }
 
 remove_retired_owned_facades() {
@@ -346,13 +277,9 @@ remove_retired_owned_facades() {
     if [[ -z "$source" || ! -d "$source" ]]; then
       echo "[sync-installed] retiring $dest: canonical facade source no longer exists in the package"
     fi
-    # Retired copies must not block refresh of the selected runtime. Keep
-    # unknown or modified content and report it for explicit upgrade cleanup.
-    if assert_managed_dest "$dest" "$source" command-facade; then
-      remove_managed_dest "$dest" "$source" command-facade
+    if path_in_list "$dest" < "$REPO_HARNESS_SYNC_RETIRED_PATHS_FILE"; then
+      remove_managed_dest "$dest"
     else
-      local ownership_status=$?
-      [[ "$ownership_status" -eq 2 ]] || exit 1
       echo "[sync-installed] preserving retired facade $dest. Run: rh upgrade" >&2
     fi
   done
@@ -382,7 +309,7 @@ sync_command_facades() {
     [[ -d "$facade_src" && -f "$facade_src/SKILL.md" ]] || continue
     dest="$root/$name"
     if [[ "$mode" == "link" ]]; then
-      remove_managed_dest "$dest" "$facade_src" command-facade
+      remove_managed_dest "$dest"
       create_symlink_or_explain "$facade_src" "$dest"
     else
       sync_copy "$dest" "$facade_src" command-facade
@@ -392,7 +319,7 @@ sync_command_facades() {
   echo "[sync-installed] command facades ($mode): $synced into $root"
 }
 
-bun "$SOURCE_ROOT/scripts/skill-surface-select.ts" remove-dangling-links "$CODEX_SKILLS_ROOT" "$CLAUDE_SKILLS_ROOT" "$PI_SKILLS_ROOT"
+
 
 preflight_skill_root "$CODEX_SKILLS_ROOT"
 preflight_skill_root "$CLAUDE_SKILLS_ROOT"
@@ -401,7 +328,7 @@ preflight_skill_root "$PI_SKILLS_ROOT"
 canonical_dest="$CODEX_SKILLS_ROOT/repo-harness"
 if [[ "$LINK_INSTALLED_COPIES" == "1" ]]; then
   mkdir -p "$CODEX_SKILLS_ROOT"
-  remove_managed_dest "$canonical_dest" "$SOURCE_ROOT" canonical-skill
+  remove_managed_dest "$canonical_dest"
   create_symlink_or_explain "$SOURCE_ROOT" "$canonical_dest"
   echo "[sync-installed] canonical skill link: $canonical_dest -> $SOURCE_ROOT"
 
@@ -410,7 +337,7 @@ if [[ "$LINK_INSTALLED_COPIES" == "1" ]]; then
   sync_command_facades "$CLAUDE_SKILLS_ROOT" link
   if [[ -n "$PI_SKILLS_ROOT" ]]; then
     mkdir -p "$PI_SKILLS_ROOT"
-    remove_managed_dest "$PI_SKILLS_ROOT/repo-harness" "$SOURCE_ROOT" canonical-skill
+    remove_managed_dest "$PI_SKILLS_ROOT/repo-harness"
     create_symlink_or_explain "$SOURCE_ROOT" "$PI_SKILLS_ROOT/repo-harness"
     sync_command_facades "$PI_SKILLS_ROOT" link
   fi

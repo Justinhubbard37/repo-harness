@@ -1,7 +1,6 @@
-import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { cpSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync } from 'fs';
-import { homedir } from 'os';
+import { requireHome } from '../../effects/repo-harness-home';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { Command } from 'commander';
@@ -35,13 +34,19 @@ import {
 } from '../../effects/upgrade/legacy-worktree-cleanup';
 import { FS_TRANSACTION_BACKUP_ROOT, withTargetLock, type FsTransactionManifest, type FsTransactionManifestOperation } from '../../effects/fs-transaction';
 import {
+  beginLegacyCleanupBackup,
   beginInstallHostTransaction,
-  readInstallState,
-  recordRefreshedInstallOwnership,
+  commitInstallHostTransaction,
   rollbackInstallHostTransaction,
+  readInstallState,
+  ownerForInstallPath,
+  rollbackLegacyCleanupBackup,
+  refreshInstallStateVersions,
   type InstallHostTransaction,
 } from '../installer/install-profile';
-import { ownedPath, readPathRecords } from '../../effects/host-config/path-records';
+import { ownedPath, pathRecordIsCurrent, pathRecordKey, readPathRecords } from '../../effects/host-config/path-records';
+import { stageInstalledSkillCopy } from '../installer/skill-sync';
+import { openHostConfigGate } from '../../effects/host-config/gate';
 import { hostConfigPaths } from '../../effects/host-config/store';
 import type { OwnedPathLookup } from '../../effects/upgrade/legacy-inventory';
 import { HostConfigError } from '../../core/host-config/types';
@@ -82,6 +87,8 @@ export interface UpgradeDependencies {
 }
 
 export interface UpgradeResult {
+  readonly status?: 'partial';
+  readonly next?: string;
   readonly items: readonly LeftoverItem[];
   readonly apply: boolean;
   readonly exitCode: 0 | 1;
@@ -105,7 +112,8 @@ type PlannerOptions = Parameters<typeof planLegacyLeftovers>[0];
  */
 export function installOwnershipReader(env: NodeJS.ProcessEnv): () => OwnedPathLookup {
   return () => {
-    const records = readInstallState(env) ? readPathRecords(env) : {};
+    readInstallState(env);
+    const records = readPathRecords(env);
     return (path) => {
       try { return ownedPath(env, path, records); } catch (error) {
         if (error instanceof HostConfigError && error.code === 'host_config_invalid_path') return null;
@@ -131,7 +139,15 @@ function supportedItems(items: readonly LeftoverItem[]): LeftoverItem[] {
 }
 
 export function planUpgrade(options: PlannerOptions, decisions: readonly UpgradeDecision[]): DecidedUpgradePlan {
-  return applyUpgradeDecisions(supportedItems(planLegacyLeftovers(options).items), decisions, options.cwd);
+  const owned = options.installOwnership();
+  const items = planLegacyLeftovers(options).items.map(item => {
+    if (item.location !== 'global' || item.action !== 'refresh') return item;
+    const record = owned(item.path);
+    if (!record) return { ...item, action: 'report' as const, reason: 'No ledger record. Run rh update first. If the path stays unrecorded, move it to a backup directory before running rh install.' };
+    return record.kind !== 'user_managed' && pathRecordIsCurrent(item.path, record) ? item
+      : { ...item, action: 'report' as const, reason: 'The skill changed since rh recorded it. Preserve this path or move it to a backup directory before running rh update.' };
+  });
+  return applyUpgradeDecisions(supportedItems(items), decisions, options.cwd);
 }
 
 function unchanged(item: LeftoverItem, options: PlannerOptions): boolean {
@@ -171,38 +187,33 @@ function refreshedTargetMatches(item: LeftoverItem, path: string): boolean {
 }
 
 function refreshDirectory(
-  item: LeftoverItem,
-  options: PlannerOptions,
-  env: NodeJS.ProcessEnv,
-  onMutation: () => void,
-  dependencies: UpgradeDependencies,
+  item: LeftoverItem, options: PlannerOptions, env: NodeJS.ProcessEnv,
+  onMutation: () => void, dependencies: UpgradeDependencies, transaction: string,
 ): boolean {
-  const stagingRoot = mkdtempSync(join(dirname(item.path), '.repo-harness-upgrade-'));
+  const stagingRoot = mkdtempSync(join(transaction, 'upgrade-'));
   const staging = join(stagingRoot, 'replacement');
   try {
     if (!sourceUnchanged(item, options)) return false;
     if (item.expectedSymlinkTarget !== undefined) {
       symlinkSync(item.sourcePath!, staging, process.platform === 'win32' ? 'junction' : 'dir');
     } else {
-      execFileSync('bash', [join(options.packageRoot, 'scripts', 'sync-codex-installed-copies.sh'),
-        '--stage-owned-copy', item.sourcePath!, staging, item.sourceSurface!], {
-        env: { ...env, REPO_HARNESS_SOURCE_ROOT: options.packageRoot }, stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const contract = JSON.parse(readFileSync(join(options.packageRoot, 'assets', 'workflow-contract.v1.json'), 'utf8'));
+      renameSync(stageInstalledSkillCopy(item.sourcePath!, item.sourceSurface!, transaction, contract), staging);
     }
     dependencies.afterStage?.(item, staging);
     if (!refreshedTargetMatches(item, staging)
       || !sourceUnchanged(item, options) || !unchanged(item, options)
-      || !planLegacyLeftovers(options).items.some((current) => itemKey(current) === itemKey(item)
+      || !planLegacyLeftovers(options).items.some(current => itemKey(current) === itemKey(item)
         && current.action === 'refresh' && removable(current))) return false;
-    if (!isLegacyPathSafe(options.home, stagingRoot, false)
-      || !isLegacyPathSafe(stagingRoot, staging, item.expectedSymlinkTarget !== undefined)) throw new Error(`unsafe refresh staging: ${staging}`);
+    const record = options.installOwnership()(item.path);
+    if (!record || !pathRecordIsCurrent(item.path, record)) return false;
+    const owner = ownerForInstallPath(item.path, env);
+    if (owner === null) throw new Error('no owner for refresh: ' + item.path);
     onMutation();
-    renameSync(item.path, join(stagingRoot, 'previous'));
-    renameSync(staging, item.path);
+    openHostConfigGate({ env }).writePaths([{ path: item.path, owner,
+      entry: item.expectedSymlinkTarget !== undefined ? { type: 'symlink', target: item.sourcePath! } : { type: 'directory', source: staging } }], { transaction });
     return true;
-  } finally {
-    rmSync(stagingRoot, { recursive: true, force: true });
-  }
+  } finally { rmSync(stagingRoot, { recursive: true, force: true }); }
 }
 
 function withProjectLocks<T>(paths: readonly string[], run: () => T): T {
@@ -280,15 +291,14 @@ function applyLocked(
   const transactionId = randomUUID();
   const globalPaths = [...new Set(candidates.filter((item) => item.location === 'global').map((item) => item.path))];
   const projectPaths = [...new Set(candidates.filter((item) => item.location === 'project').map((item) => item.path))];
-  const manifestRefreshPaths = candidates.filter((item) => item.location === 'global'
-    && item.action === 'refresh' && item.proof === 'manifest').map((item) => item.path);
+  const gateRefreshPaths = new Set(candidates.filter(item => item.location === 'global' && item.action === 'refresh').map(item => item.path));
+  const earlierRecords = options.installOwnership();
   const statePath = installProfileStatePath(env);
-  // The refresh rewrites the ledger's path records, and the state's versions with them.
+  // The gate writes path records during each refresh.
   const ledgerPath = hostConfigPaths(env).ledger;
-  const ledgerBefore = manifestRefreshPaths.length > 0 ? legacyPathSnapshot(ledgerPath)?.contentHash ?? null : null;
-  const stateBefore = manifestRefreshPaths.length > 0 && isLegacyPathSafe(options.home, statePath, false)
-    ? legacyPathSnapshot(statePath)?.contentHash : undefined;
+  const stateBefore = legacyPathSnapshot(statePath)?.contentHash ?? null;
   let hostBackup: InstallHostTransaction | undefined;
+  let refreshTransaction: InstallHostTransaction | undefined;
   let projectBackup: ProjectBackup | undefined;
   const mutatedPaths = new Set<string>();
   const rolledBackPaths: string[] = [];
@@ -312,8 +322,9 @@ function applyLocked(
       if (!isLegacyPathSafe(root, item.path)) throw new Error(`unsafe cleanup target: ${item.path}`);
     }
     if (!isLegacyPathSafe(options.home, auditPath, false)) throw new Error(`unsafe audit path: ${auditPath}`);
-    const hostPaths = [...globalPaths, ...(manifestRefreshPaths.length > 0 ? [statePath, ledgerPath] : [])];
-    if (hostPaths.length > 0) hostBackup = beginInstallHostTransaction(hostPaths, env, { retainBackup: true, runtimeLock });
+    const hostPaths = globalPaths.filter(path => !gateRefreshPaths.has(path));
+    if (gateRefreshPaths.size) refreshTransaction = beginInstallHostTransaction([statePath, ledgerPath], env, { runtimeLock });
+    if (hostPaths.length > 0) hostBackup = beginLegacyCleanupBackup(hostPaths, env, runtimeLock);
     projectBackup = backupProject(options.cwd, projectPaths, transactionId);
     if (projectBackup) writeProjectManifest(options.cwd, projectBackup);
     for (const path of [...globalPaths, ...projectPaths]) {
@@ -322,7 +333,7 @@ function applyLocked(
       assertHostLock();
       const fresh = planUpgrade(options, decisions).items;
       const eligible = targetItems.filter((item) => unchanged(item, options)
-        && backupMatches(item, item.location === 'global' ? hostBackup : projectBackup?.transaction)
+        && (gateRefreshPaths.has(path) || backupMatches(item, item.location === 'global' ? hostBackup : projectBackup?.transaction))
         && fresh.some((current) => itemKey(current) === itemKey(item) && removable(current)));
       if (eligible.length !== targetItems.length) {
         if (!keptPaths.includes(path)) keptPaths.push(path);
@@ -364,7 +375,7 @@ function applyLocked(
       }
       if (directoryRefresh) {
         if (!targetItems[0]!.sourceSurface
-          || !refreshDirectory(targetItems[0]!, options, env, () => mutatedPaths.add(path), dependencies)) {
+          || !refreshDirectory(targetItems[0]!, options, env, () => { mutatedPaths.add(path); mutatedPaths.add(ledgerPath); }, dependencies, refreshTransaction!.backup_root)) {
           keptPaths.push(path);
           for (const item of targetItems) items[items.indexOf(item)] = { ...item, action: 'report', reason: 'Source or target changed during staging.' };
           continue;
@@ -385,28 +396,31 @@ function applyLocked(
         writeProjectManifest(options.cwd, projectBackup);
       }
     }
-    const receiptPaths = manifestRefreshPaths.filter((path) => refreshedPaths.includes(path));
-    if (receiptPaths.length > 0) {
-      assertHostLock();
-      if (!isLegacyPathSafe(options.home, statePath, false) || stateBefore === undefined
-        || legacyPathSnapshot(statePath)?.contentHash !== stateBefore
-        || legacyPathSnapshot(hostBackup!.snapshots.find((snapshot) => snapshot.path === statePath)!.backup_path!)?.contentHash !== stateBefore) {
-        throw new Error(`install ownership state changed before refresh: ${statePath}`);
-      }
-      if ((legacyPathSnapshot(ledgerPath)?.contentHash ?? null) !== ledgerBefore) throw new Error(`install ownership ledger changed before refresh: ${ledgerPath}`);
-      for (const path of receiptPaths) {
-        const item = candidates.find((candidate) => candidate.path === path && candidate.action === 'refresh')!;
-        if (!isLegacyPathSafe(options.home, path, item.expectedSymlinkTarget !== undefined) || !refreshedTargetMatches(item, path)) {
-          throw new Error(`refreshed surface changed before ownership write: ${path}`);
-        }
-      }
+    if ([...gateRefreshPaths].some(path => refreshedPaths.includes(path))) {
+      if ((legacyPathSnapshot(statePath)?.contentHash ?? null) !== stateBefore) throw new Error('install ownership state changed before refresh: ' + statePath);
       mutatedPaths.add(statePath);
-      mutatedPaths.add(ledgerPath);
-      recordRefreshedInstallOwnership(receiptPaths, env);
+      refreshInstallStateVersions(env);
     }
     audit();
+    if (refreshTransaction) commitInstallHostTransaction(refreshTransaction);
   } catch (failure) {
     error = failure instanceof Error ? failure.message : String(failure);
+    if (refreshTransaction) {
+      try {
+        // A state changed by another writer stays when this refresh never wrote it.
+        rollbackInstallHostTransaction({ ...refreshTransaction,
+          snapshots: refreshTransaction.snapshots.filter(snapshot => snapshot.path !== statePath || mutatedPaths.has(statePath)) }, { runtimeLock });
+      } catch (rollbackError) { error += '; ' + String((rollbackError as Error).message ?? rollbackError); }
+      try {
+        const restored = readPathRecords(env);
+        for (const path of [...refreshedPaths]) {
+          const record = restored[pathRecordKey(env, path)];
+          if (!record || JSON.stringify(record) !== JSON.stringify(earlierRecords(path)) || !pathRecordIsCurrent(path, record)) continue;
+          rolledBackPaths.push(path);
+          refreshedPaths.splice(refreshedPaths.indexOf(path), 1);
+        }
+      } catch (recordError) { error += '; rollback records: ' + String((recordError as Error).message ?? recordError); }
+    }
     for (const backup of [projectBackup?.transaction, hostBackup]) {
       if (!backup) continue;
       const root = projectBackup?.transaction === backup ? options.cwd : options.home;
@@ -418,7 +432,7 @@ function applyLocked(
             || !snapshot.backup_path || !isLegacyPathSafe(backup.backup_root, snapshot.backup_path)) {
             throw new Error(`unsafe rollback target or backup: ${snapshot.path}`);
           }
-          rollbackInstallHostTransaction({ ...backup, snapshots: [snapshot] }, { retainBackup: true, runtimeLock });
+          rollbackLegacyCleanupBackup({ ...backup, snapshots: [snapshot] }, runtimeLock);
           rolledBackPaths.push(snapshot.path);
           const removedIndex = removedPaths.indexOf(snapshot.path);
           if (removedIndex >= 0) removedPaths.splice(removedIndex, 1);
@@ -464,7 +478,7 @@ export function runUpgrade(opts: UpgradeOptions = {}, dependencies: UpgradeDepen
       try { cwd = gitExecFileSync(['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
       catch { if (scope === 'project') throw new Error('project upgrade needs a git repository'); scope = 'global'; }
     }
-    const home = resolve(opts.home ?? opts.env?.HOME ?? process.env.HOME ?? homedir());
+    const home = resolve(opts.home ?? requireHome(opts.env ?? process.env));
     const packageRoot = resolve(opts.packageRoot ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'));
     const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env, HOME: home };
     const options: PlannerOptions = { scope, cwd, home, packageRoot, installOwnership: installOwnershipReader(env),
@@ -478,8 +492,13 @@ export function runUpgrade(opts: UpgradeOptions = {}, dependencies: UpgradeDepen
       removedPaths: [], refreshedPaths: [], keptPaths: [...new Set(items.filter((item) => !removable(item)).map((item) => item.path))], operatorKept };
     const callerCwd = resolve(opts.callerCwd ?? process.cwd());
     // A failed leftover apply leaves the legacy worktrees in place and reports them.
-    const finish = (result: UpgradeResult) => withLegacyWorktrees(result,
-      scope === 'global' || opts.legacyWorktreeCleanup === false ? undefined : runLegacyWorktreeCleanup(cwd, callerCwd, env, apply && !result.error, { beforeRemove: dependencies.beforeLegacyWorktreeRemove }));
+    const finish = (result: UpgradeResult): UpgradeResult => {
+      const owned = installOwnershipReader(env)();
+      const unrecorded = result.items.some(item => item.location === 'global' && item.action === 'report' && item.sourcePath !== undefined && !owned(item.path));
+      const outcome = withLegacyWorktrees(result, scope === 'global' || opts.legacyWorktreeCleanup === false ? undefined
+        : runLegacyWorktreeCleanup(cwd, callerCwd, env, apply && !result.error, { beforeRemove: dependencies.beforeLegacyWorktreeRemove }));
+      return unrecorded ? { ...outcome, status: 'partial', next: 'Run rh update. Back up any skill path that stays unrecorded before running rh install.' } : outcome;
+    };
     if (!apply || !items.some(removable)) return finish(emptyResult);
     return finish(withRuntimeTransactionLock(globalRuntimeScope(env), (lock) => {
       const underHostLock = planUpgrade(options, decisions).items;
@@ -511,6 +530,7 @@ export function formatUpgradeResult(result: UpgradeResult, asJson = false): stri
   if (result.legacyWorktrees) lines.push(...formatLegacyWorktreeOutcome(result.legacyWorktrees));
   if (result.backupPath) lines.push(`Backup: ${result.backupPath}`);
   if (result.projectBackupPath) lines.push(`Project rollback: rh init rollback --transaction ${result.projectBackupPath}`);
+  if (result.status === 'partial') lines.push('Partial: unrecorded skill paths were kept. ' + result.next);
   if (result.error) lines.push(`Failed: ${result.error}`);
   return `${lines.join('\n')}\n`;
 }
@@ -567,7 +587,7 @@ export function runUpgradeDecide(opts: UpgradeDecideOptions): UpgradeDecideResul
     try { cwd = gitExecFileSync(['-C', start, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
     catch { throw new Error('upgrade decide needs a git repository'); }
     if (opts.paths.length === 0) throw new Error('upgrade decide needs at least one path');
-    const home = resolve(opts.home ?? process.env.HOME ?? homedir());
+    const home = resolve(opts.home ?? requireHome(process.env));
     const packageRoot = resolve(opts.packageRoot ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'));
     const existing = readUpgradeDecisions(cwd);
     // Decide against the raw report list, so an operator can replace a stale or earlier decision.

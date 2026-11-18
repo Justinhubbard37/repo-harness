@@ -1,22 +1,22 @@
 import { globalConfigurationPath, mutateGlobalConfiguration, restoreGlobalConfiguration } from '../../effects/configuration/global-configuration';
 import { retryWindowsSharingRace } from '../../effects/atomic-append';
 import wazaRules from "../../core/skill-surface/waza-shared-rules.json";
-import { bunGlobalPackageRoot, expectedSkillProjections, skillLinkMatches } from './skill-projection';
+import { bunGlobalPackageRoot, expectedSkillProjections } from './skill-projection';
 import { configurationReceiptPath } from './configuration-ownership';
 import { ensurePrivateDirectory, hostConfigPaths, putVault, resolveHostPath } from '../../effects/host-config/store';
 import { openHostConfigGate, planPathRevert, rollbackHostConfigTransaction } from '../../effects/host-config/gate';
 import { namingTomlFile } from '../../core/host-config/toml-fragment';
 import { migrateCodexConfigRecords } from './codex-config-migration';
 import { migrateJsonConfigRecords } from './json-config-migration';
-import { pathRecordHost, pathRecordIsCurrent, pathRecordKey, pathRecordsDigest, readPathRecords, readPathRecordSet, registerSupportedPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
-import type { FileBaseline, PathCommitted, PathRecord, PathRecordHost, PathRecordKind } from '../../core/host-config/types';
+import { pathRecordIsCurrent, pathRecordKey, pathRecordsDigest, readPathRecords, readPathRecordSet, registerSupportedPathRecords, writePathRecords, type PathRecords } from '../../effects/host-config/path-records';
+import type { PathCommitted, PathRecord, PathRecordHost, PathRecordKind } from '../../core/host-config/types';
 import { globalContextBackupEligible, globalContextPath } from './global-context';
-import { acquireRuntimeTransactionLock, assertRuntimeTransactionContext, globalRuntimeScope, runtimeTransactionLockRelativePath, runtimeTransactionRoot, type RuntimeTransactionContext, type RuntimeTransactionLock, type RuntimeTransactionScope } from '../../effects/locking/runtime-transaction-lock';
+import { acquireRuntimeTransactionLock, assertRuntimeTransactionContext, globalRuntimeScope, runtimeTransactionLockRelativePath, runtimeTransactionRoot, withRuntimeTransactionLock, type RuntimeTransactionContext, type RuntimeTransactionLock, type RuntimeTransactionScope } from '../../effects/locking/runtime-transaction-lock';
 import { exclusiveDirectoryLockOwnerLiveness, readExclusiveDirectoryLockOwner } from '../../effects/locking/exclusive-directory-lock';
 import { currentProcessStartTime } from '../../effects/locking/process-start-time';
 import { randomUUID } from 'crypto';
+import { windowsProtectedHelperConfigPath } from '../../effects/runtime/protected-helper-platform';
 import { isRecord } from '../../core/evidence/is-record';
-import { sha256Prefixed } from '../../core/evidence/sha256';
 import {
   cpSync,
   existsSync,
@@ -32,7 +32,8 @@ import {
   statSync,
   writeFileSync,
 } from 'fs';
-import { homedir } from 'os';
+import { keepPreimage, observePathEntry } from '../../effects/host-config/whole-path';
+import { requireHome } from '../../effects/repo-harness-home';
 import { basename, delimiter, dirname, join } from 'path';
 import {
   compareManagedHookProjection,
@@ -43,6 +44,8 @@ import {
   requiredExplicitExternalDependencyInstallGroups,
   validateSkillSurfaceCatalogValue,
   selectionOwnedSkillNames,
+  facadesForSelection,
+  hostSkillPlacements,
   type SkillSurfaceCatalog,
 } from '../../core/skill-surface/catalog';
 import {
@@ -60,9 +63,8 @@ import {
   type SurfaceOwner,
 } from '../../core/skill-surface/plugin-manifest';
 import { hostSkillRoot, providerSkillLock, stagedSkillRoot, syncSkillRoots, type SkillHost } from '../../effects/host-skill-roots';
-import { ownedSkillIsIntact } from '../../effects/host-config/herdr-skill-marker';
 import { MANAGED_AGENTS } from '../../effects/terminal/task-role-profiles';
-import { hashManagedTree, OWNER_MARKER } from '../../effects/managed-tree';
+import { hashManagedTree } from '../../effects/managed-tree';
 import { readWorkflowPolicyDocument } from '../../effects/state/resolve-effective-state';
 import { POLICY_ABSENT, POLICY_PATH, isPolicyObject, policyValue } from '../../core/workflow/policy-schema';
 import { capabilitySourceModeOf } from '../../effects/architecture/capability-resolver';
@@ -110,14 +112,6 @@ const AGENT_FLEET_FILE = new RegExp(
 export type InstallState = RecordedInstallState;
 
 export type InstallStateSnapshot = RecordedInstallSnapshot;
-
-/** One path that an install step wrote, before it becomes a path record. */
-interface CapturedPath {
-  readonly path: string;
-  /** `core`, or the enabled plugin whose selection owns this path. */
-  readonly owner: SurfaceOwner;
-  readonly committed: PathCommitted;
-}
 
 /** One ledger path record as `rh install --state` shows it. */
 export interface OwnershipEntry {
@@ -194,9 +188,6 @@ export interface InstallHostTransaction {
   readonly snapshots: readonly HostSurfaceSnapshot[];
 }
 
-/** What ownership capture reads from a transaction: which paths existed before it, and their backups. */
-export type HostSurfaceSnapshots = Pick<InstallHostTransaction, 'snapshots'>;
-
 export interface InstallPlan {
   readonly hosts: typeof INSTALL_HOSTS;
   readonly pi_package: PiPackageStep;
@@ -228,75 +219,12 @@ function adapterHasRequiredProjection(path: string, host: HookHost, env: NodeJS.
   }
 }
 
-function captureDirectoryOrLink(path: string, owner: SurfaceOwner): CapturedPath | null {
-  if (!existsSync(path)) return null;
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink()) {
-    // A pre-existing symlink has no embedded repo-harness ownership proof.
-    // Newly created transaction symlinks are captured separately from the
-    // before/after transaction snapshots.
-    return null;
-  }
-  if (!stat.isDirectory()) return null;
-  const markerPath = join(path, OWNER_MARKER);
-  if (!existsSync(markerPath)) return null;
-  try {
-    const marker = JSON.parse(readFileSync(markerPath, 'utf-8')) as {
-      owner?: unknown;
-      surface?: unknown;
-      content_hash?: unknown;
-    };
-    if (
-      marker.owner !== 'repo-harness' ||
-      (marker.surface !== 'canonical-skill' && marker.surface !== 'command-facade') ||
-      typeof marker.content_hash !== 'string'
-    ) return null;
-    // The marker's hash is the tree hash without the marker: the record's proof.
-    return { owner, path, committed: { type: 'directory', sha256: marker.content_hash } };
-  } catch {
-    return null;
-  }
-}
-
-function captureOwnedPath(path: string, owner: SurfaceOwner): CapturedPath | null {
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (!stat) return null;
-  if (stat.isSymbolicLink()) return { owner, path, committed: { type: 'symlink', target: readlinkSync(path) } };
-  if (stat.isDirectory()) return { owner, path, committed: { type: 'directory', sha256: hashManagedTree(path) } };
-  if (!stat.isFile()) return null;
-  return { owner, path, committed: { type: 'file', sha256: sha256Prefixed(readFileSync(path)) } };
-}
-
-function herdrSkillPaths(home: string, env: NodeJS.ProcessEnv): readonly string[] {
-  return [...hostSkillRoots(home, env), stagedSkillRoot(home)].map((root) => join(root, 'herdr'));
-}
-
-/**
- * A Herdr skill record. Its currency is the marker proof (`ownedSkillIsIntact`), never a tree hash:
- * a later Herdr write keeps the record current, and any user entry ends rh's claim on the directory.
- */
-function captureHerdrSkill(path: string, owner: SurfaceOwner): CapturedPath | null {
-  if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory() || !ownedSkillIsIntact(path)) return null;
-  return { owner, path, committed: { type: 'directory', proof: 'herdr-skill-marker' } };
-}
-
-/**
- * A facade is canonical when the package still ships its source directory,
- * checked through the host's already-synced canonical `repo-harness` skill
- * copy. A name absent from the catalog's facade-kind packages (a fully
- * retired name) is never canonical.
- */
-function facadeIsCanonical(root: string, name: string, catalog: SkillSurfaceCatalog): boolean {
-  const source = catalog.packages.find((pkg) => pkg.kind === 'facade' && pkg.name === name)?.source;
-  return typeof source === 'string' && existsSync(join(root, 'repo-harness', source, 'SKILL.md'));
-}
-
 const FACADE_NAME_PREFIX = 'repo-harness-';
 
 const SKILL_HOSTS: readonly SkillHost[] = ['codex', 'claude', 'pi'];
 
 function hostSkillRoots(home: string, env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  return SKILL_HOSTS.map((host) => hostSkillRoot(home, host, env));
+  return [...new Set([...SKILL_HOSTS.map(host => hostSkillRoot(home, host, env)), ...effectiveSkillRoots(PLUGIN_IDS, env)])];
 }
 
 /**
@@ -323,15 +251,15 @@ function isDiscoveredFacadePath(path: string, home: string, env: NodeJS.ProcessE
  * the catalog owner for skill paths. The Pi skill root is the `pi` plugin's
  * surface, whatever package it holds. Null means that no selection owns the path.
  */
-export function ownerForInstallPath(path: string, env: NodeJS.ProcessEnv = process.env): SurfaceOwner | null {
+export function ownerForInstallPath(path: string, env: NodeJS.ProcessEnv = process.env, suppliedCatalog?: SkillSurfaceCatalog): SurfaceOwner | null {
   const normalized = path.replaceAll('\\', '/');
   const name = normalized.split('/').at(-1) ?? '';
-  const home = env.HOME ?? homedir();
-  const inSkills = normalized.includes('/skills/');
+  const home = requireHome(env);
+  const inSkills = [...hostSkillRoots(home, env), stagedSkillRoot(home)].includes(dirname(path));
   if (inSkills && normalized.startsWith(`${hostSkillRoot(home, 'pi', env).replaceAll('\\', '/')}/`)) return 'pi';
   if (name === 'repo-harness' && inSkills) return 'core';
   if (inSkills) {
-    const catalog = loadSkillSurfaceCatalog();
+    const catalog = suppliedCatalog ?? loadSkillSurfaceCatalog();
     const pkg = catalog.packages.find(entry => entry.name === name);
     if (pkg?.kind === 'facade' || pkg?.kind === 'provider-skill') return pkg.owner;
     // The installer writes the Herdr skill itself (configureRequiredHerdrSkill), outside the selection projection.
@@ -353,59 +281,9 @@ export function ownerForInstallPath(path: string, env: NodeJS.ProcessEnv = proce
   return null;
 }
 
-function discoverManagedSurfaces(
-  plugins: readonly PluginId[],
-  env: NodeJS.ProcessEnv,
-): readonly CapturedPath[] {
-  const home = env.HOME ?? homedir();
-  const catalog = loadSkillSurfaceCatalog();
-  const surfaces: CapturedPath[] = [];
-  const enabled = (owner: SurfaceOwner | null): owner is SurfaceOwner => owner !== null && ownerEnabled(owner, plugins);
-  // A catalog facade can lack the prefix (obsidian-memory). Its copy needs
-  // the same marker-based receipt as a prefixed facade copy.
-  const facadeNames = new Set(catalog.packages.filter((pkg) => pkg.kind === 'facade').map((pkg) => pkg.name));
-  const hostRoots = selectedSkillHosts(plugins).map((host) => hostSkillRoot(home, host, env));
-  // The Herdr step writes its marker with the SKILL.md hash, in each selected host
-  // root and in the staged root. A copy that still matches it is rh's, whichever
-  // earlier run wrote it; an edited copy stays the user's.
-  for (const herdr of [...hostRoots, stagedSkillRoot(home)].map((root) => join(root, 'herdr'))) {
-    const owner = ownerForInstallPath(herdr, env);
-    const surface = enabled(owner) ? captureHerdrSkill(herdr, owner) : null;
-    if (surface) surfaces.push(surface);
-  }
-  for (const root of hostRoots) {
-    const canonicalOwner = ownerForInstallPath(join(root, 'repo-harness'), env);
-    if (enabled(canonicalOwner)) {
-      const canonical = captureDirectoryOrLink(join(root, 'repo-harness'), canonicalOwner);
-      if (canonical) surfaces.push(canonical);
-    }
-    if (!existsSync(root)) continue;
-    for (const name of readdirSync(root).filter((entry) => entry.startsWith(FACADE_NAME_PREFIX) || facadeNames.has(entry)).sort()) {
-      // A retired facade keeps its receipt under `core` until skill sync removes it; in the Pi root it stays `pi`.
-      const owner = facadeIsCanonical(root, name, catalog) || root === hostSkillRoot(home, 'pi', env) ? ownerForInstallPath(join(root, name), env) : 'core';
-      if (!enabled(owner)) continue;
-      const facade = captureDirectoryOrLink(join(root, name), owner);
-      if (facade) surfaces.push(facade);
-    }
-  }
-  const sourceRoot = bunGlobalPackageRoot(env);
-  // A matching stable package or staging link is ownership proof. Never
-  // acquire an arbitrary link merely because the transaction found it.
-  if (sourceRoot !== null) {
-    for (const projection of expectedSkillProjections(catalog, sourceRoot, home, plugins, env)) {
-      if (!skillLinkMatches(projection.destination, projection.source)) continue;
-      const owner = ownerForInstallPath(projection.destination, env);
-      if (!enabled(owner)) continue;
-      const surface = captureOwnedPath(projection.destination, owner);
-      if (surface) surfaces.push(surface);
-    }
-  }
-  return surfaces;
-}
-
 /** Generated agent fleet targets written by scripts/install-agent-fleet.sh. */
 export function agentFleetTargetPaths(env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  const home = env.HOME ?? homedir();
+  const home = requireHome(env);
   return MANAGED_AGENTS.flatMap((agent) => [
     join(home, '.codex', 'agents', `${agent}.toml`),
     join(home, '.claude', 'agents', `${agent}.md`),
@@ -415,22 +293,56 @@ export function agentFleetTargetPaths(env: NodeJS.ProcessEnv = process.env): rea
 /** The path records that a producer edits, by key. */
 type RecordMap = Map<string, PathRecord>;
 
-/**
- * A captured path as a `created` path record. An existing record keeps its
- * baseline; otherwise a path that the transaction snapshot found absent is
- * `known, existed: false`, and one that discovery found is `unknown`. A
- * `user_managed` record is the user's file: no capture claims it.
- */
-function recordCapture(env: NodeJS.ProcessEnv, records: RecordMap, capture: CapturedPath, prior: PathRecords, absent: ReadonlySet<string> = new Set()): void {
-  const host = pathRecordHost(env, capture.path);
-  if (host === null) throw new Error(`no install root holds the captured path: ${capture.path}`);
-  const key = pathRecordKey(env, capture.path);
-  const previous = prior[key];
-  if (previous?.kind === 'user_managed' || records.get(key)?.kind === 'user_managed') return;
-  const baseline: FileBaseline = previous?.baseline ?? (absent.has(capture.path) ? { state: 'known', existed: false } : { state: 'unknown' });
-  // A file that replaced a user file keeps its kind and the vault reference of that file.
-  const kind = previous?.kind === 'replaced' ? { kind: 'replaced' as const, backup: previous.backup! } : { kind: 'created' as const };
-  records.set(key, { owner: capture.owner, host, baseline, committed: capture.committed, ...kind });
+interface StagedSkillObservation { readonly path: string; readonly owner: SurfaceOwner; readonly existed: boolean; readonly owned: boolean }
+const STAGED_SKILLS = 'staged-skills.json';
+
+/** Presence and ownership before the Skills CLI runs. No user bytes are copied. Retired by #2852. */
+export function initializeStagedSkillObservations(transaction: string, env: NodeJS.ProcessEnv): void {
+  const metadata = join(transaction, STAGED_SKILLS);
+  if (lstatSync(metadata, { throwIfNoEntry: false })) { readStagedSkillObservations(transaction, env); return; }
+  const prior = readPathRecords(env);
+  const { externalSkills } = catalogMutationPathSkillNames(loadSkillSurfaceCatalog());
+  const observations = externalSkills.flatMap(name => {
+    const path = join(stagedSkillRoot(requireHome(env)), name);
+    const owner = ownerForInstallPath(path, env);
+    if (owner === null) return [];
+    const key = pathRecordKey(env, path);
+    const record = prior[key];
+    const owned = record?.kind === 'created' && record.owner === owner && pathRecordIsCurrent(key, record);
+    if (owned) keepPreimage(transaction, key);
+    return [{ path, owner, existed: lstatSync(path, { throwIfNoEntry: false }) !== undefined, owned }];
+  });
+  writeFileSync(metadata, JSON.stringify(observations), { flag: 'wx', mode: 0o600 });
+}
+
+function readStagedSkillObservations(transaction: string, env: NodeJS.ProcessEnv): readonly StagedSkillObservation[] {
+  const metadata = join(transaction, STAGED_SKILLS);
+  let raw: unknown;
+  try { raw = JSON.parse(readFileSync(metadata, 'utf8')); }
+  catch { throw new Error('invalid staged skill observations in runtime transaction'); }
+  const { externalSkills } = catalogMutationPathSkillNames(loadSkillSurfaceCatalog());
+  const allowed = new Set(externalSkills.map(name => join(stagedSkillRoot(requireHome(env)), name)));
+  if (!Array.isArray(raw) || raw.some(entry => !isRecord(entry) || typeof entry.path !== 'string' || !allowed.has(entry.path)
+    || !isSurfaceOwner(entry.owner) || entry.owner !== ownerForInstallPath(entry.path, env) || typeof entry.existed !== 'boolean' || typeof entry.owned !== 'boolean')) throw new Error('invalid staged skill observations in runtime transaction');
+  const observations = raw as StagedSkillObservation[];
+  if (new Set(observations.map(entry => entry.path)).size !== observations.length) throw new Error('duplicate staged skill observation');
+  return observations;
+}
+
+/** Record only newly staged entries or an entry whose prior record was current. Retired by #2852. */
+export function recordStagedExternalSkillWrites(transaction: string, env: NodeJS.ProcessEnv): void {
+  const observations = readStagedSkillObservations(transaction, env);
+  const records = { ...readPathRecords(env) };
+  for (const entry of observations) {
+    if (entry.existed && !entry.owned) continue;
+    const committed = observePathEntry(entry.path);
+    if (!committed || committed.type === 'file') continue;
+    const key = pathRecordKey(env, entry.path);
+    const previous = records[key];
+    if (previous && (previous.kind !== 'created' || previous.owner !== entry.owner)) continue;
+    records[key] = { owner: entry.owner, host: 'staged', kind: 'created', baseline: previous?.baseline ?? { state: 'known', existed: false }, committed };
+  }
+  writePathRecords(env, records);
 }
 
 function ownerSelected(record: PathRecord, plugins: readonly PluginId[]): boolean {
@@ -453,74 +365,12 @@ function carriedRecords(prior: PathRecords, kept: readonly PluginId[] = []): Rec
   )));
 }
 
-/**
- * Fleet files written before ownership tracking, or during an update, are never
- * transaction-created, so a later fleet projection change would report them as
- * drift. Right after a successful fleet run every target is either the generated
- * projection or a file that the user keeps (a `user_managed` record); only the former is recorded.
- */
-function verifiedAgentFleetSurfaces(env: NodeJS.ProcessEnv, prior: PathRecords): readonly CapturedPath[] {
-  return agentFleetTargetPaths(env).flatMap((path) => {
-    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile() || prior[pathRecordKey(env, path)]?.kind === 'user_managed') return [];
-    const surface = captureOwnedPath(path, 'core');
-    return surface ? [surface] : [];
-  });
-}
-
-/**
- * Update paths run the fleet helper but may never reach applyInstallSelection
- * (partial or in-process reconciliation), so the verified fleet files are
- * recorded right after the helper succeeds. Without installed state there is
- * no install to extend.
- */
-export function recordVerifiedAgentFleetOwnership(env: NodeJS.ProcessEnv = process.env): void {
-  if (readInstallState(env) === null) return;
-  const prior = readPathRecords(env);
-  const records: RecordMap = new Map(Object.entries(prior));
-  for (const surface of verifiedAgentFleetSurfaces(env, prior)) recordCapture(env, records, surface, prior);
-  writePathRecords(env, Object.fromEntries(records));
-}
-
-/** Refresh held records. Callers must prove ownership of each newly claimed path. */
-export function recordRefreshedInstallOwnership(
-  paths: readonly string[],
-  env: NodeJS.ProcessEnv = process.env,
-  newlyOwnedPaths: readonly string[] = [],
-): void {
-  const current = readInstallState(env);
-  if (current === null) return;
-  const selected = new Set(paths);
-  const plugins = enabledPlugins(current);
-  const prior = readPathRecords(env);
-  const records: RecordMap = new Map(Object.entries(prior));
-  for (const path of selected) {
-    const key = pathRecordKey(env, path);
-    const record = prior[key];
-    // A Herdr record proves itself by its marker; a user's file is never refreshed.
-    if (!record || record.kind !== 'created' || 'proof' in record.committed) continue;
-    const refreshed = captureOwnedPath(path, record.owner as SurfaceOwner);
-    if (!refreshed || refreshed.committed.type !== record.committed.type) throw new Error(`cannot refresh install ownership: ${path}`);
-    records.set(key, { ...record, committed: refreshed.committed });
-  }
-  for (const path of new Set(newlyOwnedPaths)) {
-    if (!selected.has(path)) throw new Error(`new install ownership path is outside this refresh: ${path}`);
-    if (records.has(pathRecordKey(env, path))) continue;
-    const owner = ownerForInstallPath(path, env);
-    if (owner === null || !ownerEnabled(owner, plugins)) throw new Error(`no enabled owner for new install ownership: ${path}`);
-    const created = captureOwnedPath(path, owner);
-    if (!created) throw new Error(`cannot record new install ownership: ${path}`);
-    recordCapture(env, records, created, prior);
-  }
-  if (!writePathRecords(env, Object.fromEntries(records))) return;
-  writeState({ ...current, ...versions(plugins) }, env);
-}
-
 /** A Pi package source that an install may own: the Bun global package root, with the `pi` plugin enabled. */
 function validPiPackage(source: string, env: NodeJS.ProcessEnv, plugins: readonly PluginId[]): boolean {
   return plugins.includes('pi') && source === bunGlobalPackageRoot(env);
 }
 
-export function recordPiInstallOwnership(sources: readonly string[], env: NodeJS.ProcessEnv = process.env, transaction?: HostSurfaceSnapshots): void {
+export function recordPiInstallOwnership(sources: readonly string[], env: NodeJS.ProcessEnv = process.env): void {
   const current = readInstallState(env);
   if (current === null) {
     if (sources.length === 0) return;
@@ -528,16 +378,6 @@ export function recordPiInstallOwnership(sources: readonly string[], env: NodeJS
   }
   const plugins = enabledPlugins(current);
   if (sources.some(source => !validPiPackage(source, env, plugins))) throw new Error('invalid Pi package ownership');
-  if (transaction) {
-    const root = hostSkillRoot(env.HOME ?? homedir(), 'pi', env);
-    const prior = readPathRecords(env);
-    const records: RecordMap = new Map(Object.entries(prior));
-    const { captures, absent } = transactionOwnedSurfaces(transaction, prior, env);
-    for (const surface of captures) {
-      if (ownerEnabled(surface.owner, plugins) && surface.path.startsWith(root + '/')) recordCapture(env, records, surface, prior, absent);
-    }
-    writePathRecords(env, Object.fromEntries(records));
-  }
   const piPackages = [...new Set([...current.pi_packages, ...sources])];
   if (piPackages.length !== current.pi_packages.length) writeState({ ...current, pi_packages: piPackages }, env);
 }
@@ -579,7 +419,7 @@ export function newPiPackagesSinceTransaction(transaction: InstallHostTransactio
 export const ARCHCTX_PACKAGES = ['archctx', 'archctx-contracts'] as const;
 
 export function installProfileHostMutationPaths(env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  const home = env.HOME ?? homedir();
+  const home = requireHome(env);
   const bunRoot = env.BUN_INSTALL ?? join(home, '.bun');
   const { repoHarnessSkills: skills, externalSkills } = catalogMutationPathSkillNames(loadSkillSurfaceCatalog());
   const paths = [
@@ -642,9 +482,10 @@ export function supportedPathRecord(env: NodeJS.ProcessEnv): (key: string, recor
     try { return pathRecordKey(env, path); } catch { return null; }
   };
   const keys = (paths: readonly string[]) => new Set(paths.map(keyOf).filter((key): key is string => key !== null));
-  const allowed = keys(installProfileHostMutationPaths(env));
+  const { repoHarnessSkills } = catalogMutationPathSkillNames(loadSkillSurfaceCatalog());
+  const allowed = keys([...installProfileHostMutationPaths(env), ...effectiveSkillRoots(PLUGIN_IDS, env).flatMap(root => repoHarnessSkills.map(name => join(root, name)))]);
   const fleet = keys(agentFleetTargetPaths(env));
-  const facadeRoots = new Set([...keys(hostSkillRoots(env.HOME ?? homedir(), env).map((root) => join(root, FACADE_NAME_PREFIX)))].map((key) => dirname(key)));
+  const facadeRoots = new Set([...keys(hostSkillRoots(requireHome(env), env).map((root) => join(root, FACADE_NAME_PREFIX)))].map((key) => dirname(key)));
   return (key, record) => isSurfaceOwner(record.owner) && (record.kind === 'user_managed'
     ? fleet.has(key)
     : allowed.has(key) || (basename(key).startsWith(FACADE_NAME_PREFIX) && facadeRoots.has(dirname(key))));
@@ -663,29 +504,84 @@ function skippedOwnership(env: NodeJS.ProcessEnv): Pick<InstallStateStatus, 'own
  * skill-surface-select.ts.
  */
 export function effectiveSkillRoots(plugins: readonly PluginId[], env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  const roots = syncSkillRoots(env, env.HOME ?? homedir(), plugins);
+  const roots = syncSkillRoots(env, requireHome(env), plugins);
   return [roots.codex, roots.claude, roots.pi].filter((root): root is string => root !== null);
 }
 
-/**
- * Skill sync also retires repo-harness-* facades and owned dangling links
- * that the current catalog does not name. A host transaction snapshots that
- * full set before sync runs.
- */
+/** Only rh runtime files and the Bun package have whole-file snapshots. */
 export function installProfileTransactionPaths(env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  const { repoHarnessSkills } = catalogMutationPathSkillNames(loadSkillSurfaceCatalog());
-  const paths = [...installProfileHostMutationPaths(env)];
-  // The snapshot covers every root that any selection's sync can write.
-  for (const root of effectiveSkillRoots(PLUGIN_IDS, env)) {
-    for (const skill of repoHarnessSkills) paths.push(join(root, skill));
-    // Follow a linked root, as the shell's [[ -d ]] test does.
-    if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) continue;
-    for (const name of readdirSync(root)) {
+  const home = requireHome(env);
+  const bunRoot = env.BUN_INSTALL ?? join(home, '.bun');
+  return [
+    ...['rh', RETIRED_CLI_NAME, 'archctx', 'codegraph'].map(name => join(bunRoot, 'bin', name)),
+    ...['package.json', 'bun.lock', 'bun.lockb'].map(name => join(bunRoot, 'install/global', name)),
+    ...['repo-harness', '@colbymchenry/codegraph', ...ARCHCTX_PACKAGES].map(name => join(bunRoot, 'install/global/node_modules', name)),
+    globalConfigurationPath(env), installProfileStatePath(env), configurationReceiptPath(home), hostConfigPaths(env).ledger,
+    ...(process.platform === 'win32' ? [windowsProtectedHelperConfigPath()] : []),
+  ];
+}
+
+/** The script receives only absent paths and current paths of the selected owner. */
+export function planSkillSync(plugins: readonly PluginId[], env: NodeJS.ProcessEnv = process.env, catalog = loadSkillSurfaceCatalog()) {
+  const { repoHarnessSkills } = catalogMutationPathSkillNames(catalog);
+  const prior = readPathRecords(env);
+  const declared = new Map<string, { path: string; owner: SurfaceOwner }>();
+  for (const root of effectiveSkillRoots(plugins, env)) {
+    const names = new Set(repoHarnessSkills);
+    if (statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+      for (const name of readdirSync(root)) {
+        const path = join(root, name);
+        if (name.startsWith(FACADE_NAME_PREFIX) || (lstatSync(path).isSymbolicLink() && !existsSync(path))) names.add(name);
+      }
+    }
+    for (const name of names) {
       const path = join(root, name);
-      if (name.startsWith(FACADE_NAME_PREFIX) || (lstatSync(path).isSymbolicLink() && !existsSync(path))) paths.push(path);
+      const key = pathRecordKey(env, path);
+      const record = prior[key];
+      const owner = ownerForInstallPath(path, env, catalog) ?? (record && isSurfaceOwner(record.owner) ? record.owner : null);
+      if (owner === null || (!ownerEnabled(owner, plugins) && !record)) continue;
+      if (lstatSync(path, { throwIfNoEntry: false }) && (!record || record.kind === 'user_managed'
+        || record.owner !== owner || !pathRecordIsCurrent(key, record))) continue;
+      declared.set(key, { path, owner });
     }
   }
-  return [...new Set(paths)];
+  const selected = new Set(facadesForSelection(catalog, plugins));
+  const providers = hostSkillPlacements(catalog);
+  const integrations = new Set(catalog.packages.filter(pkg => pkg.kind === 'integration').map(pkg => pkg.name));
+  const roots = syncSkillRoots(env, requireHome(env), plugins);
+  const retired = [...declared.values()].filter(({ path }) => {
+    const name = basename(path), root = dirname(path);
+    const host = root === roots.codex ? 'codex' : root === roots.claude ? 'claude' : 'pi';
+    return lstatExists(path) && name.startsWith(FACADE_NAME_PREFIX) && !selected.has(name) && !providers[host].includes(name) && !integrations.has(name);
+  }).map(entry => entry.path);
+  return { declared: [...declared.values()], retired };
+}
+
+/** Config adoption commits before the runtime snapshot, including a protocol 4 state with an older adapter. */
+export function migrateRuntimeHostConfig(env: NodeJS.ProcessEnv): void {
+  requireHome(env);
+  migrateCodexConfigRecords(env);
+  migrateJsonConfigRecords(env);
+}
+
+/** Standalone writers use the same runtime lock and transaction as install. */
+export function withHostConfigTransaction<T>(env: NodeJS.ProcessEnv, transaction: string | undefined,
+  run: (root: string, runtimeLock?: RuntimeTransactionContext) => T, beforeSnapshot?: () => void): T {
+  requireHome(env);
+  if (transaction !== undefined) return run(transaction);
+  return withRuntimeTransactionLock(globalRuntimeScope(env), runtimeLock => {
+    beforeSnapshot?.();
+    const current = beginInstallHostTransaction(installProfileTransactionPaths(env), env, { runtimeLock });
+    try {
+      const result = run(current.backup_root, runtimeLock);
+      commitInstallHostTransaction(current);
+      return result;
+    } catch (error) {
+      try { rollbackInstallHostTransaction(current); }
+      catch (restore) { throw new AggregateError([error, restore], 'host writer rollback failed'); }
+      throw error;
+    }
+  });
 }
 
 const transactionLocks = new WeakMap<InstallHostTransaction, { context: RuntimeTransactionContext; owned: RuntimeTransactionLock | undefined }>();
@@ -742,12 +638,10 @@ function settleTransactionCopy(copy: string, host: string, env: NodeJS.ProcessEn
 }
 
 /**
- * A killed install leaves its directory with copies of host files, credentials
- * included. The lock holder settles each copy of a directory whose owner ended
- * and removes the directory once only its record is left. Nothing is restored
- * to a host path: the directory does not record which host files the killed
- * run changed. A directory without a record (an earlier rh version) stays, as
- * does a retained upgrade backup (`manifest.json`); a link is never followed.
+ * The lock holder settles only runtime copies whose owner ended. Retired host
+ * snapshots and gate preimages stay for recovery. Nothing is restored to a
+ * host path. A directory without an owner record and a retained legacy backup
+ * (`manifest.json`) stay; a link is never followed.
  */
 function settleOrphanedTransactions(transactionRoot: string, env: NodeJS.ProcessEnv): void {
   for (const name of readdirSync(transactionRoot)) {
@@ -764,9 +658,10 @@ function settleOrphanedTransactions(transactionRoot: string, env: NodeJS.Process
     if (owner === 'invalid' || exclusiveDirectoryLockOwnerLiveness({ lockPath: directory, pid: owner.pid, startTime: owner.startTime, token: '' }) !== 'dead') continue;
     for (const entry of readdirSync(directory)) {
       const host = /^\d+$/.test(entry) ? owner.paths[Number(entry)] : undefined;
-      if (host !== undefined) settleTransactionCopy(join(directory, entry), host, env);
+      if (host !== undefined && installProfileTransactionPaths(env).includes(host)) settleTransactionCopy(join(directory, entry), host, env);
     }
-    if (readdirSync(directory).every((entry) => entry === TRANSACTION_OWNER)) rmSync(directory, { recursive: true, force: true });
+    if (readdirSync(directory).every((entry) => entry === TRANSACTION_OWNER || entry === STAGED_SKILLS)) rmSync(directory, { recursive: true, force: true });
+    else process.stderr.write(`[install] kept incomplete transaction for recovery: ${directory}\n`);
   }
 }
 
@@ -789,7 +684,20 @@ function createTransactionDirectory(transactionRoot: string, paths: readonly str
   return directory;
 }
 
-export function beginInstallHostTransaction(
+/** Retained backups belong only to legacy cleanup, apart from runtime commits. */
+export function beginLegacyCleanupBackup(paths: readonly string[], env: NodeJS.ProcessEnv, runtimeLock: RuntimeTransactionContext): InstallHostTransaction {
+  return snapshotPaths(paths, env, { retainBackup: true, runtimeLock });
+}
+
+export function beginInstallHostTransaction(paths: readonly string[], env: NodeJS.ProcessEnv = process.env, options: { readonly runtimeLock?: RuntimeTransactionContext } = {}): InstallHostTransaction {
+  const allowed = new Set(installProfileTransactionPaths(env));
+  if (paths.some(path => !allowed.has(path))) throw new Error('runtime transaction contains a host path');
+  const transaction = snapshotPaths(paths, env, options);
+  try { initializeStagedSkillObservations(transaction.backup_root, env); return transaction; }
+  catch (error) { commitInstallHostTransaction(transaction); throw error; }
+}
+
+function snapshotPaths(
   paths: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
   options: { readonly retainBackup?: boolean; readonly runtimeLock?: RuntimeTransactionContext } = {},
@@ -838,7 +746,7 @@ function assertTransactionLock(transaction: InstallHostTransaction, context?: Ru
   if (held) {
     assertRuntimeTransactionContext(held, held.scope);
     for (const snapshot of transaction.snapshots) {
-      if (isGlobalConfigurationSnapshot(snapshot.path)) assertRuntimeTransactionContext(held, process.platform === 'win32' ? globalRuntimeScope() : { kind: 'global', root: dirname(dirname(snapshot.path)) });
+      if (isGlobalConfigurationSnapshot(snapshot.path)) assertRuntimeTransactionContext(held, globalRuntimeScope({ HOME: dirname(dirname(snapshot.path)) }));
     }
     return;
   }
@@ -856,9 +764,41 @@ function lstatExists(path: string): boolean {
   }
 }
 
+function restoreSnapshot(transaction: InstallHostTransaction, snapshot: HostSurfaceSnapshot, runtimeLock?: RuntimeTransactionContext): void {
+  if (isGlobalConfigurationSnapshot(snapshot.path)) {
+    const context = transactionLocks.get(transaction)?.context ?? runtimeLock;
+    if (!context) throw new Error('configuration rollback lost its runtime transaction context');
+    restoreGlobalConfiguration(snapshot.path, snapshot.existed && snapshot.backup_path !== null ? readFileSync(snapshot.backup_path) : null, context);
+    return;
+  }
+  if (!snapshot.existed && lstatSync(dirname(snapshot.path), { throwIfNoEntry: false })?.isFile()) return;
+  if (snapshot.existed && snapshot.backup_path !== null && !lstatExists(snapshot.backup_path)) throw new Error('its backup ' + snapshot.backup_path + ' is missing, so the path stays as it is');
+  rmSync(snapshot.path, { recursive: true, force: true });
+  if (snapshot.existed && snapshot.backup_path !== null) {
+    mkdirSync(dirname(snapshot.path), { recursive: true });
+    cpSync(snapshot.backup_path, snapshot.path, { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
+  }
+}
+
+/** Legacy cleanup keeps its retained snapshots and restores only its own mutations. */
+export function rollbackLegacyCleanupBackup(transaction: InstallHostTransaction, runtimeLock: RuntimeTransactionContext): void {
+  assertTransactionLock(transaction, runtimeLock);
+  const failures: unknown[] = [];
+  for (const snapshot of [...transaction.snapshots].reverse()) {
+    try { restoreSnapshot(transaction, snapshot, runtimeLock); } catch (error) { failures.push(error); }
+  }
+  if (failures.length) throw new AggregateError(failures, 'legacy cleanup rollback failed');
+}
+
+/** Refresh state versions after the gate refreshed the recorded paths. */
+export function refreshInstallStateVersions(env: NodeJS.ProcessEnv): void {
+  const current = readInstallState(env);
+  if (current) writeState({ ...current, ...versions(enabledPlugins(current)) }, env);
+}
+
 export function rollbackInstallHostTransaction(
   transaction: InstallHostTransaction,
-  options: { readonly retainBackup?: boolean; readonly runtimeLock?: RuntimeTransactionContext;
+  options: { readonly runtimeLock?: RuntimeTransactionContext;
     readonly unresolvedPi?: { readonly selection: PluginSelection; readonly plugins: readonly PluginId[]; readonly sources: readonly string[]; readonly env: NodeJS.ProcessEnv } } = {},
 ): void {
   assertTransactionLock(transaction, options.runtimeLock);
@@ -871,36 +811,17 @@ export function rollbackInstallHostTransaction(
           transaction_id: basename(transaction.backup_root), plugins: unresolved.plugins, pi_packages: unresolved.sources }), { mode: 0o600 });
       } catch (error) { failures.push(`Pi recovery record: ${String((error as Error).message ?? error)}`); }
     }
-    // The gate undoes its own text writes by the ledger records before the ledger file goes back, so a linked host file needs no copy here.
-    // The snapshot below still restores the whole paths, so the gate gets no transaction directory for them.
-    const ledger = transaction.snapshots.find((snapshot) => basename(snapshot.path) === 'ledger.json' && basename(dirname(snapshot.path)) === 'config');
+    const ledger = transaction.snapshots.find(snapshot => basename(snapshot.path) === 'ledger.json' && basename(dirname(snapshot.path)) === 'config');
     if (ledger) {
       try {
-        const result = rollbackHostConfigTransaction(dirname(dirname(ledger.path)), ledger.existed && ledger.backup_path !== null ? readFileSync(ledger.backup_path) : null, null);
-        failures.push(...result.unresolved.map((entry) => `${entry}: rh cannot prove this host configuration entry, so it stays as it is`));
-      } catch (error) { failures.push(`host configuration rollback: ${String((error as Error).message ?? error)}`); }
+        const result = rollbackHostConfigTransaction(dirname(dirname(ledger.path)), ledger.existed && ledger.backup_path !== null ? readFileSync(ledger.backup_path) : null, transaction.backup_root);
+        failures.push(...result.unresolved.map(entry => entry + ': rh cannot prove this host configuration entry; run rh update'));
+      } catch (error) { failures.push('host configuration rollback: ' + String((error as Error).message ?? error) + '; run rh update'); }
     }
     for (const snapshot of [...transaction.snapshots].reverse()) {
+      if (snapshot === ledger) continue;
       try {
-        if (isGlobalConfigurationSnapshot(snapshot.path)) {
-          const context = transactionLocks.get(transaction)?.context ?? options.runtimeLock;
-          if (!context) throw new Error('configuration rollback lost its runtime transaction context');
-          restoreGlobalConfiguration(snapshot.path, snapshot.existed && snapshot.backup_path !== null ? readFileSync(snapshot.backup_path) : null, context);
-          continue;
-        }
-        // A path under a regular file cannot exist, so an absent snapshot there is already restored.
-        if (!snapshot.existed && lstatSync(dirname(snapshot.path), { throwIfNoEntry: false })?.isFile()) continue;
-        if (snapshot.existed && snapshot.backup_path !== null && !lstatExists(snapshot.backup_path)) throw new Error(`its backup ${snapshot.backup_path} is missing, so the path stays as it is`);
-        rmSync(snapshot.path, { recursive: true, force: true });
-        if (snapshot.existed && snapshot.backup_path !== null) {
-          mkdirSync(dirname(snapshot.path), { recursive: true });
-          cpSync(snapshot.backup_path, snapshot.path, {
-            recursive: true,
-            force: false,
-            errorOnExist: true,
-            verbatimSymlinks: true,
-          });
-        }
+        restoreSnapshot(transaction, snapshot, options.runtimeLock);
       } catch (error) {
         failures.push(`${snapshot.path}: ${String((error as Error).message ?? error)}`);
       }
@@ -909,7 +830,7 @@ export function rollbackInstallHostTransaction(
       try { recordUnresolvedPiOwnership(unresolved.selection, unresolved.plugins, unresolved.sources, unresolved.env, basename(transaction.backup_root)); }
       catch (error) { failures.push(`Pi ownership could not be restored to the ledger; recovery transaction ${transaction.backup_root}: ${String((error as Error).message ?? error)}`); }
     }
-    if (failures.length === 0 && options.retainBackup !== true) {
+    if (failures.length === 0) {
       rmSync(transaction.backup_root, { recursive: true, force: true });
     }
     if (failures.length > 0) throw new Error(`install transaction compensation failed:\n${failures.join('\n')}`);
@@ -926,57 +847,21 @@ export function commitInstallHostTransaction(transaction: InstallHostTransaction
   transactionLocks.delete(transaction);
 }
 
-/**
- * Candidate-owned paths, with their existence before setup. The candidate has
- * no backups, and these paths do not need one for ownership capture.
- */
-export function piSkillRootSnapshots(env: NodeJS.ProcessEnv = process.env): HostSurfaceSnapshots {
-  const root = `${hostSkillRoot(env.HOME ?? homedir(), 'pi', env)}/`;
-  const archctx = join(env.BUN_INSTALL ?? join(env.HOME ?? homedir(), '.bun'), 'bin', 'archctx');
-  return {
-    snapshots: installProfileTransactionPaths(env)
-      .filter(path => path.startsWith(root) || path === archctx)
-      .map(path => ({ path, existed: existsSync(path) || lstatExists(path), backup_path: null })),
-  };
-}
-
-/**
- * The paths that a transaction wrote: each path absent before it with an
- * owner, and each existing path that already has a `created` record. `absent`
- * holds the paths that the snapshot found absent, for their baseline.
- */
-function transactionOwnedSurfaces(
-  transaction: HostSurfaceSnapshots,
-  prior: PathRecords,
-  env: NodeJS.ProcessEnv,
-): { readonly captures: readonly CapturedPath[]; readonly absent: ReadonlySet<string> } {
-  const herdr = herdrSkillPaths(env.HOME ?? homedir(), env);
-  const captures = transaction.snapshots.flatMap((snapshot) => {
-    // The marker proof alone records a Herdr directory, whatever an earlier record held.
-    if (herdr.includes(snapshot.path)) {
-      const owner = ownerForInstallPath(snapshot.path, env);
-      const surface = owner === null ? null : captureHerdrSkill(snapshot.path, owner);
-      return surface ? [surface] : [];
-    }
-    if (snapshot.existed) {
-      // A snapshot outside every install root, such as the install state, has no path record.
-      if (pathRecordHost(env, snapshot.path) === null) return [];
-      const previous = prior[pathRecordKey(env, snapshot.path)];
-      if (previous?.kind !== 'created' || !isSurfaceOwner(previous.owner)) return [];
-      const refreshed = captureOwnedPath(snapshot.path, previous.owner);
-      return refreshed ? [refreshed] : [];
-    }
-    const owner = ownerForInstallPath(snapshot.path, env);
-    if (owner === null) return [];
-    const surface = captureOwnedPath(snapshot.path, owner);
-    return surface ? [surface] : [];
-  });
-  return { captures, absent: new Set(transaction.snapshots.filter((snapshot) => !snapshot.existed).map((snapshot) => snapshot.path)) };
+/** Undo candidate host writes with the parent transaction's ledger snapshot. */
+export function rollbackRuntimeHostConfig(backupRoot: string, env: NodeJS.ProcessEnv): void {
+  const owner = readTransactionOwner(backupRoot);
+  if (owner === 'none' || owner === 'invalid') throw new Error('runtime transaction has no valid owner; run rh update');
+  const ledger = hostConfigPaths(env).ledger;
+  const index = owner.paths.indexOf(ledger);
+  if (index < 0) throw new Error('runtime transaction has no ledger snapshot; run rh update');
+  const backup = join(backupRoot, String(index));
+  const result = rollbackHostConfigTransaction(dirname(dirname(ledger)), lstatExists(backup) ? readFileSync(backup) : null, backupRoot);
+  if (result.unresolved.length) throw new Error('host configuration rollback unresolved: ' + result.unresolved.join(', ') + '; run rh update');
 }
 
 function removeOwnedSkillLockEntries(env: NodeJS.ProcessEnv, skillNames: ReadonlySet<string>): void {
   if (skillNames.size === 0) return;
-  const lockPath = providerSkillLock(env.HOME ?? homedir(), env).path;
+  const lockPath = providerSkillLock(requireHome(env), env).path;
   if (!existsSync(lockPath)) return;
   const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as { skills?: Record<string, unknown> };
   if (!parsed || typeof parsed !== 'object' || !parsed.skills || typeof parsed.skills !== 'object') {
@@ -1021,7 +906,7 @@ function removeRetiredOwnedSurfaces(
  * is never restored here, so only a whole-file revert gives a user's value back.
  */
 function removeArchitectureHostFragments(env: NodeJS.ProcessEnv): void {
-  const home = env.HOME ?? homedir();
+  const home = requireHome(env);
   const codexConfig = join(home, '.codex', 'config.toml');
   const files = [codexConfig, join(home, '.claude.json'), join(home, '.claude', 'settings.json')];
   // Of these files only config.toml goes through Bun's TOML parser.
@@ -1055,7 +940,7 @@ function validSurfaceShape(raw: Record<string, unknown>, env: NodeJS.ProcessEnv)
     raw.authority === 'repo-harness-install-transaction'
     && raw.removal === 'managed-surfaces-only'
     && typeof raw.path === 'string'
-    && (allowedPaths.has(raw.path) || isDiscoveredFacadePath(raw.path, env.HOME ?? homedir(), env))
+    && (allowedPaths.has(raw.path) || isDiscoveredFacadePath(raw.path, requireHome(env), env))
     && ['directory-copy', 'symlink', 'managed-file'].includes(String(raw.type))
     && (raw.content_hash === null || typeof raw.content_hash === 'string')
     && (raw.managed_marker === null || typeof raw.managed_marker === 'string')
@@ -1108,7 +993,7 @@ function canonicalEvidence(home: string, hosts: readonly SkillHost[], relativePa
 }
 
 function executableEvidence(name: string, env: NodeJS.ProcessEnv): string[] {
-  const home = env.HOME ?? homedir();
+  const home = requireHome(env);
   const bunRoot = env.BUN_INSTALL ?? join(home, '.bun');
   const candidates = [join(bunRoot, 'bin', name)];
   for (const directory of (env.PATH ?? '').split(delimiter).filter(Boolean)) candidates.push(join(directory, name));
@@ -1152,7 +1037,7 @@ function allOrNone(home: string, hosts: readonly SkillHost[], relativePaths: rea
 }
 
 function probeCore(env: NodeJS.ProcessEnv, catalog: SkillSurfaceCatalog, hosts: readonly SkillHost[]): OwnerProbe {
-  const home = env.HOME ?? homedir();
+  const home = requireHome(env);
   const adapters = ([
     { path: join(home, '.codex', 'hooks.json'), host: 'codex' },
     { path: join(home, '.claude', 'settings.json'), host: 'claude' },
@@ -1184,7 +1069,7 @@ function probePi(env: NodeJS.ProcessEnv): OwnerProbe {
 }
 
 function probeOwners(plugins: readonly PluginId[], env: NodeJS.ProcessEnv): Partial<Record<SurfaceOwner, OwnerProbe>> {
-  const home = env.HOME ?? homedir();
+  const home = requireHome(env);
   const catalog = loadSkillSurfaceCatalog();
   const hosts = selectedSkillHosts(plugins);
   const probes: Partial<Record<SurfaceOwner, OwnerProbe>> = { core: probeCore(env, catalog, hosts) };
@@ -1369,7 +1254,7 @@ export function planInstallSelection(
   return {
     hosts: INSTALL_HOSTS,
     pi_package: planPiPackage(packageRoot, resolved.run.includes('pi'), env),
-    skill_projections: expectedSkillProjections(loadSkillSurfaceCatalog(), packageRoot, env.HOME ?? env.USERPROFILE ?? homedir(), resolved.run, env),
+    skill_projections: expectedSkillProjections(loadSkillSurfaceCatalog(), packageRoot, requireHome(env), resolved.run, env),
     protocol: INSTALL_STATE_PROTOCOL,
     selection,
     requested_plugins: plugins,
@@ -1410,9 +1295,8 @@ export function applyInstallSelection(
   plugins: readonly PluginId[],
   env: NodeJS.ProcessEnv = process.env,
   now = new Date(),
-  transaction?: HostSurfaceSnapshots,
+  transaction?: Pick<InstallHostTransaction, 'backup_root'>,
   options: {
-    readonly agentFleetVerified?: boolean;
     readonly additionalPiPackages?: readonly string[];
     readonly kept?: readonly PluginId[];
   } = {},
@@ -1426,16 +1310,9 @@ export function applyInstallSelection(
   const additionalPi = options.additionalPiPackages ?? [];
   if (additionalPi.some(source => !validPiPackage(source, env, plugins))) throw new Error('invalid Pi package ownership');
   const plan = planInstallSelection(selection, { run: ran, record: plugins }, current, env);
+  if (transaction) recordStagedExternalSkillWrites(transaction.backup_root, env);
   const { records: prior, outside, unsupported } = readPathRecordSet(env);
-  const discovered = discoverManagedSurfaces(ran, env);
   const records = carriedRecords(prior, kept);
-  const transactionOwned = transaction ? transactionOwnedSurfaces(transaction, prior, env) : { captures: [], absent: new Set<string>() };
-  const fleetOwned = options.agentFleetVerified === true ? verifiedAgentFleetSurfaces(env, prior) : [];
-  // Current verified link projections own their classification. Historical
-  // records must not restore a retired owner.
-  for (const surface of [...discovered, ...transactionOwned.captures, ...fleetOwned, ...discovered.filter(surface => surface.committed.type === 'symlink')]) {
-    recordCapture(env, records, surface, prior, transactionOwned.absent);
-  }
   const committed = selectionRecords(records, plugins);
   const piPackages = [...new Set([...(current?.pi_packages ?? []), ...additionalPi])].filter(source => validPiPackage(source, env, plugins));
   const recordedVersions = versions(plugins);
@@ -1471,15 +1348,14 @@ export function applyInstallSelection(
 
 export function rollbackInstallSelection(
   env: NodeJS.ProcessEnv = process.env,
-  transaction?: InstallHostTransaction,
+  transaction?: Pick<InstallHostTransaction, 'backup_root'>,
 ): InstallState {
   const current = readInstallState(env);
   if (!current?.previous) throw new Error('no previous install transaction to roll back');
   const plugins = enabledPlugins(current.previous);
+  if (transaction) recordStagedExternalSkillWrites(transaction.backup_root, env);
   const prior = readPathRecords(env);
   const records = carriedRecords(prior);
-  const transactionOwned = transaction ? transactionOwnedSurfaces(transaction, prior, env) : { captures: [], absent: new Set<string>() };
-  for (const surface of [...discoverManagedSurfaces(plugins, env), ...transactionOwned.captures]) recordCapture(env, records, surface, prior, transactionOwned.absent);
   const committed = selectionRecords(records, plugins);
   const restored: InstallState = {
     ...current.previous,

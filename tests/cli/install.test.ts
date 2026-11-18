@@ -8,6 +8,7 @@ import { CLAUDE_STATUS_LINE_PIPE, claudeTarget } from '../../src/cli/installer/t
 import type { Location } from '../../src/cli/installer/types';
 import { requestUserInputFragment } from '../../src/cli/installer/targets/codex';
 import { openHostConfigGate } from '../../src/effects/host-config/gate';
+import { hostConfigPaths } from '../../src/effects/host-config/store';
 import { isRepoHarnessManagedHookCommand } from '../../src/core/adoption/managed-hook-config';
 import { buildManagedHooks, compareManagedHookProjection } from '../../src/cli/installer/managed-entries';
 
@@ -219,13 +220,18 @@ describe('install command (Phase 1B)', () => {
       const roots = ['.codex', '.claude'].map((host) => path.join(home, host, 'skills'));
       for (const root of roots) {
         fs.mkdirSync(root, { recursive: true });
-        fs.symlinkSync(ownedTarget, path.join(root, 'repo-harness-plan.bak'));
         fs.symlinkSync(foreignTarget, path.join(root, 'think'));
       }
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
+      delete env.CODEX_SKILLS_ROOT; delete env.CLAUDE_SKILLS_ROOT;
+      openHostConfigGate({ env }).writePaths(roots.map(root => ({ path: path.join(root, 'repo-harness-plan.bak'), owner: 'core', entry: { type: 'symlink', target: ownedTarget } })));
+      const harness = path.join(home, '.repo-harness');
+      const entriesBefore = fs.readdirSync(harness, { recursive: true }).map(String).sort();
+      const ledgerBefore = fs.readFileSync(hostConfigPaths(env).ledger);
       for (const json of [false, true]) {
         const result = spawnSync(process.execPath, [CLI, 'install', '--dry-run', ...(json ? ['--json'] : [])], {
           cwd: ROOT, encoding: 'utf-8',
-          env: { ...process.env, HOME: home, CODEX_SKILLS_ROOT: '', CLAUDE_SKILLS_ROOT: '' },
+          env,
         });
         expect(result.status, result.stderr).toBe(0);
         for (const root of roots) {
@@ -239,7 +245,8 @@ describe('install command (Phase 1B)', () => {
           expect(fs.readlinkSync(link)).toBe(ownedTarget);
           expect(fs.readlinkSync(path.join(root, 'think'))).toBe(foreignTarget);
         }
-        expect(fs.existsSync(path.join(home, '.repo-harness'))).toBe(false);
+        expect(fs.readdirSync(harness, { recursive: true }).map(String).sort()).toEqual(entriesBefore);
+        expect(fs.readFileSync(hostConfigPaths(env).ledger)).toEqual(ledgerBefore);
         expect(fs.readdirSync(path.join(home, '.codex'))).toEqual(['skills']);
         expect(fs.readdirSync(path.join(home, '.claude'))).toEqual(['skills']);
       }

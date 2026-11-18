@@ -1,11 +1,11 @@
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
+import { requireHome } from '../repo-harness-home';
 import { join } from 'node:path';
 import { sha256Prefixed } from '../../core/evidence/sha256';
 import type { PathRecord, PathRecordHost } from '../../core/host-config/types';
 import { ownedSkillIsIntact } from './herdr-skill-marker';
-import { hostSkillRoot, stagedSkillRoot } from '../host-skill-roots';
-import { hashManagedTree } from '../managed-tree';
+import { hostSkillRoot, stagedSkillRoot, syncSkillRoots } from '../host-skill-roots';
+import { hashManagedTree, OWNER_MARKER } from '../managed-tree';
 import { isPathInside } from '../path-containment';
 import { hostConfigPaths, hostPathKey, readLedger, resolveHostPath, writeLedger } from './store';
 
@@ -55,9 +55,9 @@ export function partitionPathRecords(env: NodeJS.ProcessEnv, all: PathRecords): 
   const outside: string[] = [];
   const unsupported: string[] = [];
   for (const [key, record] of Object.entries(all)) {
-    const root = resolveHostPath(paths, hostRoot(env, record.host));
-    const inside = (key !== root && isPathInside(root, key))
-      || (record.host === 'claude' && key === hostPathKey(paths, join(env.HOME ?? homedir(), '.claude.json')));
+    const roots = hostRoots(env, record.host).map(root => resolveHostPath(paths, root));
+    const inside = roots.some(root => key !== root && isPathInside(root, key))
+      || (record.host === 'claude' && key === hostPathKey(paths, join(requireHome(env), '.claude.json')));
     if (!inside) outside.push(key);
     else if (!supported(key, record)) unsupported.push(key);
     else records[key] = record;
@@ -84,20 +84,21 @@ export function pathRecordKey(env: NodeJS.ProcessEnv, path: string): string {
  * Null for a path outside every install root.
  */
 export function pathRecordHost(env: NodeJS.ProcessEnv, path: string): PathRecordHost | null {
-  if (path === join(env.HOME ?? homedir(), '.claude.json')) return 'claude';
-  return HOST_ORDER.find((host) => { const root = hostRoot(env, host); return path !== root && isPathInside(root, path); }) ?? null;
+  if (path === join(requireHome(env), '.claude.json')) return 'claude';
+  return HOST_ORDER.find(host => hostRoots(env, host).some(root => path !== root && isPathInside(root, path))) ?? null;
 }
 
 /** The hosts in the order that `pathRecordHost` tries their roots. */
 const HOST_ORDER: readonly PathRecordHost[] = ['pi', 'claude', 'codex', 'staged', 'bin'];
 
 /** The install root of a host, before links are followed. */
-function hostRoot(env: NodeJS.ProcessEnv, host: PathRecordHost): string {
-  const home = env.HOME ?? homedir();
-  if (host === 'pi') return hostSkillRoot(home, 'pi', env);
-  if (host === 'staged') return join(stagedSkillRoot(home), '..');
-  if (host === 'bin') return env.BUN_INSTALL ?? join(home, '.bun');
-  return join(home, `.${host}`);
+function hostRoots(env: NodeJS.ProcessEnv, host: PathRecordHost): readonly string[] {
+  const home = requireHome(env);
+  if (host === 'pi') return [hostSkillRoot(home, 'pi', env)];
+  if (host === 'staged') return [join(stagedSkillRoot(home), '..')];
+  if (host === 'bin') return [env.BUN_INSTALL ?? join(home, '.bun')];
+  const sync = syncSkillRoots(env, home, ['pi'])[host];
+  return [...new Set([join(home, '.' + host), ...(sync ? [sync] : [])])];
 }
 
 export function ownedPath(env: NodeJS.ProcessEnv, path: string, records: PathRecords = readPathRecords(env)): PathRecord | null {
@@ -109,6 +110,21 @@ export function createdPaths(env: NodeJS.ProcessEnv): readonly { readonly path: 
   return Object.entries(readPathRecords(env)).filter(([, record]) => record.kind === 'created').map(([path, record]) => ({ path, type: record.committed.type }));
 }
 
+/** Empty directories and special entries have no entry in the recorded tree hash. */
+function treeEntriesAreCovered(path: string): boolean {
+  let covered = false;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (entry.name === OWNER_MARKER) {
+      if (!entry.isFile()) return false;
+    } else if (entry.isDirectory()) {
+      if (!treeEntriesAreCovered(join(path, entry.name))) return false;
+      covered = true;
+    } else if (entry.isFile() || entry.isSymbolicLink()) covered = true;
+    else return false;
+  }
+  return covered;
+}
+
 /** The entry at the key still is what rh recorded: a removal acts only then. */
 export function pathRecordIsCurrent(key: string, record: PathRecord): boolean {
   const stat = lstatSync(key, { throwIfNoEntry: false });
@@ -118,6 +134,7 @@ export function pathRecordIsCurrent(key: string, record: PathRecord): boolean {
     if (committed.type === 'symlink') return stat.isSymbolicLink() && readlinkSync(key) === committed.target;
     if (committed.type === 'file') return stat.isFile() && sha256Prefixed(readFileSync(key)) === committed.sha256;
     if (!stat.isDirectory()) return false;
+    if (!treeEntriesAreCovered(key)) return false;
     return 'proof' in committed ? ownedSkillIsIntact(key) : hashManagedTree(key) === committed.sha256;
   } catch {
     return false;

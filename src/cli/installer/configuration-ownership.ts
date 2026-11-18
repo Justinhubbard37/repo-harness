@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { retryWindowsSharingRace } from '../../effects/atomic-append';
-import { homedir } from 'os';
+import { requireHome } from '../../effects/repo-harness-home';
 import { dirname, join, relative, resolve, sep } from 'path';
 import { randomUUID } from 'crypto';
 
@@ -14,7 +14,7 @@ export interface ConfigurationReceipt {
  * The scope root owns the configuration files and their receipt: the account
  * home for host installs, or one repository root for project setup.
  */
-export const hostConfigurationRoot = (env: NodeJS.ProcessEnv = process.env): string => env.HOME ?? homedir();
+export const hostConfigurationRoot = (env: NodeJS.ProcessEnv = process.env): string => requireHome(env);
 
 export const configurationReceiptPath = (root: string): string =>
   join(root, '.repo-harness', 'configuration-restore.json');

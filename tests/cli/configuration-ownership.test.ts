@@ -6,7 +6,7 @@ import { configurationReceiptPath } from '../../src/cli/installer/configuration-
 import { migrateCodexConfigRecords, planCodexConfigMigration } from '../../src/cli/installer/codex-config-migration';
 import { migrateJsonConfigRecords, planJsonConfigMigration } from '../../src/cli/installer/json-config-migration';
 import { buildManagedHooks, canonicalManagedHookProjection, managedStatusLine } from '../../src/cli/installer/managed-entries';
-import { beginInstallHostTransaction, installProfileHostMutationPaths, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
+import { beginInstallHostTransaction, installProfileTransactionPaths, rollbackInstallHostTransaction, versions } from '../../src/cli/installer/install-profile';
 import { installProfileStatePath } from '../../src/cli/installer/install-state';
 import { MANAGED_TAG } from '../../src/core/adoption/managed-hook-config';
 import { sha256Prefixed } from '../../src/core/evidence/sha256';
@@ -189,7 +189,7 @@ test('a failed install undoes its gate writes through linked host files outside 
     const before = [readFileSync(rootTarget, 'utf8'), readFileSync(settingsTarget, 'utf8')];
     const gate = openHostConfigGate({ env });
     const hooks = join(home, '.codex/hooks.json');
-    const transaction = beginInstallHostTransaction(installProfileHostMutationPaths(env), env);
+    const transaction = beginInstallHostTransaction(installProfileTransactionPaths(env), env);
     gate.apply([{ path: join(home, '.claude.json'), backup: 'overrides-only', fragments: [{ owner: 'architecture', selector: 'mcpServers.codegraph', kind: 'add', strategy: jsonFragment, value: { command: 'codegraph' } }] }]);
     gate.apply([{ path: settings, fragments: [{ owner: 'core', selector: 'statusLine', kind: 'refresh', strategy: jsonFragment, value: { type: 'command', command: 'refreshed' } }] }]);
     gate.apply([{ path: hooks, fragments: [{ owner: 'core', selector: 'hooks.Stop[default]', kind: 'add', strategy: jsonFragment, value: buildManagedHooks('codex', env).Stop![0] }] }]);

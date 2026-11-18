@@ -1,6 +1,6 @@
 import { sha256Prefixed } from '../../core/evidence/sha256';
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { requireHome } from '../repo-harness-home';
 import { dirname, isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { retryWindowsSharingRace, syncDirectoryDurably } from '../atomic-append';
@@ -16,7 +16,7 @@ export class GlobalConfigurationError extends Error {
 }
 
 export function globalConfigurationPath(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.HOME ?? process.env.HOME ?? homedir();
+  const home = requireHome(env);
   if (!isAbsolute(home)) throw new Error('global configuration requires an absolute HOME');
   return join(home, '.repo-harness', 'config.json');
 }
@@ -66,7 +66,7 @@ function replaceGlobalConfiguration(path: string, bytes: Buffer | null, assertOw
 /** Restore the exact installer preimage while its original transaction is still held. */
 export function restoreGlobalConfiguration(path: string, bytes: Buffer | null, runtimeLock: RuntimeTransactionContext): void {
   if (path !== join(dirname(dirname(path)), '.repo-harness', 'config.json')) throw new Error('invalid configuration snapshot path');
-  const scope = process.platform === 'win32' ? globalRuntimeScope() : { kind: 'global' as const, root: dirname(dirname(path)) };
+  const scope = globalRuntimeScope({ HOME: dirname(dirname(path)) });
   assertRuntimeTransactionContext(runtimeLock, scope);
   if (bytes !== null) {
     const value: unknown = JSON.parse(bytes.toString('utf8'));
@@ -91,8 +91,7 @@ export function mutateGlobalConfiguration<T>(
   const scope = globalRuntimeScope(env);
   try {
     return withRuntimeTransactionContext(scope, options.runtimeLock, (context) => {
-      // Windows maps each explicit target HOME to the same account lock. The target stays at the supplied HOME.
-      if (process.platform !== 'win32') assertRuntimeTransactionContext(context, { kind: 'global', root: dirname(dirname(globalConfigurationPath(env))) });
+      assertRuntimeTransactionContext(context, scope);
       const path = globalConfigurationPath(env);
       assertWritableConfiguration(path);
       let document: ReturnType<typeof readGlobalConfiguration>;
