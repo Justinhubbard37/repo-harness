@@ -47,7 +47,7 @@ source:
     - id: entrypoint.global-runtime-reconciliation.update
       path: src/cli/commands/global-runtime.ts
       symbols:
-        - name: runGlobalRuntimeSetup
+        - name: runGlobalRuntimeSetupInTransaction
           sinks:
             - id: sink.global-runtime-reconciliation.readback
               path: src/cli/commands/global-runtime.ts

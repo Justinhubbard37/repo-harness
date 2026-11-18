@@ -42,7 +42,7 @@ outcomes:
         label: Configure the global architecture projection through the setup port when the architecture plugin is selected
         evidence:
           entrypointId: entrypoint.global-runtime-reconciliation.update
-          sourceSymbol: runGlobalRuntimeSetup
+          sourceSymbol: runGlobalRuntimeSetupInTransaction
           sinkId: sink.global-runtime-reconciliation.architecture-configuration
       - id: install-adapters
         from: reconciler
@@ -58,7 +58,7 @@ outcomes:
         label: "Check and register the installed candidate's Pi package when the host selection enables it"
         evidence:
           entrypointId: entrypoint.global-runtime-reconciliation.update
-          sourceSymbol: runGlobalRuntimeSetup
+          sourceSymbol: runGlobalRuntimeSetupInTransaction
           sinkId: sink.global-runtime-reconciliation.pi-package
     terminal:
       participant: reconciler
