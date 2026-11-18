@@ -318,7 +318,7 @@ export function mergeManagedBlock(current: string, renderedBlock: string, source
     const before = scanLegacySpan(beforeLines);
     const after = scanLegacySpan(afterLines);
     const merged = `${keptText(beforeLines, before, 0, beforeLines.length)}${block.trimEnd()}${
-      keptText(afterLines, after, 0, afterLines.length).replace(/^(\r?\n)?/, eol)}`;
+      keptText(afterLines, after, 0, afterLines.length)}`;
     return {
       content: merged,
       status: 'written',

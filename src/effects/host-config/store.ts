@@ -215,7 +215,8 @@ function validCreated(selector: string, created: unknown): boolean {
 function validFragment(value: unknown): boolean {
   return isObject(value) && isText(value.file) && isText(value.owner) && isText(value.selector)
     && ['add', 'refresh', 'override'].includes(value.kind as string) && isText(value.inserted) && validCreated(value.selector, value.created)
-    && (value.preimage === undefined || isText(value.preimage));
+    && (value.preimage === undefined || isText(value.preimage))
+    && (value.separator === undefined || value.separator === '\n' || value.separator === '\r\n');
 }
 
 export function readLedger(paths: HostConfigPaths): HostConfigLedger {

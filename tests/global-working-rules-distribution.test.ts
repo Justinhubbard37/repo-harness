@@ -170,6 +170,15 @@ describe("global working rules distribution", () => {
     expect(codex).toContain("Generality: These are general working rules.");
   });
 
+  test("refreshes the block without changing the user suffix or the final newline state", () => {
+    const block = zhBlock().trimEnd();
+    const refreshed = block.replace("- Use Chinese to report to user.", "- Updated reporting rule.");
+    const suffix = "\n\r\nuser notes";
+    const current = block.replaceAll("\n", "\r\n") + suffix;
+    expect(mergeManagedBlock(current, refreshed, ROOT, block.replaceAll("\n", "\r\n")).content)
+      .toBe(refreshed.replaceAll("\n", "\r\n") + suffix);
+  });
+
   test("blocks the merge when repo-harness markers are unbalanced", () => {
     const duplicated = [
       "<!-- BEGIN: repo-harness global-working-rules -->",

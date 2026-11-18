@@ -296,6 +296,9 @@ test('rules blocks revert to the original bytes, keep a later user line and an e
  const install=()=>expect(applyGlobalContextRefresh(preflightGlobalContextRefresh(root,home,['codex','claude'],'en'),home).status).toBe('ok');
  put(home,'.claude/CLAUDE.md','claude notes');put(home,'.codex/AGENTS.md','codex notes\n');
  install();expect(readFileSync(claude,'utf8')).toBe(`claude notes\n\n${RULES_BLOCK}`);
+ const refresh=preflightGlobalContextRefresh(root,home,['claude','codex'],undefined);
+ expect(refresh.files.map(({state,outcome})=>[state,outcome])).toEqual([['managed-current','unchanged'],['managed-current','unchanged']]);
+ expect(applyGlobalContextRefresh(refresh,home).status).toBe('ok');
  expect(runUserUninstall({target:'both',env}).status).toBe('complete');
  expect([readFileSync(claude,'utf8'),readFileSync(codex,'utf8')]).toEqual(['claude notes','codex notes\n']);
  expect(existsSync(join(home,'.repo-harness/global-context-backups'))).toBe(false);
@@ -307,6 +310,24 @@ test('rules blocks revert to the original bytes, keep a later user line and an e
  expect(readFileSync(codex,'utf8').split(RULES_BLOCK)).toHaveLength(2);
  expect(runUserUninstall({target:'both',env}).status).toBe('complete');
  expect(readFileSync(codex,'utf8')).toBe('codex notes\nlater\n');expect(lstatSync(claude).isSymbolicLink()).toBe(true);
+}));
+test('uninstall retires a deleted rules file record without restoring the file',()=>fixture((home,env)=>{
+ const path=join(home,'.claude/CLAUDE.md');
+ put(home,'.claude/CLAUDE.md','user notes');
+ const plan=preflightGlobalContextRefresh(join(import.meta.dir,'../..'),home,['claude'],'en');
+ expect(applyGlobalContextRefresh(plan,home).status).toBe('ok');
+ const before=ledger(home);
+ rmSync(path);
+ const dryRun=runUserUninstall({target:'claude',env,dryRun:true});
+ expect(dryRun.exitCode).toBe(0);
+ expect(dryRun.lines).toContain(`[note] ${path}: file already absent`);
+ expect(ledger(home)).toEqual(before);
+ const result=runUserUninstall({target:'claude',env});
+ expect(result.exitCode).toBe(0);
+ expect(result.items).toEqual(dryRun.items);
+ expect(existsSync(path)).toBe(false);
+ const {files,fragments}=ledger(home);
+ expect({files,fragments}).toEqual({files:{},fragments:[]});
 }));
 test.each([
  ['.claude/CLAUDE.md',`user-before\n${RULES_BLOCK.replace('## Reporting','- My own rule.\n\n## Reporting')}\n`,'managed rules block'],

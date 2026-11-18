@@ -93,6 +93,7 @@ const REVERT_ITEMS: Readonly<Record<Exclude<HostConfigRevertEntry['action'], 're
   removed: { action: 'remove', reason: 'host-config ledger: rh created this file' },
   restored: { action: 'restore', reason: 'host-config ledger: the file before rh' },
   text_removed: { action: 'restore', reason: 'host-config ledger: rh text removed' },
+  already_absent: { action: 'note', reason: 'file already absent' },
   kept_edited: { action: 'unresolved', reason: 'changed since rh wrote it; preserved' },
 };
 

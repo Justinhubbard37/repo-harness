@@ -112,10 +112,11 @@ export interface HostConfigRevertEntry {
   readonly path: string;
   /**
    * `released`: the file already equals its backup (rh's fragments were its
-   * text), so only the records go. `kept_edited`: the file is not as rh recorded it, so the file
-   * and its record stay.
+   * text), so only the records go. `already_absent`: the file is missing, so
+   * only its records go. `kept_edited`: the file and its records stay because
+   * the file is not as rh recorded it.
    */
-  readonly action: 'removed' | 'restored' | 'text_removed' | 'released' | 'kept_edited';
+  readonly action: 'removed' | 'restored' | 'text_removed' | 'released' | 'already_absent' | 'kept_edited';
   /** The selectors of the fragments that stay in a kept file. */
   readonly kept?: readonly string[];
 }
@@ -662,8 +663,11 @@ export interface FileRevertPlan {
  */
 export function planFileRevert(input: FileRevertInput): FileRevertPlan {
   const { path, kind, own, all, filtered } = input;
+  if (!filtered && !input.existed) {
+    return { entry: { path, action: 'already_absent' }, write: null, record: 'drop', removed: all };
+  }
   if (!filtered && !input.externalChange && input.committed && (kind === 'created' || input.hasBackup)) {
-    if (kind === 'created') return { entry: { path, action: 'removed' }, write: input.existed ? { kind: 'remove' } : null, record: 'drop', removed: all };
+    if (kind === 'created') return { entry: { path, action: 'removed' }, write: { kind: 'remove' }, record: 'drop', removed: all };
     const backup = input.backup();
     if (input.bytes !== null && backup.equals(input.bytes)) return { entry: { path, action: 'released' }, write: null, record: 'drop', removed: all };
     return { entry: { path, action: 'text_removed' }, write: { kind: 'replace', content: backup }, record: 'drop', removed: all };

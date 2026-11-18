@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { FragmentEdit, HostConfigStrategy, HostPath } from '../../src/core/host-config/types';
 import { openHostConfigGate, rollbackHostConfigTransaction, type HostConfigFileChange } from '../../src/effects/host-config/gate';
 import type { PathEntry } from '../../src/effects/host-config/whole-path';
-import { hostConfigPaths, migrateLedgerSchema, replaceTarget } from '../../src/effects/host-config/store';
+import { hostConfigPaths, migrateLedgerSchema, parseLedger, replaceTarget } from '../../src/effects/host-config/store';
 import { jsonFragment } from '../../src/core/host-config/json-fragment';
 
 /** A `key=value` line format: the selector is the key. */
@@ -70,6 +70,16 @@ test('an install-owned whole path refuses every gate operation and stays in the 
   const moved = readFileSync(join(f.root, 'ledger.json'));
   migrateLedgerSchema(hostConfigPaths({ HOME: f.home }));
   expect(readFileSync(join(f.root, 'ledger.json'))).toEqual(moved);
+});
+
+test.each([undefined, '\n', '\r\n', '\r', '\n\n', 'user text', null])('ledger checks fragment separator %p', (separator) => {
+  const f = fixture();
+  f.gate().apply([f.change(f.a, 'on')]);
+  const ledger = f.ledger();
+  ledger.fragments[0].separator = separator;
+  const parse = () => parseLedger(Buffer.from(JSON.stringify(ledger)), 'fixture');
+  if (separator === undefined || separator === '\n' || separator === '\r\n') expect(parse().fragments[0]?.separator).toBe(separator);
+  else expect(parse).toThrow('the ledger has an invalid shape');
 });
 
 function fixture() {
