@@ -13,3 +13,4 @@ responsibilities:
 source:
   include:
     - src/effects/fleet/provider-feedback.ts
+    - src/effects/fleet/provider-feedback-github.ts
