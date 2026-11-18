@@ -9,8 +9,8 @@ import { writeShellExecutableFixture } from "../helpers/repo-fixture";
 const ROOT = join(import.meta.dir, "..", "..");
 const SCRIPT = join(ROOT, "scripts/ensure-codegraph.sh");
 
-function writeExecutable(filePath: string, content: string) {
-  writeShellExecutableFixture(filePath, content);
+function writeExecutable(temporaryRoot: string, filePath: string, content: string) {
+  writeShellExecutableFixture(temporaryRoot, filePath, content);
 }
 
 function setupFakeEnvironment(prefix: string) {
@@ -20,7 +20,7 @@ function setupFakeEnvironment(prefix: string) {
   mkdirSync(home, { recursive: true });
   mkdirSync(fakeBin, { recursive: true });
   recordPluginSelection({ HOME: home });
-  writeExecutable(
+  writeExecutable(root,
     join(fakeBin, "timeout"),
     [
       "#!/bin/bash",
@@ -35,7 +35,7 @@ function setupFakeEnvironment(prefix: string) {
 }
 
 function writeFakeCodeGraph(fakeBin: string, logFile: string) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "codegraph"),
     [
       "#!/bin/bash",
@@ -53,7 +53,7 @@ function writeFakeCodeGraph(fakeBin: string, logFile: string) {
 }
 
 function writeFakeBunx(fakeBin: string) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "bunx"),
     [
       "#!/bin/bash",

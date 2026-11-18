@@ -1,8 +1,8 @@
 import { afterAll, expect } from "bun:test";
 import { spawnSync } from "child_process";
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, linkSync, writeFileSync } from "fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, linkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 
 const homes = new Map<string, string>();
 function fixtureHome(cwd: string): string {
@@ -180,14 +180,16 @@ afterAll(() => {
  * interpreting a private body avoids paying that cost for every generated stub.
  * These fixtures use /bin/sh or /bin/bash and do not inspect their script path.
  */
-export function writeShellExecutableFixture(filePath: string, content: string): void {
+export function writeShellExecutableFixture(temporaryRoot: string, filePath: string, content: string): void {
+  bunStubPath(temporaryRoot, filePath);
+  const bodyPath = bunStubPath(temporaryRoot, `${filePath}.fixture-body`);
   const shebang = content.split("\n", 1)[0];
   if (shebang !== "#!/bin/sh" && shebang !== "#!/bin/bash") {
     throw new Error(`unsupported shell fixture interpreter: ${shebang}`);
   }
   if (!shellFixtureRoot) {
     const root = tmpWorkspace("shell-fixture-launcher");
-    const launcher = join(root, "launcher");
+    const launcher = bunStubPath(root, join(root, "launcher"));
     writeFileSync(launcher, [
       "#!/bin/sh",
       'if [ "${1:-}" = "__fixture-ready" ]; then exit 0; fi',
@@ -207,7 +209,7 @@ export function writeShellExecutableFixture(filePath: string, content: string): 
     }
     shellFixtureRoot = root;
   }
-  writeFileSync(`${filePath}.fixture-body`, content, { mode: 0o600 });
+  writeFileSync(bodyPath, content, { mode: 0o600 });
   rmSync(filePath, { force: true });
   // A hard link retains the command path even when a runtime canonicalizes it.
   linkSync(join(shellFixtureRoot, "launcher"), filePath);
@@ -215,11 +217,30 @@ export function writeShellExecutableFixture(filePath: string, content: string): 
 
 export { fixtureReviewResult, recordFixtureAcceptance } from './acceptance-fixture';
 
+/** Refuse bun fixture writes outside this fixture's root, including symlink escapes. */
+export function bunStubPath(temporaryRoot: string, path: string): string {
+  const root = realpathSync(temporaryRoot);
+  const target = resolve(path);
+  const inside = (base: string, candidate: string): boolean => {
+    const suffix = relative(base, candidate);
+    return suffix !== '' && suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
+  };
+  let ancestor = dirname(target);
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
+  const canonicalPath = resolve(realpathSync(ancestor), relative(ancestor, target));
+  const canonicalTarget = lstatSync(target, { throwIfNoEntry: false }) ? realpathSync(target) : canonicalPath;
+  if (!inside(root, canonicalPath) || !inside(root, canonicalTarget)) {
+    throw new Error(`Bun stub must stay under its test temporary root: ${path}`);
+  }
+  return path;
+}
+
 /**
  * Write `<path>` as a wrapper that execs the running Bun. A symlink to
  * `process.execPath` would let a later write to `<path>` replace the real binary.
  */
-export function writeBunWrapper(path: string): void {
+export function writeBunWrapper(temporaryRoot: string, path: string): void {
+  bunStubPath(temporaryRoot, path);
   writeFileSync(path, `#!/bin/sh\nexec '${process.execPath.replace(/'/g, `'\\''`)}' "$@"\n`);
   chmodSync(path, 0o755);
 }

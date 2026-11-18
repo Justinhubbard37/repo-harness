@@ -5,6 +5,8 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  lstatSync,
+  unlinkSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -72,7 +74,7 @@ test("strict readiness rejects a missing required Herdr skill", () => {
     expect(JSON.parse(unreadable.stdout).tools.herdr_skill.status).toBe("invalid");
 
     // The expected text comes only from the hc manual; classic skill output gives no expected text.
-    writeExecutable(join(envRoot.fakeBin, "hc"), `#!/bin/sh\nif [ "$1" = --skill ]; then printf '%s\\n' '---' 'name: herdr' '---' 'Check HERDR_ENV before control.'; else printf 'hc ${HC_MIN_VERSION}\\n'; fi\n`);
+    writeExecutable(envRoot.root, join(envRoot.fakeBin, "hc"), `#!/bin/sh\nif [ "$1" = --skill ]; then printf '%s\\n' '---' 'name: herdr' '---' 'Check HERDR_ENV before control.'; else printf 'hc ${HC_MIN_VERSION}\\n'; fi\n`);
     const classic = spawnSync("bash", [SCRIPT, "--json", "--strict-readiness", "--host", "codex"], {
       cwd: ROOT, encoding: "utf8", env: { ...process.env, HOME: envRoot.home, PATH: envRoot.fakeBin },
     });
@@ -127,8 +129,8 @@ function writeUserManagedRecords(home: string, files: Array<{ path: string; sha2
   }])));
 }
 
-function writeExecutable(filePath: string, content: string) {
-  writeShellExecutableFixture(filePath, content);
+function writeExecutable(temporaryRoot: string, filePath: string, content: string) {
+  writeShellExecutableFixture(temporaryRoot, filePath, content);
 }
 
 function writeOfficialCodexPluginFixture(pluginRoot: string) {
@@ -165,14 +167,14 @@ function setupFakeEnvironment(prefix: string, plugins: readonly PluginId[] | nul
     if (actual) symlinkSync(actual, join(fakeBin, utility));
   }
   // A fake hc first on PATH keeps the developer's herdr-core out of the report.
-  writeExecutable(join(fakeBin, "hc"), `#!/bin/sh\nif [ "${'${1:-}'}" = --skill ]; then printf '%s' '${HERDR_SKILL.replaceAll("'", "'\\''")}'; else printf 'hc ${HC_MIN_VERSION}\\n'; fi\n`);
+  writeExecutable(root, join(fakeBin, "hc"), `#!/bin/sh\nif [ "${'${1:-}'}" = --skill ]; then printf '%s' '${HERDR_SKILL.replaceAll("'", "'\\''")}'; else printf 'hc ${HC_MIN_VERSION}\\n'; fi\n`);
   for (const host of [".claude", ".codex"]) {
     const skillDir = join(home, host, "skills", "herdr");
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, "SKILL.md"), renderHerdrSkill(HERDR_SKILL));
   }
   writeOfficialCodexPluginFixture(join(home, ".claude/plugins/cache/openai-codex/codex/1.0.6"));
-  writeExecutable(
+  writeExecutable(root,
     join(fakeBin, "timeout"),
     [
       "#!/bin/bash",
@@ -183,7 +185,7 @@ function setupFakeEnvironment(prefix: string, plugins: readonly PluginId[] | nul
       "",
     ].join("\n")
   );
-  writeExecutable(
+  writeExecutable(root,
     join(fakeBin, "claude"),
     [
       "#!/bin/bash",
@@ -275,7 +277,7 @@ function writeFakeSkillsCli(fakeBin: string, logFile?: string) {
     .map((skill) => ({ name: skill, agents: ["Claude Code", "Codex"] }))
     .map((item) => JSON.stringify(item))
     .join(",");
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "skills"),
     [
       "#!/bin/bash",
@@ -299,7 +301,7 @@ function writeFakeSkillsCli(fakeBin: string, logFile?: string) {
 // enforced. Pair it with writeCappedFakeTimeout so the run is bounded in
 // test time instead of the full production budget.
 function writeHangingFakeSkillsCli(fakeBin: string) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "skills"),
     // `exec` matters: without it the killed wrapper leaves an orphaned `sleep`
     // holding the inherited stdout pipe, and spawnSync waits for EOF anyway.
@@ -312,7 +314,7 @@ function writeHangingFakeSkillsCli(fakeBin: string) {
 // binary, so the timed-out mapping is exercised without waiting out the real
 // 45s budget.
 function writeCappedFakeTimeout(fakeBin: string, capSeconds = 2) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "timeout"),
     [
       "#!/bin/bash",
@@ -345,7 +347,7 @@ function writeFakeCodeGraph(
         ? ["echo 'CodeGraph Status'", "echo 'Pending Changes:'", "echo 'Run \"codegraph sync\" to update the index'"]
         : ["echo 'CodeGraph Status'", "echo '⚠ Not initialized'", "echo 'Run \"codegraph init\" to initialize'"];
 
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "codegraph"),
     [
       "#!/bin/bash",
@@ -368,7 +370,7 @@ function writeFakeCodeGraph(
 }
 
 function writeFakeNpm(fakeBin: string, version: string, logFile?: string) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "npm"),
     [
       "#!/bin/bash",
@@ -388,7 +390,7 @@ function writeFakeNpm(fakeBin: string, version: string, logFile?: string) {
 // this helper: without it the run reaches the real network for upstream Waza
 // sources, which makes the test slow and non-deterministic.
 function writeFakeCurl(fakeBin: string, version: string, logFile?: string) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "curl"),
     [
       "#!/bin/bash",
@@ -792,7 +794,8 @@ describe("check-agent-tooling", () => {
       symlinkClaudeWazaToAgents(envRoot.home);
       writeWazaLock(envRoot.home);
 
-      writeExecutable(
+      if (lstatSync(join(envRoot.fakeBin, 'git')).isSymbolicLink()) unlinkSync(join(envRoot.fakeBin, 'git'));
+      writeExecutable(envRoot.root,
         join(envRoot.fakeBin, "git"),
         [
           "#!/bin/bash",
@@ -1032,7 +1035,7 @@ describe("check-agent-tooling", () => {
       );
       writeFakeSkillsCli(envRoot.fakeBin);
       writeFakeCodeGraph(bundleBin, { version: "1.0.1" });
-      writeExecutable(join(shimBin, "codegraph"), "#!/bin/bash\necho 'bad shim used' >&2\nexit 99\n");
+      writeExecutable(envRoot.root, join(shimBin, "codegraph"), "#!/bin/bash\necho 'bad shim used' >&2\nexit 99\n");
 
       const res = spawnSync("bash", [SCRIPT, "--json", "--host", "codex"], {
         cwd: envRoot.root,
@@ -1753,13 +1756,14 @@ describe("check-agent-tooling", () => {
         const log = join(envRoot.root, "plugin-binaries.log");
         writeArchctxRepo(envRoot.root, "registry");
         writeFakeCodeGraph(envRoot.fakeBin, { logFile: log });
-        writeExecutable(join(envRoot.fakeBin, "archctx"), `#!/bin/sh\necho "archctx $*" >> "${log}"\necho 0.5.13\n`);
+        writeExecutable(envRoot.root, join(envRoot.fakeBin, "archctx"), `#!/bin/sh\necho "archctx $*" >> "${log}"\necho 0.5.13\n`);
         if (entry.unreadable) {
           mkdirSync(join(envRoot.home, ".repo-harness"), { recursive: true });
           writeFileSync(installStateFixturePath({ HOME: envRoot.home }), "{");
         }
         if (entry.providerLoadFails) {
-          writeExecutable(join(envRoot.fakeBin, "bun"), `#!/bin/sh\nfor a in "$@"; do case "$a" in */effects/architecture/providers.ts) echo "error: Cannot find module './archctx-runtime'" >&2; exit 1;; esac; done\nexec "${process.execPath}" "$@"\n`);
+          if (lstatSync(join(envRoot.fakeBin, 'bun')).isSymbolicLink()) unlinkSync(join(envRoot.fakeBin, 'bun'));
+          writeExecutable(envRoot.root, join(envRoot.fakeBin, "bun"), `#!/bin/sh\nfor a in "$@"; do case "$a" in */effects/architecture/providers.ts) echo "error: Cannot find module './archctx-runtime'" >&2; exit 1;; esac; done\nexec "${process.execPath}" "$@"\n`);
         }
         const res = spawnSync("bash", [SCRIPT, "--json", "--host", "claude", ...(entry.caller ? ["--architecture-selected"] : [])], {
           cwd: envRoot.root,
@@ -1836,11 +1840,11 @@ describe("check-agent-tooling", () => {
       const packageRoot = join(envRoot.root, 'lib', 'node_modules', 'archctx');
       mkdirSync(join(packageRoot, 'bin'), { recursive: true });
       writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'archctx', version: '0.5.13' }));
-      writeExecutable(join(packageRoot, 'bin', 'archctx'), "#!/bin/sh\necho help\necho help\n");
+      writeExecutable(envRoot.root, join(packageRoot, 'bin', 'archctx'), "#!/bin/sh\necho help\necho help\n");
       symlinkSync(join(packageRoot, 'bin', 'archctx'), join(envRoot.fakeBin, 'archctx'));
       mkdirSync(join(envRoot.root, 'bin'), { recursive: true });
-      writeExecutable(join(envRoot.root, 'bin', 'npm'), '#!/bin/sh\nexit 0\n');
-      writeExecutable(join(envRoot.root, 'bin', 'node'), '#!/bin/sh\nexit 0\n');
+      writeExecutable(envRoot.root, join(envRoot.root, 'bin', 'npm'), '#!/bin/sh\nexit 0\n');
+      writeExecutable(envRoot.root, join(envRoot.root, 'bin', 'node'), '#!/bin/sh\nexit 0\n');
 
       const res = spawnSync("bash", [SCRIPT, "--json", "--host", "claude"], {
         cwd: envRoot.root,
@@ -1891,7 +1895,7 @@ describe("check-agent-tooling", () => {
           const version = onPin ? packaged.version : "0.0.0-off-pin";
           mkdirSync(join(dir, "bin"), { recursive: true });
           writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "archctx", version, engines: packaged.engines, bin: { archctx: "./bin/archctx.mjs" } }));
-          writeExecutable(join(dir, "bin", "archctx.mjs"), `#!/bin/sh\necho ${version}\n`);
+          writeExecutable(envRoot.root, join(dir, "bin", "archctx.mjs"), `#!/bin/sh\necho ${version}\n`);
         };
         const globalModules = join(envRoot.home, ".bun", "install", "global", "node_modules");
         const linkedCopy = layout === "ancestor only" ? join(envRoot.home, "node_modules", "archctx") : join(globalModules, "archctx");
@@ -1946,7 +1950,7 @@ describe("check-agent-tooling", () => {
       const archctxRoot = join(packageRoot, "node_modules", "archctx");
       mkdirSync(archctxRoot, { recursive: true });
       writeFileSync(join(archctxRoot, "package.json"), JSON.stringify({ name: "archctx", version: packaged.version, engines: packaged.engines, bin: { archctx: "./bin/archctx.mjs" } }));
-      writeExecutable(join(envRoot.fakeBin, "archctx"), "#!/bin/sh\necho 0.5.13\n");
+      writeExecutable(envRoot.root, join(envRoot.fakeBin, "archctx"), "#!/bin/sh\necho 0.5.13\n");
 
       const res = spawnSync("bash", [join(packageRoot, "scripts", "check-agent-tooling.sh"), "--json", "--host", "claude"], {
         cwd: envRoot.root,
@@ -2015,7 +2019,7 @@ test.each([
   const fixture = setupFakeEnvironment("herdr-core-runtime");
   try {
     rmSync(join(fixture.fakeBin, "hc"));
-    if (hcVersion) writeExecutable(join(fixture.fakeBin, "hc"), `#!/bin/sh\nprintf '${hcVersion}\\n'\n`);
+    if (hcVersion) writeExecutable(fixture.root, join(fixture.fakeBin, "hc"), `#!/bin/sh\nprintf '${hcVersion}\\n'\n`);
     // An explicit utility PATH keeps the developer's herdr and hc installations out of the report.
     for (const utility of ["dirname", "basename", "node", "bun", "git", "bash", "sh", "which", "uname"]) {
       const actual = Bun.which(utility);

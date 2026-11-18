@@ -50,7 +50,7 @@ import { buildManagedHooks } from '../src/cli/installer/managed-entries';
 import { runUserUninstall } from '../src/cli/installer/uninstall';
 import { copyUpgradeFixture } from './helpers/upgrade-fixtures';
 import { writeFakeHc } from './helpers/fake-hc';
-import { writeBunWrapper } from './helpers/repo-fixture';
+import { writeBunWrapper, writeShellExecutableFixture } from './helpers/repo-fixture';
 import { HC_MIN_VERSION } from '../src/core/terminal/herdr-pin';
 import { openHostConfigGate } from '../src/effects/host-config/gate';
 import { observePathEntry } from '../src/effects/host-config/whole-path';
@@ -94,7 +94,7 @@ function withHome(run: (env: NodeJS.ProcessEnv) => void): void {
   const home = mkdtempSync(join(tmpdir(), 'repo-harness-profile-'));
   const tools = join(home, 'tool-bin');
   mkdirSync(tools);
-  writeBunWrapper(join(tools, 'bun'));
+  writeBunWrapper(home, join(tools, 'bun'));
   const env: NodeJS.ProcessEnv = {
     ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun'), XDG_STATE_HOME: join(home, '.local', 'state'),
     REPO_HARNESS_HOME: join(home, '.repo-harness'), PATH: `${tools}:/usr/bin:/bin`,
@@ -984,8 +984,8 @@ describe('install selection', () => {
   test('failed install compensates earlier host writes and never commits state', () => withHome((env) => {
     const bin = join(env.HOME!, 'fake-bin');
     mkdirSync(bin, { recursive: true });
-    writeFileSync(join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.2.0; exit 0; fi\nexit 0\n', { mode: 0o755 });
-    writeFileSync(join(bin, 'bunx'), '#!/bin/sh\nmkdir -p "$XDG_STATE_HOME/skills"\nprintf "{\\"partial\\":true}\\n" > "$XDG_STATE_HOME/skills/.skill-lock.json"\nexit 19\n', { mode: 0o755 });
+    writeShellExecutableFixture(env.HOME!, join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.2.0; exit 0; fi\nexit 0\n');
+    writeShellExecutableFixture(env.HOME!, join(bin, 'bunx'), '#!/bin/sh\nmkdir -p "$XDG_STATE_HOME/skills"\nprintf "{\\"partial\\":true}\\n" > "$XDG_STATE_HOME/skills/.skill-lock.json"\nexit 19\n');
     const adapter = join(env.HOME!, '.codex', 'hooks.json');
     mkdirSync(join(env.HOME!, '.codex'), { recursive: true });
     const before = '{"theme":"user-owned"}\n';
@@ -1009,8 +1009,8 @@ describe('install selection', () => {
   test('failed install restores the provider lock under XDG_STATE_HOME', () => withHome((env) => {
     const bin = join(env.HOME!, 'fake-bin');
     mkdirSync(bin, { recursive: true });
-    writeFileSync(join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.4.0; exit 0; fi\nexit 0\n', { mode: 0o755 });
-    writeFileSync(join(bin, 'bunx'), '#!/bin/sh\nprintf "{\\"skills\\":{\\"think\\":{}}}\\n" > "$XDG_STATE_HOME/skills/.skill-lock.json"\nexit 19\n', { mode: 0o755 });
+    writeShellExecutableFixture(env.HOME!, join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.4.0; exit 0; fi\nexit 0\n');
+    writeShellExecutableFixture(env.HOME!, join(bin, 'bunx'), '#!/bin/sh\nprintf "{\\"skills\\":{\\"think\\":{}}}\\n" > "$XDG_STATE_HOME/skills/.skill-lock.json"\nexit 19\n');
     const stateHome = join(env.HOME!, 'custom-state');
     const lock = join(stateHome, 'skills', '.skill-lock.json');
     const before = '{"skills":{"user-skill":{}}}\n';
@@ -1033,8 +1033,8 @@ describe('install selection', () => {
       for (const skill of [...WAZA_SKILLS, 'repo-harness-cross-review']) rmSync(join(env.HOME!, '.codex', 'skills', skill), { recursive: true });
       discardRemovedFixtureRecords(env);
       mkdirSync(bin, { recursive: true });
-      writeFileSync(join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.4.0; fi\nexit 0\n', { mode: 0o755 });
-      writeFileSync(join(bin, 'bunx'), '#!/bin/sh\nfor s in think hunt check health mermaid; do mkdir -p "$HOME/.agents/skills/$s"; echo "# $s" > "$HOME/.agents/skills/$s/SKILL.md"; done\n', { mode: 0o755 });
+      writeShellExecutableFixture(env.HOME!, join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.4.0; fi\nexit 0\n');
+      writeShellExecutableFixture(env.HOME!, join(bin, 'bunx'), '#!/bin/sh\nfor s in think hunt check health mermaid; do mkdir -p "$HOME/.agents/skills/$s"; echo "# $s" > "$HOME/.agents/skills/$s/SKILL.md"; done\n');
       writeFileSync(join(bin, 'curl'), '#!/bin/sh\n[ -n "$FAKE_CURL_FAIL" ] && { echo "fixture HTTP 503" >&2; exit 22; }\nwhile [ $# -gt 0 ]; do case "$1" in --output) out="$2"; shift;; https://*) url="$1";; esac; shift; done\necho "# upstream ${url##*/}" > "$out"\n', { mode: 0o755 });
       writeFakeHc(bin);
     }
@@ -1104,8 +1104,8 @@ describe('install selection', () => {
       rmSync(join(env.HOME!, '.claude', 'skills', 'repo-harness-herdr-portal'), { recursive: true });
       const bin = join(env.HOME!, 'fake-bin');
       mkdirSync(bin, { recursive: true });
-      writeFileSync(join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.4.0; fi\nexit 0\n', { mode: 0o755 });
-      writeFileSync(join(bin, 'bunx'), '#!/bin/sh\nfor s in think hunt check health mermaid; do mkdir -p "$HOME/.agents/skills/$s"; echo "# $s" > "$HOME/.agents/skills/$s/SKILL.md"; done\n', { mode: 0o755 });
+      writeShellExecutableFixture(env.HOME!, join(bin, 'bun'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.4.0; fi\nexit 0\n');
+      writeShellExecutableFixture(env.HOME!, join(bin, 'bunx'), '#!/bin/sh\nfor s in think hunt check health mermaid; do mkdir -p "$HOME/.agents/skills/$s"; echo "# $s" > "$HOME/.agents/skills/$s/SKILL.md"; done\n');
       writeFileSync(join(bin, 'curl'), '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in --output) out="$2"; shift;; https://*) url="$1";; esac; shift; done\necho "# upstream ${url##*/}" > "$out"\n', { mode: 0o755 });
       // hc answers --version as the real binary does; the install step reads it before --skill.
       const hc = (manual: string) => writeFileSync(join(bin, 'hc'), `#!/bin/sh\n[ "$1" = --version ] && { echo "hc ${HC_MIN_VERSION}"; exit 0; }\nprintf "%s\\n" "# hc manual (herdr-core)" "${manual}" "\\\`\\$HC_TERMINAL_ID\\\` is your address."\n`, { mode: 0o755 });

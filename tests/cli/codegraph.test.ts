@@ -14,8 +14,8 @@ import { jsonFragment } from "../../src/core/host-config/json-fragment";
 const ROOT = join(import.meta.dir, "..", "..");
 const CLI = join(ROOT, "src/cli/index.ts");
 
-function writeExecutable(filePath: string, content: string) {
-  writeShellExecutableFixture(filePath, content);
+function writeExecutable(temporaryRoot: string, filePath: string, content: string) {
+  writeShellExecutableFixture(temporaryRoot, filePath, content);
 }
 
 function setupFakeEnvironment(prefix: string) {
@@ -29,7 +29,7 @@ function setupFakeEnvironment(prefix: string) {
 }
 
 function writeFakeCodeGraph(fakeBin: string, logFile: string) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "codegraph"),
     [
       "#!/bin/bash",
@@ -49,7 +49,7 @@ function writeFakeCodeGraph(fakeBin: string, logFile: string) {
 // check-agent-tooling.sh resolves `skills` from PATH (and only spawns it under
 // --probe-skills-cli), so the stub has to be the binary itself, not bunx.
 function writeFakeSkillsCli(fakeBin: string) {
-  writeExecutable(
+  writeExecutable(fakeBin,
     join(fakeBin, "skills"),
     [
       "#!/bin/bash",
@@ -119,7 +119,7 @@ test('standalone CodeGraph configure writes the Codex table through the gate, an
   try {
     writeFakeSkillsCli(fixture.fakeBin);
     const codegraph = join(fixture.fakeBin, 'codegraph');
-    writeExecutable(codegraph, [
+    writeExecutable(fixture.root, codegraph, [
       '#!/bin/bash',
       'set -euo pipefail',
       'case "${1:-}" in',
@@ -153,7 +153,7 @@ test('standalone CodeGraph configure writes the Codex table through the gate, an
 
 /** A fake codegraph whose `install --print-config claude` prints a server object with this command and writes nothing. */
 function writeClaudePrintingCodegraph(fakeBin: string, command: string) {
-  writeExecutable(join(fakeBin, 'codegraph'), [
+  writeExecutable(fakeBin, join(fakeBin, 'codegraph'), [
     '#!/bin/bash',
     'set -euo pipefail',
     'case "${1:-}" in',

@@ -62,8 +62,8 @@ function withEnv(values: Record<string, string | undefined>, fn: () => void): vo
   }
 }
 
-function writeExecutable(filePath: string, content: string): void {
-  writeShellExecutableFixture(filePath, content);
+function writeExecutable(temporaryRoot: string, filePath: string, content: string): void {
+  writeShellExecutableFixture(temporaryRoot, filePath, content);
 }
 
 function withTempRepo(
@@ -79,7 +79,7 @@ function withTempRepo(
       fs.writeFileSync(path.join(repoRoot, '.ai/harness/workflow-contract.json'), '{}\n');
     }
     for (const script of opts.scripts ?? []) {
-      writeExecutable(path.join(repoRoot, '.ai/hooks', script), '#!/bin/bash\nexit 0\n');
+      writeExecutable(repoRoot, path.join(repoRoot, '.ai/hooks', script), '#!/bin/bash\nexit 0\n');
     }
     fn(repoRoot);
   } finally {
@@ -97,7 +97,7 @@ function setupFakeEnvironment(prefix: string) {
 }
 
 function writeFakeCodeGraph(fakeBin: string, logFile: string): void {
-  writeExecutable(
+  writeExecutable(fakeBin,
     path.join(fakeBin, 'codegraph'),
     [
       '#!/bin/bash',
@@ -115,7 +115,7 @@ function writeFakeCodeGraph(fakeBin: string, logFile: string): void {
 }
 
 function writeFakeBunx(fakeBin: string): void {
-  writeExecutable(
+  writeExecutable(fakeBin,
     path.join(fakeBin, 'bunx'),
     [
       '#!/bin/bash',
@@ -135,7 +135,7 @@ afterEach(() => {
 const fakeHcBin = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'repo-harness-doctor-hc-')));
 const pathBeforeFakeHc = process.env.PATH;
 beforeAll(() => {
-  writeExecutable(path.join(fakeHcBin, 'hc'), `#!/bin/sh\nprintf 'hc ${HC_MIN_VERSION}\\n'\n`);
+  writeExecutable(fakeHcBin, path.join(fakeHcBin, 'hc'), `#!/bin/sh\nprintf 'hc ${HC_MIN_VERSION}\\n'\n`);
   process.env.PATH = `${fakeHcBin}:${pathBeforeFakeHc ?? ''}`;
 });
 afterAll(() => {
@@ -149,7 +149,7 @@ describe('doctor command (Phase 1C)', () => {
       const f = setupFakeEnvironment(`repo-harness-doctor-${target}-pi`);
       const log = path.join(f.root, 'host-probes');
       try {
-        writeExecutable(path.join(f.fakeBin, 'pi'), `#!/bin/sh\necho pi >> '${log}'\nexit 99\n`);
+        writeExecutable(f.root, path.join(f.fakeBin, 'pi'), `#!/bin/sh\necho pi >> '${log}'\nexit 99\n`);
         withEnv({ HOME: f.home, PATH: f.fakeBin }, () => {
           const report = runDoctor(CLI_PORTS.doctor, f.root, target);
           expect(report.checks.some(check => check.id.startsWith('pi-'))).toBe(false);
@@ -171,7 +171,7 @@ describe('doctor command (Phase 1C)', () => {
       writeNotifyInstallRecord({ REPO_HARNESS_HOME: rhHome });
       const bin = path.join(home, 'bin');
       fs.mkdirSync(bin);
-      writeExecutable(path.join(bin, 'hc'), [
+      writeExecutable(home, path.join(bin, 'hc'), [
         '#!/bin/sh',
         `env | grep -E '^(WEBHOOK|SLACK|DISCORD|TELEGRAM)_' >> '${path.join(home, 'hc-env')}'`,
         'case "$FIXTURE_HC" in',
@@ -213,9 +213,9 @@ describe('doctor command (Phase 1C)', () => {
         const fakeBin = path.join(tmp, 'bin');
         fs.mkdirSync(fakeBin, { recursive: true });
         const fakeCli = path.join(fakeBin, 'rh');
-        writeExecutable(fakeCli, '#!/bin/bash\nexit 0\n');
+        writeExecutable(tmp, fakeCli, '#!/bin/bash\nexit 0\n');
         const fakeHook = path.join(fakeBin, 'repo-harness-hook');
-        writeExecutable(fakeHook, '#!/bin/bash\nexit 0\n');
+        writeExecutable(tmp, fakeHook, '#!/bin/bash\nexit 0\n');
 
         withEnv({ PATH: fakeBin }, () => {
           const r = runDoctor(CLI_PORTS.doctor, tmp);
@@ -223,7 +223,7 @@ describe('doctor command (Phase 1C)', () => {
           expect(pathCheck.status).toBe('ok');
           expect(pathCheck.detail).toBe(`${fakeCli}; repo-harness-hook: ${fakeHook}`);
         });
-        writeExecutable(path.join(fakeBin, 'repo-harness'), '#!/bin/bash\nexit 0\n');
+        writeExecutable(tmp, path.join(fakeBin, 'repo-harness'), '#!/bin/bash\nexit 0\n');
         withEnv({ PATH: fakeBin }, () => {
           const pathCheck = runDoctor(CLI_PORTS.doctor, tmp).checks.find((c) => c.id === 'cli-on-path')!;
           expect(pathCheck.status).toBe('warn');
@@ -239,7 +239,7 @@ describe('doctor command (Phase 1C)', () => {
     withTempHome('repo-harness-doctor', home => {
       const bin = path.join(home, 'bin');
       fs.mkdirSync(bin);
-      writeExecutable(path.join(bin, 'rh'), '#!/bin/sh\nexit 0\n');
+      writeExecutable(home, path.join(bin, 'rh'), '#!/bin/sh\nexit 0\n');
       const hooks = buildManagedHooks('codex');
       hooks.Stop[0].hooks[0].timeout = 150;
       hooks.UserPromptSubmit.push({ hooks: [{ type: 'command', timeout: 30,
@@ -294,7 +294,7 @@ describe('doctor command (Phase 1C)', () => {
       const envRoot = setupFakeEnvironment(`repo-harness-doctor-codex-${expected.version}`);
       const fakeCodex = path.join(envRoot.fakeBin, 'codex');
       try {
-        writeExecutable(fakeCodex, `#!/bin/bash\nprintf 'codex-cli ${expected.version}\\n'\n`);
+        writeExecutable(envRoot.root, fakeCodex, `#!/bin/bash\nprintf 'codex-cli ${expected.version}\\n'\n`);
         withEnv({ HOME: envRoot.home, PATH: envRoot.fakeBin }, () => {
           const r = runDoctor(CLI_PORTS.doctor, envRoot.root);
           const codex = r.checks.find((c) => c.id === 'codex-cli-version')!;
@@ -446,7 +446,7 @@ describe('doctor command (Phase 1C)', () => {
     const previousExecPath = process.execPath;
     try {
       fs.mkdirSync(fakeBin, { recursive: true });
-      writeExecutable(
+      writeExecutable(root,
         probe,
         [
           '#!/bin/bash',
@@ -457,7 +457,7 @@ describe('doctor command (Phase 1C)', () => {
           '',
         ].join('\n'),
       );
-      writeExecutable(
+      writeExecutable(root,
         path.join(fakeBin, 'npm'),
         `#!/bin/bash\nprintf '%s\\n' "$*" > "${fakeNpmLog}"\nexit 42\n`,
       );
@@ -956,7 +956,7 @@ test('each skill-projection repair command keeps the recorded selection and pass
   for (const row of rows) withTempHome('repo-harness-doctor', home => {
     const tools = path.join(home, 'tool-bin');
     fs.mkdirSync(tools, { recursive: true });
-    if (row.pi) writeExecutable(path.join(tools, 'pi'), '#!/bin/sh\ncase "$1" in --version) echo 1.5.0 ;; list) echo "No packages installed." ;; esac\n');
+    if (row.pi) writeExecutable(home, path.join(tools, 'pi'), '#!/bin/sh\ncase "$1" in --version) echo 1.5.0 ;; list) echo "No packages installed." ;; esac\n');
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, BUN_INSTALL: path.join(home, '.bun'), XDG_STATE_HOME: path.join(home, '.local/state'),
       REPO_HARNESS_HOME: path.join(home, '.repo-harness'), PATH: `${tools}:/usr/bin:/bin` };
     for (const key of ['CODEX_SKILLS_ROOT', 'CLAUDE_SKILLS_ROOT', 'PI_CODING_AGENT_DIR', 'REPO_HARNESS_INSTALL_PLUGINS']) delete env[key];

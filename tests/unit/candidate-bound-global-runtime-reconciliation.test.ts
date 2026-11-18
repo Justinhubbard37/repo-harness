@@ -5,7 +5,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 
-import { copyPackageRuntimeFixture } from '../helpers/repo-fixture';
+import { copyPackageRuntimeFixture, writeShellExecutableFixture } from '../helpers/repo-fixture';
 import { startFakeHcRelease, writeFakeHc } from '../helpers/fake-hc';
 import { HC_MIN_VERSION } from '../../src/core/terminal/herdr-pin';
 import { installStateFixturePath, recordPluginSelection, seedGlobalPackageFixture } from '../helpers/install-ownership';
@@ -36,13 +36,17 @@ const CLI = join(ROOT, 'src', 'cli', 'index.ts');
 const fakeHcBin = realpathSync(mkdtempSync(join(tmpdir(), 'repo-harness-candidate-runtime-hc-')));
 const pathBeforeFakeHc = process.env.PATH;
 const previousBunInstall = process.env.BUN_INSTALL;
+const previousHome = process.env.HOME;
 beforeAll(() => {
+  process.env.HOME = fakeHcBin;
   writeFakeHc(fakeHcBin);
   process.env.PATH = `${fakeHcBin}:${pathBeforeFakeHc ?? ''}`;
   process.env.BUN_INSTALL = join(fakeHcBin, '.bun');
   seedGlobalPackageFixture();
 });
 afterAll(() => {
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
   process.env.PATH = pathBeforeFakeHc;
   if (previousBunInstall === undefined) delete process.env.BUN_INSTALL;
   else process.env.BUN_INSTALL = previousBunInstall;
@@ -90,6 +94,7 @@ function copyRuntimeFixture(
 }
 
 function writeCandidateSwitchingBun(
+  temporaryRoot: string,
   path: string,
   logPath: string,
   globalPackagePath: string,
@@ -100,7 +105,7 @@ function writeCandidateSwitchingBun(
   const candidateVersion = JSON.parse(readFileSync(join(candidateRoot, 'package.json'), 'utf-8')).version;
   // Bun replaces package files in place; the predecessor then sees assets it cannot parse.
   const replaceAsset = replacedPredecessorAsset ? `printf '{}' > "${replacedPredecessorAsset}"; ` : '';
-  writeExecutable(path, [
+  writeShellExecutableFixture(temporaryRoot, path, [
     '#!/bin/bash',
     `printf '%s\\n' "$*" >> "${logPath}"`,
     'if [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi',
@@ -579,7 +584,7 @@ describe('candidate-bound global runtime reconciliation', () => {
         hooks: predecessor,
         custom: { preserved: true },
       }, null, 2)}\n`);
-      writeCandidateSwitchingBun(join(bin, 'bun'), bunLog, globalPackagePath, candidateRoot);
+      writeCandidateSwitchingBun(root, join(bin, 'bun'), bunLog, globalPackagePath, candidateRoot);
 
       const result = spawnSync(process.execPath, [
         join(parentRoot, 'src', 'cli', 'index.ts'),
@@ -664,10 +669,10 @@ describe('candidate-bound global runtime reconciliation', () => {
         writeFileSync(hookPath, oldHooks);
         const statePath = join(home, '.repo-harness', 'install-state.json');
         const oldState = readFileSync(statePath, 'utf-8');
-        writeCandidateSwitchingBun(join(bin, 'bun'), bunLog, globalPackage, candidateRoot);
+        writeCandidateSwitchingBun(root, join(bin, 'bun'), bunLog, globalPackage, candidateRoot);
         // Model the package manager's manifest and bin writes as well as its package link.
-        const bunSource = readFileSync(join(bin, 'bun'), 'utf-8');
-        writeExecutable(join(bin, 'bun'), bunSource.replace(
+        const bunSource = readFileSync(join(bin, 'bun.fixture-body'), 'utf-8');
+        writeShellExecutableFixture(root, join(bin, 'bun'), bunSource.replace(
           'if [[ "$1" == "add" && "$2" == "-g" ]]; then ',
           `if [[ "$1" == "add" && "$2" == "-g" ]]; then printf '%s' '{"dependencies":{"repo-harness":"^0.22.1"}}' > "${globalManifest}"; printf '#!/bin/sh\\necho 0.22.1\\n' > "${cliBin}"; `,
         ));
@@ -742,6 +747,7 @@ describe('candidate-bound global runtime reconciliation', () => {
       symlinkSync(parentRoot, globalPackagePath, 'dir');
       writeCoreOnlyInstallState(home);
       writeCandidateSwitchingBun(
+        root,
         join(bin, 'bun'),
         bunLog,
         globalPackagePath,
@@ -797,7 +803,7 @@ describe('candidate-bound global runtime reconciliation', () => {
       mkdirSync(join(home, '.bun', 'install', 'global', 'node_modules'), { recursive: true });
       symlinkSync(legacyParentRoot, globalPackagePath, 'dir');
       writeCoreOnlyInstallState(home);
-      writeCandidateSwitchingBun(join(bin, 'bun'), bunLog, globalPackagePath, candidateRoot);
+      writeCandidateSwitchingBun(root, join(bin, 'bun'), bunLog, globalPackagePath, candidateRoot);
       const sharedEnv = {
         ...process.env,
         HOME: home,
@@ -884,7 +890,7 @@ describe('candidate-bound global runtime reconciliation', () => {
       mkdirSync(join(home, '.bun', 'install', 'global', 'node_modules'), { recursive: true });
       symlinkSync(parentRoot, globalPackagePath, 'dir');
       writeCoreOnlyInstallState(home);
-      writeCandidateSwitchingBun(join(bin, 'bun'), bunLog, globalPackagePath, candidateRoot);
+      writeCandidateSwitchingBun(root, join(bin, 'bun'), bunLog, globalPackagePath, candidateRoot);
 
       const result = spawnSync(process.execPath, [
         join(parentRoot, 'src', 'cli', 'index.ts'),
@@ -934,7 +940,7 @@ describe('candidate-bound global runtime reconciliation', () => {
       stop.hooks[0]!.timeout = 30;
       mkdirSync(join(home, '.codex'), { recursive: true });
       writeFileSync(join(home, '.codex', 'hooks.json'), `${JSON.stringify({ hooks: predecessor }, null, 2)}\n`);
-      writeExecutable(join(bin, 'bun'), [
+      writeShellExecutableFixture(root, join(bin, 'bun'), [
         '#!/bin/bash',
         'if [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi',
         `if [[ "\${1:-}" == "pm" && "\${2:-}" == "view" ]]; then printf '%s\\n' '${JSON.stringify(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version)}'; exit 0; fi`,

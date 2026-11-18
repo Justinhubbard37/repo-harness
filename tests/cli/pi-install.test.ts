@@ -100,7 +100,7 @@ default: process.exit(99);
 `);
   chmodSync(join(host, 'pi'), 0o755);
   mkdirSync(bin, { recursive: true });
-  writeBunWrapper(join(bin, 'bun'));
+  writeBunWrapper(root, join(bin, 'bun'));
   symlinkSync(join(host, 'pi'), join(bin, 'pi'));
   writeFakeHc(bin);
   write(join(home, '.bun/bin/rh'), '#!/bin/sh\nexit 0\n');

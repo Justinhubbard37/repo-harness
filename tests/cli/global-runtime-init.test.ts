@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, lstatSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { legacySections } from '../../scripts/check-released-managed-values';
 import { tmpdir } from 'os';
@@ -10,7 +10,7 @@ import { checkMcpLocalConfigFile } from '../../src/cli/mcp/local-config-check';
 import { migrateSeatsConfiguration, runGlobalRuntimeSetup, verifyInstalledManagedRuntime } from '../../src/cli/commands/global-runtime';
 import { DEFAULT_SEATS_CONFIG, decodeSeatsConfig } from '../../src/core/board/seats-settings';
 import { registerArchitecturePlugin, resolveOptionalRuntimeDeps, runCli, runTransactionalRuntimeRefresh } from '../../src/cli/index';
-import { copyPackageRuntimeFixture, writeBunWrapper, writeShellExecutableFixture } from '../helpers/repo-fixture';
+import { bunStubPath, copyPackageRuntimeFixture, writeBunWrapper, writeShellExecutableFixture } from '../helpers/repo-fixture';
 import { ARCHITECTURE_DOCS_RENDERER_VERSION } from 'archctx-contracts';
 import { dependencies, devDependencies } from '../../package.json';
 import { installStateFixturePath, recordInstallOwnership, recordPluginSelection, RETIRED_CLI_LINES, seedGlobalPackageFixture, seedPathRecords } from '../helpers/install-ownership';
@@ -26,7 +26,21 @@ import { hostConfigPaths } from '../../src/effects/host-config/store';
 import { ownedPath, pathRecordIsCurrent, pathRecordKey, readPathRecords } from '../../src/effects/host-config/path-records';
 
 const ROOT = join(import.meta.dir, '..', '..');
-beforeAll(() => { seedGlobalPackageFixture(); });
+const runtimeHome = realpathSync(mkdtempSync(join(tmpdir(), 'repo-harness-runtime-home-')));
+const previousHome = process.env.HOME;
+const previousBunInstall = process.env.BUN_INSTALL;
+beforeAll(() => {
+  process.env.HOME = runtimeHome;
+  process.env.BUN_INSTALL = join(runtimeHome, '.bun');
+  seedGlobalPackageFixture();
+});
+afterAll(() => {
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
+  if (previousBunInstall === undefined) delete process.env.BUN_INSTALL;
+  else process.env.BUN_INSTALL = previousBunInstall;
+  rmSync(runtimeHome, { recursive: true, force: true });
+});
 // The fake managed install follows the repository pins, so an upgrade needs no fixture edit.
 const ARCHCTX_PIN = dependencies.archctx;
 const ARCHCTX_CONTRACTS_PIN = dependencies['archctx-contracts'];
@@ -34,6 +48,68 @@ const CODEGRAPH_PIN = devDependencies['@colbymchenry/codegraph'];
 const CLI = join(ROOT, 'src/cli/index.ts');
 const OBSIDIAN_PROVIDER = 'kepano/obsidian-skills#a1dc48e68138490d522c04cbf5822214c6eb1202';
 const FULL_PLUGINS = ['architecture', 'cross-review', 'mcp', 'operator', 'peer-runtime', 'platform', 'product', 'strategy-memory'] as const;
+
+test('bun fixture writes reject paths and symlinks outside their own temporary root', () => {
+  const temporary = mkdtempSync(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), 'repo-harness-bun-guard-'));
+  const root = mkdtempSync(join(temporary, 'fixture-'));
+  const outside = `${root}-sibling`;
+  try {
+    mkdirSync(outside);
+    const inheritedHome = process.env.HOME;
+    const inheritedBunInstall = process.env.BUN_INSTALL;
+    try {
+      process.env.HOME = outside;
+      process.env.BUN_INSTALL = outside;
+      expect(sanitizedChildEnv(root)).toMatchObject({ HOME: root, BUN_INSTALL: join(root, '.bun') });
+    } finally {
+      if (inheritedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = inheritedHome;
+      if (inheritedBunInstall === undefined) delete process.env.BUN_INSTALL;
+      else process.env.BUN_INSTALL = inheritedBunInstall;
+    }
+    const sentinel = join(outside, 'bun');
+    writeFileSync(sentinel, 'keep outside bun\n');
+    symlinkSync(outside, join(root, 'linked-bin'), 'dir');
+    symlinkSync(sentinel, join(root, 'bun'));
+    const insideTarget = join(root, 'inside-bun');
+    writeFileSync(insideTarget, 'keep inside bun\n');
+    const outsideLink = join(outside, 'linked-bun');
+    symlinkSync(insideTarget, outsideLink);
+    for (const target of [root, sentinel, outsideLink, join(outside, 'missing', 'bun'), join(root, 'linked-bin', 'bun'), join(root, 'bun')]) {
+      expect(() => writeBunWrapper(root, target)).toThrow('Bun stub must stay under its test temporary root');
+      expect(() => writeShellExecutableFixture(root, target, '#!/bin/sh\nexit 0\n')).toThrow('Bun stub must stay under its test temporary root');
+      expect(readFileSync(sentinel, 'utf8')).toBe('keep outside bun\n');
+      expect(existsSync(join(outside, 'missing'))).toBe(false);
+      expect(lstatSync(outsideLink).isSymbolicLink()).toBe(true);
+      expect(readFileSync(insideTarget, 'utf8')).toBe('keep inside bun\n');
+    }
+    const bodyEscape = join(root, 'body-escape');
+    symlinkSync(sentinel, `${bodyEscape}.fixture-body`);
+    expect(() => writeShellExecutableFixture(root, bodyEscape, '#!/bin/sh\nexit 0\n')).toThrow('Bun stub must stay under its test temporary root');
+    expect(existsSync(bodyEscape)).toBe(false);
+    expect(lstatSync(`${bodyEscape}.fixture-body`).isSymbolicLink()).toBe(true);
+    expect(readFileSync(sentinel, 'utf8')).toBe('keep outside bun\n');
+
+    const alias = join(temporary, 'fixture-alias');
+    symlinkSync(root, alias, 'dir');
+    for (const rootSpelling of [root, realpathSync(root), alias]) {
+      for (const targetSpelling of [root, realpathSync(root), alias]) {
+        const safe = join(targetSpelling, 'safe-bun');
+        writeBunWrapper(rootSpelling, safe);
+        expect(readFileSync(safe, 'utf8')).toContain('exec ');
+        expect(lstatSync(safe).isSymbolicLink()).toBe(false);
+        const shell = join(targetSpelling, 'safe-shell');
+        writeShellExecutableFixture(rootSpelling, shell, '#!/bin/sh\nexit 0\n');
+        expect(readFileSync(`${shell}.fixture-body`, 'utf8')).toBe('#!/bin/sh\nexit 0\n');
+        expect(lstatSync(shell).isFile()).toBe(true);
+        expect(bunStubPath(rootSpelling, join(targetSpelling, 'missing', 'bun'))).toBe(join(targetSpelling, 'missing', 'bun'));
+      }
+      expect(() => writeBunWrapper(rootSpelling, sentinel)).toThrow('Bun stub must stay under its test temporary root');
+      expect(() => writeShellExecutableFixture(rootSpelling, join(alias, 'linked-bin', 'bun'), '#!/bin/sh\nexit 0\n')).toThrow('Bun stub must stay under its test temporary root');
+      expect(readFileSync(sentinel, 'utf8')).toBe('keep outside bun\n');
+    }
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+});
 
 test('update removes stored routing mode and hyper values once, keeps a null worker-light and fills a null gatekeeper-fallback and the credit mode keys', () => {
   const home = mkdtempSync(join(tmpdir(), 'quota-mode-migration-'));
@@ -123,11 +199,11 @@ test('update keeps one exact configuration backup for both migrations, skips unc
         writeFileSync(path, original);
         if (kind === 'backup-failure') mkdirSync(backup);
         const bun = join(home, 'bun');
-        writeExecutable(bun, '#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+        writeExecutable(home, bun, '#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
         const result = runGlobalRuntimeSetup({
           sourceRoot: ROOT, cwd: home, plugins: [], updateMode: true, installCli: false,
           syncSkill: false, hostAdapters: false, externalSkills: false, codegraph: false,
-          env: { ...sanitizedChildEnv(), HOME: home, REPO_HARNESS_HOME: directory, BUN_INSTALL: join(home, '.bun'), REPO_HARNESS_BUN_EXECUTABLE: bun },
+          env: { ...sanitizedChildEnv(home), HOME: home, REPO_HARNESS_HOME: directory, BUN_INSTALL: join(home, '.bun'), REPO_HARNESS_BUN_EXECUTABLE: bun },
         });
         const backups = readdirSync(directory).filter(name => name.startsWith('config.json.bak-'));
         if (kind === 'backup-failure') {
@@ -161,13 +237,13 @@ test('update preflight stops on a refused mcp.local.json before the seats write 
     mkdirSync(join(home, '.repo-harness'), { recursive: true });
     mkdirSync(fakeBin, { recursive: true });
     const bunLog = join(tmp, 'bun.log');
-    writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.3.14; fi\nexit 0\n`);
+    writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.3.14; fi\nexit 0\n`);
     const config = join(home, '.repo-harness', 'config.json');
     writeFileSync(config, JSON.stringify({ seats: { ...DEFAULT_SEATS_CONFIG, 'worker-light': null, 'gatekeeper-fallback': undefined } }));
     const before = readFileSync(config, 'utf8');
     const run = () => runGlobalRuntimeSetup({
       sourceRoot: ROOT, cwd: tmp, plugins: ['mcp'], mcpLocalConfigCheck: checkMcpLocalConfigFile, installCli: false, updateMode: true, syncSkill: false, hostAdapters: false, externalSkills: false, codegraph: false,
-      env: { ...sanitizedChildEnv(), HOME: home, REPO_HARNESS_HOME: join(home, '.repo-harness'), BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_BUN_EXECUTABLE: join(fakeBin, 'bun') },
+      env: { ...sanitizedChildEnv(home), HOME: home, REPO_HARNESS_HOME: join(home, '.repo-harness'), BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_BUN_EXECUTABLE: join(fakeBin, 'bun') },
     });
     const mcp = join(home, '.repo-harness', 'mcp.local.json');
     writeFileSync(mcp, '{"version":2,"permissions":{"allowedRoots":["/private/secret-root"]}}');
@@ -212,7 +288,8 @@ function singleFileManagedTreeHash(content: string): string {
   return `sha256:${hash.digest('hex')}`;
 }
 
-function writeExecutable(filePath: string, content: string): void {
+function writeExecutable(temporaryRoot: string, filePath: string, content: string): void {
+  bunStubPath(temporaryRoot, filePath);
   if (filePath.endsWith('/bun') && content.startsWith('#!/bin/bash\n')) {
     const lines = content.split('\n');
     const log = lines.findIndex((line) => line.includes('"$*"') && line.includes('>>'));
@@ -225,7 +302,7 @@ fi`);
   }
   const interpreter = content.split('\n', 1)[0];
   if (interpreter === '#!/bin/sh' || interpreter === '#!/bin/bash') {
-    writeShellExecutableFixture(filePath, content);
+    writeShellExecutableFixture(temporaryRoot, filePath, content);
     return;
   }
   writeFileSync(filePath, content);
@@ -249,8 +326,8 @@ function setupConsoleFixture(home: string, source: string): void {
 // scripts/check-agent-tooling.sh (invoked by the CodeGraph configure step)
 // resolves `skills` from PATH; the probe itself only runs under
 // --probe-skills-cli. This stub keeps both paths off the real installation.
-function writeFakeSkillsCli(fakeBin: string): void {
-  writeExecutable(
+function writeFakeSkillsCli(temporaryRoot: string, fakeBin: string): void {
+  writeExecutable(temporaryRoot,
     join(fakeBin, 'skills'),
     `#!/bin/bash\nif [[ "$*" == "ls -g --json" ]]; then echo '[]'; exit 0; fi\nexit 1\n`,
   );
@@ -275,10 +352,10 @@ function writeOfficialCodexPluginFixture(pluginRoot: string): void {
   }));
 }
 
-function writeReadyOfficialCodexPluginCli(fakeBin: string, home: string): void {
+function writeReadyOfficialCodexPluginCli(temporaryRoot: string, fakeBin: string, home: string): void {
   const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'openai-codex', 'codex', '1.0.6');
   writeOfficialCodexPluginFixture(pluginRoot);
-  writeExecutable(join(fakeBin, 'claude'), [
+  writeExecutable(temporaryRoot, join(fakeBin, 'claude'), [
     '#!/bin/bash',
     'if [[ "$*" == "plugin list --json" ]]; then',
     `  printf '%s\\n' '${JSON.stringify([{ id: 'codex@openai-codex', version: '1.0.6', enabled: true, installPath: pluginRoot }])}'`,
@@ -289,8 +366,8 @@ function writeReadyOfficialCodexPluginCli(fakeBin: string, home: string): void {
   ].join('\n'));
 }
 
-function sanitizedChildEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+function sanitizedChildEnv(home: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, BUN_INSTALL: join(home, '.bun') };
   // Machine shells (zshenv) can export an explicit node runtime authority that
   // outranks PATH resolution; these tests fake node via fakeBin-first PATH and
   // must resolve exactly like CI, where no such export exists.
@@ -312,11 +389,11 @@ function setupFakeSource(root: string): void {
   );
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'repo-harness', version: '9.9.9' }, null, 2));
   writeFileSync(join(root, 'assets', 'skills', 'repo-harness-cross-review', 'SKILL.md'), 'repo-harness-cross-review\n');
-  writeExecutable(
+  writeExecutable(root,
     join(root, 'scripts', 'sync-codex-installed-copies.sh'),
     '#!/bin/bash\nset -euo pipefail\necho "sync runtime link=${REPO_HARNESS_LINK_INSTALLED_COPIES:-unset}"\n',
   );
-  writeExecutable(
+  writeExecutable(root,
     join(root, 'scripts', 'install-agent-fleet.sh'),
     '#!/bin/bash\nset -euo pipefail\necho "fleet installed"\n',
   );
@@ -342,8 +419,8 @@ function setObsidianSkillIntegrities(root: string): void {
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function writeFakeCodegraph(fakeBin: string, logFile: string): void {
-  writeExecutable(
+function writeFakeCodegraph(temporaryRoot: string, fakeBin: string, logFile: string): void {
+  writeExecutable(temporaryRoot,
     join(fakeBin, 'codegraph'),
     [
       '#!/bin/bash',
@@ -366,8 +443,8 @@ function writeFakeCodegraph(fakeBin: string, logFile: string): void {
   );
 }
 
-function setupManagedRuntimeReadback(home: string, fakeBin: string, harnessVersion = '9.9.9'): void {
-  writeReadyOfficialCodexPluginCli(fakeBin, home);
+function setupManagedRuntimeReadback(temporaryRoot: string, home: string, fakeBin: string, harnessVersion = '9.9.9'): void {
+  writeReadyOfficialCodexPluginCli(temporaryRoot, fakeBin, home);
   const globalModules = join(home, '.bun', 'install', 'global', 'node_modules');
   const harness = join(globalModules, 'repo-harness');
   const archctx = join(globalModules, 'archctx');
@@ -389,11 +466,11 @@ function setupManagedRuntimeReadback(home: string, fakeBin: string, harnessVersi
     bin: { archctx: './bin/archctx.mjs' },
     dependencies: { '@colbymchenry/codegraph': CODEGRAPH_PIN },
   }));
-  writeExecutable(join(archctx, 'bin', 'archctx.mjs'), '#!/usr/bin/env node\n');
+  writeExecutable(temporaryRoot, join(archctx, 'bin', 'archctx.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(globalModules, 'archctx-contracts', 'package.json'), JSON.stringify({ name: 'archctx-contracts', version: ARCHCTX_CONTRACTS_PIN }));
   writeFileSync(join(globalModules, '@colbymchenry', 'codegraph', 'package.json'), JSON.stringify({ name: '@colbymchenry/codegraph', version: CODEGRAPH_PIN }));
   const systemNode = spawnSync('node', ['-p', 'process.execPath'], { encoding: 'utf-8' }).stdout.trim();
-  writeExecutable(join(fakeBin, 'node'), [
+  writeExecutable(temporaryRoot, join(fakeBin, 'node'), [
     '#!/bin/bash',
     'if [[ "${1:-}" == "--version" ]]; then echo v24.11.0; exit 0; fi',
     `if [[ "\${1:-}" == *"/archctx/bin/archctx.mjs" && "\${2:-}" == "daemon" ]]; then printf '%s\\n' '{"schemaVersion":"archcontext.envelope/v1","ok":true,"data":{"running":false}}'; exit 0; fi`,
@@ -449,7 +526,7 @@ describe('registry-bound CLI update (#701)', () => {
       writeFakeHc(bin);
       mkdirSync(source, { recursive: true });
       setupFakeSource(source);
-      setupManagedRuntimeReadback(home, bin, options.previous ?? '0.21.2');
+      setupManagedRuntimeReadback(root, home, bin, options.previous ?? '0.21.2');
       writeFileSync(join(root, 'registry.json'), options.registryOutput ?? '"0.22.1"');
       writeFileSync(join(root, 'installed.json'), JSON.stringify({
         name: 'repo-harness', version: installed,
@@ -457,7 +534,7 @@ describe('registry-bound CLI update (#701)', () => {
       }));
       // Model the package manager's side effect. Registry and installed versions
       // are independent inputs, so a zero exit can still leave an old CLI.
-      writeExecutable(join(bin, 'bun'), [
+      writeExecutable(root, join(bin, 'bun'), [
         '#!/bin/bash',
         `printf '%s\\n' "$*" >> "${logPath}"`,
         'if [[ "${1:-}" == "--version" ]]; then echo 1.4.3; exit 0; fi',
@@ -470,7 +547,7 @@ describe('registry-bound CLI update (#701)', () => {
         '',
       ].join('\n'));
       const env: NodeJS.ProcessEnv = {
-        ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'),
+        ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'),
         PATH: `${bin}:${process.env.PATH ?? ''}`,
         REPO_HARNESS_BUN_EXECUTABLE: join(bin, 'bun'),
       };
@@ -591,7 +668,7 @@ describe('install command global runtime bootstrap', () => {
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
       writeExecutable(
-        join(fakeBin, 'bun'),
+        tmp, join(fakeBin, 'bun'),
         [
           '#!/bin/bash',
           `printf '%s\n' "$*" >> "${bunLog}"`,
@@ -612,7 +689,7 @@ describe('install command global runtime bootstrap', () => {
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -647,7 +724,7 @@ describe('install command global runtime bootstrap', () => {
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
       writeExecutable(
-        join(fakeBin, 'bun'),
+        tmp, join(fakeBin, 'bun'),
         [
           '#!/bin/bash',
           `printf '%s\n' "$*" >> "${bunLog}"`,
@@ -666,7 +743,7 @@ describe('install command global runtime bootstrap', () => {
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -694,18 +771,22 @@ describe('install command global runtime bootstrap', () => {
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
       writeExecutable(
-        join(fakeBin, 'bun'),
+        tmp, join(fakeBin, 'bun'),
         `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.0.0; exit 0; fi\nexit 99\n`,
       );
       const childEnv: NodeJS.ProcessEnv = {
-        ...sanitizedChildEnv(),
+        ...sanitizedChildEnv(home),
         HOME: home,
         BUN_INSTALL: join(home, '.bun'),
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
         REPO_HARNESS_CLAUDE_EXECUTABLE: join(fakeBin, 'claude'),
       };
       const harnessVersion = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version as string;
-      setupManagedRuntimeReadback(home, fakeBin, harnessVersion);
+      setupManagedRuntimeReadback(tmp, home, fakeBin, harnessVersion);
+      // Keep launcher validation local: a missing managed link would run a real Bun package install.
+      mkdirSync(join(home, '.bun', 'bin'), { recursive: true });
+      symlinkSync(join(home, '.bun', 'install', 'global', 'node_modules', 'archctx', 'bin', 'archctx.mjs'), join(home, '.bun', 'bin', 'archctx'));
+      writeFileSync(join(home, '.bun', 'install', 'global', 'package.json'), JSON.stringify({ dependencies: { archctx: ARCHCTX_PIN } }));
       recordExplicitFullSelection(home, FULL_PLUGINS.filter(id => id !== 'operator'));
       delete childEnv.REPO_HARNESS_BUN_EXECUTABLE;
 
@@ -750,10 +831,10 @@ describe('install command global runtime bootstrap', () => {
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
       mkdirSync(join(validatedBun, '..'), { recursive: true });
-      writeBunWrapper(validatedBun);
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.0.0; exit 0; fi\nexit 99\n');
+      writeBunWrapper(tmp, validatedBun);
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.0.0; exit 0; fi\nexit 99\n');
       writeFakeHc(fakeBin);
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
       const source = join(tmp, 'source');
       copyPackageRuntimeFixture(ROOT, source);
       setupConsoleFixture(home, source);
@@ -769,7 +850,7 @@ describe('install command global runtime bootstrap', () => {
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -810,21 +891,21 @@ describe('install command global runtime bootstrap', () => {
       const globalDist = join(home, '.bun', 'install', 'global', 'node_modules', 'repo-harness', 'dist');
       mkdirSync(globalDist, { recursive: true });
       copyFileSync(join(ROOT, 'dist', 'hook-entry.js'), join(globalDist, 'hook-entry.js'));
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
       mkdirSync(join(home, '.agents', 'rules'), { recursive: true });
       writeFileSync(join(home, '.agents', 'rules', 'anti-patterns.md'), 'anti\n');
       writeFileSync(join(home, '.agents', 'rules', 'chinese.md'), 'zh\n');
       writeFileSync(join(home, '.agents', 'rules', 'durable-context.md'), 'durable\n');
       writeFileSync(join(home, '.agents', 'rules', 'english.md'), 'en\n');
-      writeFakeCodegraph(fakeBin, codegraphLog);
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n`);
+      writeFakeCodegraph(tmp, fakeBin, codegraphLog);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n`);
       // The install/init provider-driven external-skills bootstrap invokes
       // `bunx skills add ...` directly. The CodeGraph MCP configure step shells
       // out to the real scripts/check-agent-tooling.sh, whose Waza status probe
       // resolves the `skills` binary from PATH instead of going through bunx, so
       // that one is stubbed separately below.
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunxLog}"\nif [[ "\${1:-}" == "skills" && "\${2:-}" == "add" ]]; then if [[ " $* " == *" tw93/Waza "* ]]; then names='think hunt check health'; else names='mermaid'; fi; if [[ " $* " == *" -a claude-code -s "* ]]; then root="$HOME/.claude/skills"; else root="$HOME/.agents/skills"; fi; for skill in $names; do mkdir -p "$root/$skill"; printf '# %s\\n' "$skill" > "$root/$skill/SKILL.md"; done; fi\nexit 0\n`);
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunxLog}"\nif [[ "\${1:-}" == "skills" && "\${2:-}" == "add" ]]; then if [[ " $* " == *" tw93/Waza "* ]]; then names='think hunt check health'; else names='mermaid'; fi; if [[ " $* " == *" -a claude-code -s "* ]]; then root="$HOME/.claude/skills"; else root="$HOME/.agents/skills"; fi; for skill in $names; do mkdir -p "$root/$skill"; printf '# %s\\n' "$skill" > "$root/$skill/SKILL.md"; done; fi\nexit 0\n`);
 
       const result = runGlobalRuntimeSetup({
         sourceRoot: source,
@@ -834,7 +915,7 @@ describe('install command global runtime bootstrap', () => {
         externalSkills: true,
         codegraph: true,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -887,11 +968,11 @@ describe('install command global runtime bootstrap', () => {
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
       setupFakeSource(source);
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
       setObsidianSkillIntegrities(source);
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash
 printf '%s\n' "$*" >> "${bunxLog}"
 if [[ " $* " == *" ${OBSIDIAN_PROVIDER} "* ]]; then
   for skill in obsidian-markdown obsidian-cli; do
@@ -902,7 +983,7 @@ fi
 exit 0
 `);
       const env = {
-        ...sanitizedChildEnv(),
+        ...sanitizedChildEnv(home),
         HOME: home,
         BUN_INSTALL: join(home, '.bun'),
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -995,7 +1076,7 @@ exit 0
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
       setupFakeSource(source);
-      setupManagedRuntimeReadback(home, fakeBin);
+      setupManagedRuntimeReadback(tmp, home, fakeBin);
       for (const skill of ['think', 'hunt', 'check', 'health', 'mermaid']) {
         mkdirSync(join(home, '.agents', 'skills', skill), { recursive: true });
         writeFileSync(join(home, '.agents', 'skills', skill, 'SKILL.md'), `# stale ${skill}\n`);
@@ -1009,11 +1090,11 @@ exit 0
       const stagingRules = wazaRules.files.map((rule) => join(home, '.agents', 'rules', rule));
       recordInstallOwnership([], { HOME: home });
       recordInstallOwnership([...stagingRules, ...wazaRules.files.map(rule => join(home, '.codex/rules', rule))], { HOME: home });
-      writeFakeCodegraph(fakeBin, codegraphLog);
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunxLog}"\nexit 0\n`);
-      writeExecutable(join(fakeBin, 'curl'), `#!/bin/bash
+      writeFakeCodegraph(tmp, fakeBin, codegraphLog);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunxLog}"\nexit 0\n`);
+      writeExecutable(tmp, join(fakeBin, 'curl'), `#!/bin/bash
 set -euo pipefail
 output=''
 while [[ $# -gt 0 ]]; do
@@ -1034,7 +1115,7 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
         hostAdapters: false,
         ...options,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -1106,9 +1187,9 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
       expect(update({ plugins: FULL_PLUGINS }).steps.find(step => step.step === 'verify managed runtime dependencies')?.detail).toContain('Move or remove it');
       rmSync(archctxLink);
       const bunScript = readFileSync(join(fakeBin, 'bun.fixture-body'), 'utf8');
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
       expect(update({ plugins: FULL_PLUGINS }).steps.find(step => step.step === 'verify managed runtime dependencies')?.detail).toContain('RH_ARCHCTX_BIN_READBACK');
-      writeShellExecutableFixture(join(fakeBin, 'bun'), bunScript);
+      writeShellExecutableFixture(tmp, join(fakeBin, 'bun'), bunScript);
       expect(readFileSync(bunxLog, 'utf-8')).toContain('skills add tw93/Waza -g -a codex -s think hunt check health -y');
       expect(readFileSync(bunxLog, 'utf-8')).toContain('skills add BfdCampos/dotfiles -g -a codex -s mermaid -y');
       expect(readFileSync(bunLog, 'utf-8')).toContain(`add -g @colbymchenry/codegraph@${CODEGRAPH_PIN}`);
@@ -1144,12 +1225,12 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
       setupFakeSource(source);
-      setupManagedRuntimeReadback(home, fakeBin);
+      setupManagedRuntimeReadback(tmp, home, fakeBin);
       const archctxManifest = join(home, '.bun', 'install', 'global', 'node_modules', 'archctx', 'package.json');
       const stale = JSON.parse(readFileSync(archctxManifest, 'utf-8'));
       stale.version = '0.3.0';
       writeFileSync(archctxManifest, JSON.stringify(stale));
-      writeExecutable(join(fakeBin, 'bun'), [
+      writeExecutable(tmp, join(fakeBin, 'bun'), [
         '#!/bin/bash',
         `printf '%s\\n' "$*" >> "${bunLog}"`,
         'if [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi',
@@ -1168,7 +1249,7 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -1201,7 +1282,7 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
     try {
       for (const dir of [source, home, repo, fakeBin]) mkdirSync(dir, { recursive: true });
       setupFakeSource(source);
-      setupManagedRuntimeReadback(home, fakeBin);
+      setupManagedRuntimeReadback(tmp, home, fakeBin);
       const globalRoot = join(home, '.bun', 'install', 'global');
       const topArchctx = join(globalRoot, 'node_modules', 'archctx');
       const nestedArchctx = join(globalRoot, 'node_modules', 'repo-harness', 'node_modules', 'archctx');
@@ -1213,12 +1294,12 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
       writeFileSync(join(topArchctx, 'package.json'), JSON.stringify({ ...JSON.parse(candidateManifest), version: '0.12.0' }));
       mkdirSync(join(nestedArchctx, 'bin'), { recursive: true });
       writeFileSync(join(nestedArchctx, 'package.json'), candidateManifest);
-      writeExecutable(join(nestedArchctx, 'bin', 'archctx.mjs'), '#!/usr/bin/env node\n');
+      writeExecutable(tmp, join(nestedArchctx, 'bin', 'archctx.mjs'), '#!/usr/bin/env node\n');
       const link = join(home, '.bun', 'bin', 'archctx');
       mkdirSync(join(home, '.bun', 'bin'), { recursive: true });
       symlinkSync(join(topArchctx, 'bin', 'archctx.mjs'), link);
       // `bun add -g archctx@<pin>` puts the pin at the top level and keeps the nested copy, as Bun 1.4.3 does (#2669).
-      writeExecutable(join(fakeBin, 'bun'), [
+      writeExecutable(tmp, join(fakeBin, 'bun'), [
         '#!/bin/bash',
         `printf '%s\\n' "$*" >> "${bunLog}"`,
         'if [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi',
@@ -1238,7 +1319,7 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -1276,11 +1357,11 @@ if [[ -n "$output" ]]; then printf '# refreshed rule\\n' > "$output"; else print
       mkdirSync(fakeBin, { recursive: true });
       mkdirSync(hostileBunInstall, { recursive: true });
       writeExecutable(
-        join(fakeBin, 'bun'),
+        tmp, join(fakeBin, 'bun'),
         '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n',
       );
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash
 printf '%s\n' "$HOME" > "${isolatedHomeLog}"
 printf '%s\n%s\n%s\n%s\n' "$BUN_INSTALL" "$BUN_INSTALL_CACHE_DIR" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" > "${isolatedRuntimeLog}"
 mkdir -p "$BUN_INSTALL"
@@ -1303,7 +1384,7 @@ exit 0
         obsidianSkills: true,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: hostileBunInstall,
           XDG_STATE_HOME: join(home, '.local', 'state'),
@@ -1355,7 +1436,7 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home },
+        env: { ...sanitizedChildEnv(home), HOME: home },
       });
 
       expect(result.exitCode).toBe(1);
@@ -1393,7 +1474,7 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home },
+        env: { ...sanitizedChildEnv(home), HOME: home },
       });
 
       expect(result.exitCode).toBe(1);
@@ -1424,8 +1505,8 @@ exit 0
       setObsidianSkillIntegrities(source);
       mkdirSync(join(home, '.codex', 'skills', 'obsidian-markdown'), { recursive: true });
       writeFileSync(join(home, '.codex', 'skills', 'obsidian-markdown', 'SKILL.md'), '# user-owned\n');
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash\nprintf '%s\\n' "$*" > "${bunxLog}"\nexit 0\n`);
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash\nprintf '%s\\n' "$*" > "${bunxLog}"\nexit 0\n`);
 
       const result = runGlobalRuntimeSetup({
         sourceRoot: source,
@@ -1438,7 +1519,7 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+        env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
       expect(result.exitCode).toBe(1);
@@ -1460,11 +1541,11 @@ exit 0
     const source = join(temporary, 'source'), home = join(temporary, 'home'), outside = join(temporary, 'outside'), bin = join(temporary, 'bin');
     try {
       mkdirSync(join(home, '.codex'), { recursive: true }); mkdirSync(outside); mkdirSync(bin);
-      setupFakeSource(source); setObsidianSkillIntegrities(source); writeFakeHc(bin); writeFakeSkillsCli(bin);
-      writeExecutable(join(bin, 'bun'), '#!/bin/bash\nif [[ "$1" == --version ]]; then echo 1.4.0; exit 0; fi\nexit 0\n');
-      writeExecutable(join(bin, 'bunx'), '#!/bin/bash\nfor skill in obsidian-markdown obsidian-cli; do mkdir -p "$HOME/.agents/skills/$skill"; printf "# %s\\n" "$skill" > "$HOME/.agents/skills/$skill/SKILL.md"; done\n');
+      setupFakeSource(source); setObsidianSkillIntegrities(source); writeFakeHc(bin); writeFakeSkillsCli(temporary, bin);
+      writeExecutable(temporary, join(bin, 'bun'), '#!/bin/bash\nif [[ "$1" == --version ]]; then echo 1.4.0; exit 0; fi\nexit 0\n');
+      writeExecutable(temporary, join(bin, 'bunx'), '#!/bin/bash\nfor skill in obsidian-markdown obsidian-cli; do mkdir -p "$HOME/.agents/skills/$skill"; printf "# %s\\n" "$skill" > "$HOME/.agents/skills/$skill/SKILL.md"; done\n');
       writeFileSync(join(outside, 'keep.txt'), 'user\n'); symlinkSync(outside, join(home, '.codex/skills'), 'dir');
-      const env = { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: bin + ':' + process.env.PATH, REPO_HARNESS_BUN_EXECUTABLE: join(bin, 'bun') };
+      const env = { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: bin + ':' + process.env.PATH, REPO_HARNESS_BUN_EXECUTABLE: join(bin, 'bun') };
       const result = runGlobalRuntimeSetup({ sourceRoot: source, cwd: temporary, target: 'codex', plugins: ['strategy-memory'], installCli: false,
         syncSkill: false, hostAdapters: false, externalSkills: false, obsidianSkills: true, codegraph: false, env });
       expect(result.exitCode, result.stderr).toBe(0);
@@ -1489,8 +1570,8 @@ exit 0
       setupFakeSource(source);
       setObsidianSkillIntegrities(source);
       symlinkSync(join(tmp, 'missing-host-root'), join(home, '.codex', 'skills'), 'dir');
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash
 mkdir -p "$HOME/.agents/skills/obsidian-markdown"
 printf '# obsidian-markdown\\n' > "$HOME/.agents/skills/obsidian-markdown/SKILL.md"
 exit 0
@@ -1507,7 +1588,7 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+        env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
       expect(result.exitCode).toBe(1);
@@ -1547,7 +1628,7 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home },
+        env: { ...sanitizedChildEnv(home), HOME: home },
       })).toThrow('required package "obsidian-markdown" is not in this catalog');
       expect(existsSync(join(home, '.agents', 'skills', 'obsidian-cli'))).toBe(false);
       expect(existsSync(join(home, '.codex', 'skills', 'obsidian-cli'))).toBe(false);
@@ -1579,7 +1660,7 @@ exit 0
         externalSkills: false,
         obsidianSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home },
+        env: { ...sanitizedChildEnv(home), HOME: home },
       });
 
       expect(result.exitCode).toBe(1);
@@ -1615,9 +1696,9 @@ exit 0
       setupConsoleFixture(home, source);
       mkdirSync(packDir, { recursive: true });
       for (const name of ['repo-harness-9.9.8.tgz', 'repo-harness-0.10.0-local.tgz', 'other-1.0.0.tgz']) writeFileSync(join(packDir, name), '');
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
       writeExecutable(
-        join(fakeBin, 'bun'),
+        tmp, join(fakeBin, 'bun'),
         [
           '#!/bin/bash',
           'set -euo pipefail',
@@ -1633,7 +1714,7 @@ exit 0
           '',
         ].join('\n'),
       );
-      writeExecutable(
+      writeExecutable(tmp,
         join(fakeBin, 'npm'),
         [
           '#!/bin/bash',
@@ -1665,7 +1746,7 @@ exit 0
         hostAdapters: false,
         externalSkills: false,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+        env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
       expect(result.exitCode, result.stdout).toBe(0);
@@ -1699,7 +1780,7 @@ exit 0
       const source = join(tmp, 'source');
       copyPackageRuntimeFixture(ROOT, source);
       setupConsoleFixture(home, source);
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
 
       const result = runGlobalRuntimeSetup({
         sourceRoot: source,
@@ -1710,7 +1791,7 @@ exit 0
         syncSkill: false,
         hostAdapters: false,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+        env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
       expect(result.exitCode).toBe(0);
@@ -1735,11 +1816,11 @@ exit 0
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 0\n');
-      writeFakeSkillsCli(fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 0\n');
+      writeFakeSkillsCli(tmp, fakeBin);
       // Provider rule (skills CLI): one distinct agent skillsDir selects copy
       // mode, which writes only that agent's root; claude-code alone skips staging.
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash
 printf '%s\\n' "$*" >> "${bunxLog}"
 if [[ "\${1:-}" == "skills" && "\${2:-}" == "add" ]]; then
   if [[ " $* " == *" tw93/Waza "* ]]; then
@@ -1768,7 +1849,7 @@ exit 0
         hostAdapters: false,
         externalSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+        env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
       const first = runInstall();
       expect(first.exitCode).toBe(0);
@@ -1811,7 +1892,7 @@ exit 0
       }
       mkdirSync(join(home, '.codex', 'skills', 'think'), { recursive: true });
       writeFileSync(join(home, '.codex', 'skills', 'think', 'SKILL.md'), '# think\n');
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 0\n');
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 0\n');
 
       const result = runGlobalRuntimeSetup({
         sourceRoot: source,
@@ -1823,7 +1904,7 @@ exit 0
         hostAdapters: false,
         externalSkills: true,
         codegraph: false,
-        env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+        env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
       });
 
       expect(result.exitCode).toBe(1);
@@ -1847,8 +1928,8 @@ exit 0
       mkdirSync(home, { recursive: true });
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
-      setupManagedRuntimeReadback(home, fakeBin, '9.9.8');
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+      setupManagedRuntimeReadback(tmp, home, fakeBin, '9.9.8');
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
 
       const result = runGlobalRuntimeSetup({
         sourceRoot: ROOT,
@@ -1862,7 +1943,7 @@ exit 0
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -1888,18 +1969,18 @@ exit 0
       mkdirSync(home, { recursive: true });
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
-      setupManagedRuntimeReadback(home, fakeBin, JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version as string);
+      setupManagedRuntimeReadback(tmp, home, fakeBin, JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version as string);
       const globalHarness = join(home, '.bun', 'install', 'global', 'node_modules', 'repo-harness');
       rmSync(globalHarness, { recursive: true, force: true });
       seedGlobalPackageFixture({ HOME: home, BUN_INSTALL: join(home, '.bun') });
-      writeExecutable(join(fakeBin, 'node'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo v22.21.0; exit 0; fi\nexit 1\n');
+      writeExecutable(tmp, join(fakeBin, 'node'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo v22.21.0; exit 0; fi\nexit 1\n');
       recordPluginSelection({ HOME: home });
 
       const result = spawnSync('bash', [join(ROOT, 'scripts', 'sync-codex-installed-copies.sh')], {
         cwd: repo,
         encoding: 'utf8',
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
@@ -1934,9 +2015,9 @@ exit 0
       writeFakeHc(fakeBin);
       setupFakeSource(source);
       setupConsoleFixture(home, source);
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
-      writeExecutable(join(fakeBin, 'npx'), '#!/bin/bash\nexit 0\n');
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+      writeExecutable(tmp, join(fakeBin, 'npx'), '#!/bin/bash\nexit 0\n');
 
       const result = runGlobalRuntimeSetup({
         plugins: FULL_PLUGINS,
@@ -1946,7 +2027,7 @@ exit 0
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -1978,9 +2059,9 @@ exit 0
       writeFakeHc(fakeBin);
       setupFakeSource(source);
       setupConsoleFixture(home, source);
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
-      writeExecutable(join(fakeBin, 'npm'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${npmLog}"\nexit 42\n`);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
+      writeExecutable(tmp, join(fakeBin, 'npm'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${npmLog}"\nexit 42\n`);
 
       const result = runGlobalRuntimeSetup({
         plugins: FULL_PLUGINS,
@@ -1991,7 +2072,7 @@ exit 0
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -2025,10 +2106,10 @@ exit 0
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
       setupFakeSource(source);
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
       symlinkSync(source, globalPackage, 'dir');
       setupConsoleFixture(home, source);
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
 
       const result = runGlobalRuntimeSetup({
         plugins: FULL_PLUGINS,
@@ -2039,7 +2120,7 @@ exit 0
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -2071,8 +2152,8 @@ exit 0
       writeFakeHc(fakeBin);
       setupFakeSource(source);
       setupConsoleFixture(home, source);
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
 
       const result = runGlobalRuntimeSetup({
         plugins: FULL_PLUGINS,
@@ -2083,7 +2164,7 @@ exit 0
         externalSkills: false,
         codegraph: false,
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -2121,10 +2202,10 @@ exit 0
       writeFakeHc(fakeBin);
       setupFakeSource(source);
       setupConsoleFixture(home, source);
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nexit 42\n`);
 
       const baseEnv: NodeJS.ProcessEnv = {
-        ...sanitizedChildEnv(),
+        ...sanitizedChildEnv(home),
         HOME: home,
         BUN_INSTALL: join(home, '.bun'),
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -2168,7 +2249,7 @@ exit 0
   }, 30_000);
 
   test('CLI exposes install help for npx users without legacy plugin options', () => {
-    const res = spawnSync('bun', [CLI, 'install', '--help'], {
+    const res = spawnSync(process.execPath, [CLI, 'install', '--help'], {
       cwd: ROOT,
       encoding: 'utf-8',
     });
@@ -2194,7 +2275,7 @@ exit 0
       const res = spawnSync(process.execPath, [
         CLI, 'install', '--no-plugins', '--target', 'codex', '--no-cli', '--no-sync-skill', '--no-hooks',
         '--no-external-skills', '--no-codegraph', '--with-reverse-skill', '--json',
-      ], { cwd: repo, encoding: 'utf-8', env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun') } });
+      ], { cwd: repo, encoding: 'utf-8', env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun') } });
 
       expect(res.status, `${res.stderr}\n${res.stdout}`).not.toBe(0);
       expect(res.stderr).toContain("unknown option '--with-reverse-skill'");
@@ -2216,7 +2297,7 @@ exit 0
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
       mkdirSync(join(home, '.repo-harness'), { recursive: true });
-      setupManagedRuntimeReadback(home, fakeBin);
+      setupManagedRuntimeReadback(tmp, home, fakeBin);
       installCandidateRuntimeFixture(home, JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version as string);
       writeFileSync(installStateFixturePath({ HOME: home }), `${JSON.stringify({
         protocol: 4,
@@ -2231,7 +2312,7 @@ exit 0
       const migrationInput = join(tmp, 'candidate-config.json');
       const originalConfig = JSON.stringify({ seats: DEFAULT_SEATS_CONFIG, brainRoot: '/retired' });
       writeFileSync(migrationInput, originalConfig);
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == "pm" && "\${2:-}" == "view" ]]; then printf '%s\\n' '${JSON.stringify(candidateVersion)}'; exit 0; fi\nif [[ "\${1:-}" == "add" && "\${2:-}" == "-g" && "\${3:-}" == repo-harness@* ]]; then cp "${migrationInput}" "$HOME/.repo-harness/config.json"; fi\nif [[ "\${1:-}" == */src/cli/index.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == "pm" && "\${2:-}" == "view" ]]; then printf '%s\\n' '${JSON.stringify(candidateVersion)}'; exit 0; fi\nif [[ "\${1:-}" == "add" && "\${2:-}" == "-g" && "\${3:-}" == repo-harness@* ]]; then cp "${migrationInput}" "$HOME/.repo-harness/config.json"; fi\nif [[ "\${1:-}" == */src/cli/index.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
 
       const runUpdate = () => spawnSync(
         process.execPath,
@@ -2248,7 +2329,7 @@ exit 0
           cwd: repo,
           encoding: 'utf-8',
           env: {
-            ...sanitizedChildEnv(),
+            ...sanitizedChildEnv(home),
             HOME: home,
             REPO_HARNESS_HOME: join(home, '.repo-harness'),
             BUN_INSTALL: join(home, '.bun'),
@@ -2305,12 +2386,12 @@ exit 0
         target: 'codex',
         plugins: FULL_PLUGINS,
         obsidianSkills: true,
-        env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun') },
+        env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun') },
       }, options => {
         mkdirSync(staging, { recursive: true });
         writeFileSync(join(staging, 'SKILL.md'), '# obsidian-markdown\n');
         mkdirSync(join(home, '.codex', 'skills'), { recursive: true });
-        openHostConfigGate({ env: { ...sanitizedChildEnv(), HOME: home } }).writePaths([{ path: projected, owner: 'strategy-memory', entry: { type: 'symlink', target: staging } }], { transaction: options.transaction });
+        openHostConfigGate({ env: { ...sanitizedChildEnv(home), HOME: home } }).writePaths([{ path: projected, owner: 'strategy-memory', entry: { type: 'symlink', target: staging } }], { transaction: options.transaction });
         return {
           exitCode: 1,
           steps: [
@@ -2380,9 +2461,9 @@ exit 0
       writeFakeHc(fakeBin);
       // update keeps the recorded selection, so it needs an install state.
       recordExplicitFullSelection(home);
-      setupManagedRuntimeReadback(home, fakeBin);
+      setupManagedRuntimeReadback(tmp, home, fakeBin);
       installCandidateRuntimeFixture(home, '9.9.9');
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == */src/cli/index.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == */src/cli/index.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ "\${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n`);
 
       const res = spawnSync(
         process.execPath,
@@ -2401,7 +2482,7 @@ exit 0
           cwd: repo,
           encoding: 'utf-8',
           env: {
-            ...sanitizedChildEnv(),
+            ...sanitizedChildEnv(home),
             HOME: home,
             BUN_INSTALL: join(home, '.bun'),
             PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -2444,7 +2525,7 @@ exit 0
         ownership_manifest: [],
         previous: null,
       })}\n`);
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
 
       const res = spawnSync(process.execPath, [
         CLI,
@@ -2459,7 +2540,7 @@ exit 0
         cwd: repo,
         encoding: 'utf-8',
         env: {
-          ...sanitizedChildEnv(),
+          ...sanitizedChildEnv(home),
           HOME: home,
           BUN_INSTALL: join(home, '.bun'),
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -2487,7 +2568,7 @@ exit 0
 
   test('CLI update rejects the retired --check and --no-runtime-refresh options', () => {
     for (const retired of ['--check', '--no-runtime-refresh', '--check-updates']) {
-      const res = spawnSync('bun', [CLI, 'update', retired], {
+      const res = spawnSync(process.execPath, [CLI, 'update', retired], {
         cwd: ROOT,
         encoding: 'utf-8',
       });
@@ -2499,7 +2580,7 @@ exit 0
   }, 30_000);
 
   test('CLI exposes update help for user-level refresh', () => {
-    const res = spawnSync('bun', [CLI, 'update', '--help'], {
+    const res = spawnSync(process.execPath, [CLI, 'update', '--help'], {
       cwd: ROOT,
       encoding: 'utf-8',
     });
@@ -2532,8 +2613,8 @@ exit 0
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
       writeFakeHc(fakeBin);
-      writeReadyOfficialCodexPluginCli(fakeBin, home);
-      writeFakeCodegraph(fakeBin, codegraphLog);
+      writeReadyOfficialCodexPluginCli(tmp, fakeBin, home);
+      writeFakeCodegraph(tmp, fakeBin, codegraphLog);
       const source = join(tmp, 'source');
       copyPackageRuntimeFixture(ROOT, source);
       const sourceModules = join(source, 'node_modules');
@@ -2543,9 +2624,9 @@ exit 0
       }
       setupConsoleFixture(home, source);
       const seedGlobalPackage = `import { seedGlobalPackageFixture } from ${JSON.stringify(new URL('../helpers/install-ownership.ts', import.meta.url).href)}; seedGlobalPackageFixture(process.env, { mutable: true });`;
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == "-" || "\${1:-}" == "-e" || "\${1:-}" == *.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ " $* " == *" add -g "* ]]; then mkdir -p "$HOME/.bun/bin"; printf '#!/bin/sh\\n' > "$HOME/.bun/bin/rh"; chmod +x "$HOME/.bun/bin/rh"; "${process.execPath}" -e '${seedGlobalPackage.replaceAll("'", "'\\''")}' || exit $?; fi\nexit 0\n`);
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'bunx'), `#!/bin/bash
+      writeExecutable(tmp, join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nif [[ "\${1:-}" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "\${1:-}" == "-" || "\${1:-}" == "-e" || "\${1:-}" == *.ts ]]; then exec "${process.execPath}" "$@"; fi\nif [[ " $* " == *" add -g "* ]]; then mkdir -p "$HOME/.bun/bin"; printf '#!/bin/sh\\n' > "$HOME/.bun/bin/rh"; chmod +x "$HOME/.bun/bin/rh"; "${process.execPath}" -e '${seedGlobalPackage.replaceAll("'", "'\\''")}' || exit $?; fi\nexit 0\n`);
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'bunx'), `#!/bin/bash
 printf '%s\\n' "$*" >> "${bunxLog}"
 if [[ "\${1:-}" == "skills" && "\${2:-}" == "add" ]]; then
   if [[ " $* " == *" tw93/Waza "* ]]; then
@@ -2579,7 +2660,7 @@ exit 0
           input: '',
           timeout: 20000,
           env: {
-            ...sanitizedChildEnv(),
+            ...sanitizedChildEnv(home),
             HOME: home,
             BUN_INSTALL: join(home, '.bun'),
             PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -2697,7 +2778,7 @@ test('managed runtime readback reports stale shared daemon after a successful pa
     const home = join(tmp, 'home');
     const fakeBin = join(tmp, 'bin');
     mkdirSync(fakeBin, { recursive: true });
-    setupManagedRuntimeReadback(home, fakeBin);
+    setupManagedRuntimeReadback(tmp, home, fakeBin);
     const source = join(tmp, 'source');
     mkdirSync(source);
     writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'repo-harness', version: '9.9.9' }));
@@ -2706,7 +2787,7 @@ test('managed runtime readback reports stale shared daemon after a successful pa
     writeFileSync(nodePath, original.replace('"data":{"running":false}', `"data":{"running":true,"versionUnsupported":{"reason":"product-version-mismatch","expected":"${ARCHCTX_PIN}","received":"0.2.3","action":"upgrade-archctx-runtime","command":"archctx daemon upgrade"}}`));
     registerArchitecturePlugin();
     const result = verifyInstalledManagedRuntime({ sourceRoot: source, cwd: tmp, plugins: ['architecture'], env: {
-      ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'),
+      ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'),
       PATH: `${fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_BUN_EXECUTABLE: process.execPath,
     } });
     expect(result.status).toBe('failed');
@@ -2727,18 +2808,18 @@ test('daemon maintenance preserves the verified candidate and hoisted dependenci
     writeFakeHc(fakeBin);
     // The stub agent fleet helper runs under core.
     setupFakeSource(source);
-    setupManagedRuntimeReadback(home, fakeBin, '1.0.0');
-    writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nif [[ "${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n');
+    setupManagedRuntimeReadback(tmp, home, fakeBin, '1.0.0');
+    writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nif [[ "${3:-}" == archctx@* ]]; then mkdir -p "$HOME/.bun/bin"; ln -sf "$HOME/.bun/install/global/node_modules/archctx/bin/archctx.mjs" "$HOME/.bun/bin/archctx"; fi\nexit 0\n');
     const globalModules = join(home, '.bun/install/global/node_modules');
     const harnessManifest = join(globalModules, 'repo-harness/package.json');
     writeFileSync(harnessManifest, JSON.stringify({ name: 'repo-harness', version: '1.0.0', dependencies: { archctx: '0.2.3', 'archctx-contracts': '0.2.3' } }));
     const options = { sourceRoot: source, cwd: tmp, target: 'codex' as const, plugins: ['architecture'] as const,
       installCli: false, installSpec: 'repo-harness@9.9.9', updateMode: true,
       syncSkill: false, hostAdapters: false, externalSkills: false, codegraph: false,
-      env: { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'),
+      env: { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'),
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_BUN_EXECUTABLE: join(fakeBin, 'bun') } };
     const result = runTransactionalRuntimeRefresh(options, (transactionOptions) => {
-      setupManagedRuntimeReadback(home, fakeBin, '9.9.9');
+      setupManagedRuntimeReadback(tmp, home, fakeBin, '9.9.9');
       const body = join(fakeBin, 'node.fixture-body');
       writeFileSync(body, readFileSync(body, 'utf8').replace('"data":{"running":false}', `"data":{"running":true,"versionUnsupported":{"reason":"product-version-mismatch","expected":"${ARCHCTX_PIN}","received":"0.2.3","action":"upgrade-archctx-runtime","command":"archctx daemon upgrade"}}`));
       return runGlobalRuntimeSetup(transactionOptions);
@@ -2764,9 +2845,9 @@ test('a fleet failure after the CLI install restores the predecessor hoisted arc
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(predecessor);
     writeFileSync(join(predecessor, 'package.json'), JSON.stringify({ name: 'repo-harness', version: '1.0.0' }));
-    setupManagedRuntimeReadback(home, fakeBin, '1.0.0');
+    setupManagedRuntimeReadback(tmp, home, fakeBin, '1.0.0');
     const globalModules = join(home, '.bun/install/global/node_modules');
-    const env = { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'),
+    const env = { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'),
       PATH: `${fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_BUN_EXECUTABLE: process.execPath };
     const result = runTransactionalRuntimeRefresh({ cwd: tmp, target: 'codex', plugins: ['architecture'], env }, () => {
       writeFileSync(join(globalModules, 'repo-harness/package.json'), JSON.stringify({
@@ -2827,11 +2908,11 @@ describe('Waza shared rule refresh', () => {
       }
       recordInstallOwnership([], { HOME: home });
       recordInstallOwnership(paths, { HOME: home });
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; fi\n');
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; fi\n');
       // Skills CLI does not write shared rules.
-      writeExecutable(join(fakeBin, 'bunx'), '#!/bin/bash\nexit 0\n');
-      writeFakeSkillsCli(fakeBin);
-      writeExecutable(join(fakeBin, 'curl'), `#!/bin/bash
+      writeExecutable(tmp, join(fakeBin, 'bunx'), '#!/bin/bash\nexit 0\n');
+      writeFakeSkillsCli(tmp, fakeBin);
+      writeExecutable(tmp, join(fakeBin, 'curl'), `#!/bin/bash
 set -euo pipefail
 output=''
 url=''
@@ -2851,7 +2932,7 @@ esac
 if [[ -f "$WAZA_FIXTURE_UPSTREAM/fail-\${url##*/}" ]]; then echo 'fixture HTTP 503' >&2; exit 22; fi
 if [[ -n "$output" ]]; then cat "$source" > "$output"; else cat "$source"; fi
 `);
-      const env = { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), WAZA_FIXTURE_UPSTREAM: upstream,
+      const env = { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), WAZA_FIXTURE_UPSTREAM: upstream,
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`, REPO_HARNESS_BUN_EXECUTABLE: join(fakeBin, 'bun') };
       body({ home, upstream, fakeBin, env, paths,
         run: (refresh = true, target = 'both') => syncWazaSharedRules(home, target === 'both' ? ['claude', 'codex'] : [target], env, refresh),
@@ -3026,10 +3107,10 @@ describe('Codex Waza projection', () => {
         }
         // Only the runtime version probe is external. All skill bytes are staged.
         // The core agent fleet helper runs its stdin script on the real Bun.
-        writeExecutable(join(bin, 'bun'), `#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "$1" == "-" ]]; then exec "${process.execPath}" "$@"; fi\nexit 9\n`);
-        writeExecutable(join(bin, 'bunx'), '#!/bin/bash\nexit 9\n');
-        writeExecutable(join(bin, 'curl'), '#!/bin/bash\nwhile [[ $# -gt 0 ]]; do if [[ "$1" == --output ]]; then out="$2"; shift; fi; shift; done\nprintf "# rule\\n" > "$out"\n');
-        const env = { ...sanitizedChildEnv(), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${bin}:${process.env.PATH ?? ''}` };
+        writeExecutable(tmp, join(bin, 'bun'), `#!/bin/bash\nif [[ "$1" == "--version" ]]; then echo 1.4.0; exit 0; fi\nif [[ "$1" == "-" ]]; then exec "${process.execPath}" "$@"; fi\nexit 9\n`);
+        writeExecutable(tmp, join(bin, 'bunx'), '#!/bin/bash\nexit 9\n');
+        writeExecutable(tmp, join(bin, 'curl'), '#!/bin/bash\nwhile [[ $# -gt 0 ]]; do if [[ "$1" == --output ]]; then out="$2"; shift; fi; shift; done\nprintf "# rule\\n" > "$out"\n');
+        const env = { ...sanitizedChildEnv(home), HOME: home, BUN_INSTALL: join(home, '.bun'), PATH: `${bin}:${process.env.PATH ?? ''}` };
         const result = runGlobalRuntimeSetup({ sourceRoot: ROOT, cwd: tmp, target: 'codex', plugins: [],
           installCli: false, syncSkill: false, hostAdapters: false, externalSkills: true, codegraph: false, env });
         const waza = result.steps.find(step => step.step === 'configure Waza skills');
@@ -3094,10 +3175,10 @@ describe('Global Working Rules refresh during install and update', () => {
         join(ROOT, 'assets', 'reference-configs', 'global-working-rules.md'),
         join(source, 'assets', 'reference-configs', 'global-working-rules.md'),
       );
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
+      writeExecutable(tmp, join(fakeBin, 'bun'), '#!/bin/bash\nif [[ "${1:-}" == "--version" ]]; then echo 1.4.0; fi\nexit 0\n');
       writeFakeHc(fakeBin);
       const env = {
-        ...sanitizedChildEnv(),
+        ...sanitizedChildEnv(home),
         HOME: home,
         BUN_INSTALL: join(home, '.bun'),
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -3213,7 +3294,7 @@ describe('Global Working Rules refresh during install and update', () => {
     chmodSync(path, 0o000);
     try {
       const env = {
-        ...sanitizedChildEnv(),
+        ...sanitizedChildEnv(home),
         HOME: home,
         BUN_INSTALL: join(home, '.bun'),
         PATH: `${join(home, '..', 'bin')}:${process.env.PATH ?? ''}`,

@@ -468,7 +468,7 @@ describe("Codex installed copy sync", () => {
         seedSkillSurfaceRuntime(source);
         writeFileSync(join(source, "SKILL.md"), "---\nname: repo-harness\n---\n");
         mkdirSync(tools, { recursive: true });
-        writeBunWrapper(join(tools, "bun"));
+        writeBunWrapper(tmp, join(tools, "bun"));
         if (row.userRoot) {
           mkdirSync(join(piRoot, "user-skill"), { recursive: true });
           writeFileSync(join(piRoot, "user-skill", "SKILL.md"), "# user\n");

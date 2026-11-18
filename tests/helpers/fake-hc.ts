@@ -30,7 +30,7 @@ exit 2
  * A fixture puts it first on PATH, so no test runs the developer's hc.
  */
 export function writeFakeHc(bin: string): void {
-  writeShellExecutableFixture(join(bin, 'hc'), `#!/bin/sh\nif [ "\${1:-}" = --skill ]; then printf "%s\\n" "# hc manual (herdr-core)" "" "\\\`\\$HC_TERMINAL_ID\\\` is your address."; else printf "hc ${HC_MIN_VERSION}\\n"; fi\n`);
+  writeShellExecutableFixture(bin, join(bin, 'hc'), `#!/bin/sh\nif [ "\${1:-}" = --skill ]; then printf "%s\\n" "# hc manual (herdr-core)" "" "\\\`\\$HC_TERMINAL_ID\\\` is your address."; else printf "hc ${HC_MIN_VERSION}\\n"; fi\n`);
 }
 
 // A herdr-core release server in its own process: the install step downloads with a synchronous curl.

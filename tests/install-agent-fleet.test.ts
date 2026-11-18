@@ -847,7 +847,7 @@ describe("install-agent-fleet", () => {
     try {
       const supportedBin = join(root, "supported-bin");
       mkdirSync(supportedBin);
-      writeBunWrapper(join(supportedBin, "bun"));
+      writeBunWrapper(root, join(supportedBin, "bun"));
       const result = runInstaller(home, FLEET_SOURCE_DIR, [], {
         REPO_HARNESS_BUN_BIN: join(root, "missing-runtime"),
         PATH: `${supportedBin}:${process.env.PATH}`,
