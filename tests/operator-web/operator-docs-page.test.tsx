@@ -1,3 +1,4 @@
+import { setImmediate } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -32,10 +33,12 @@ const NOW = Date.now();
 const activity = decodeDevActivitySnapshot(busyDevActivity(NOW));
 
 let root: Root | null = null;
+let cancelRenderWait: (() => void) | undefined;
 let window: Window;
 let requests: string[] = [];
 let answerFor: (url: URL) => DocsWireAnswer;
 const realFetch = globalThis.fetch;
+const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 /** The docs routes of each registered repository as the server answers them, from the wire-format fixtures. */
 function serveDocs(url: URL): DocsWireAnswer {
@@ -73,6 +76,11 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  if (cancelRenderWait) {
+    cancelRenderWait();
+    // Let the rejected wait restore the React flag before unmounting.
+    await Promise.resolve();
+  }
   if (root) await act(async () => root?.unmount());
   root = null;
   globalThis.fetch = realFetch;
@@ -92,13 +100,41 @@ function props(): OperatorAppProps {
   };
 }
 
-async function mount(hash: string, appProps: OperatorAppProps = props()): Promise<void> {
+async function flushCommittedEffects(): Promise<void> {
+  // The commit can queue passive effects on React's Node scheduler before the observer runs.
+  await act(() => setImmediate());
+}
+
+// The lazy page and its reads can commit after act drains its current queue.
+// Observe their DOM commits with React's normal scheduler.
+async function renderUntil(ready: string, render: () => void): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const observer = new window.MutationObserver(() => {
+    if (document.querySelector(ready)) resolve();
+  });
+  const previousActEnvironment = reactEnvironment.IS_REACT_ACT_ENVIRONMENT;
+  reactEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    observer.observe(window.document.body, { childList: true, subtree: true, attributes: true });
+    render();
+    if (document.querySelector(ready)) return;
+    cancelRenderWait = () => reject(new Error(`Render wait cancelled in teardown: ${ready}`));
+    await promise;
+  } finally {
+    observer.disconnect();
+    cancelRenderWait = undefined;
+    reactEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+  }
+}
+
+const FILE_READY = '[data-docs-file-header], [data-docs-refusal]';
+
+async function mount(hash: string, appProps: OperatorAppProps = props(), ready = FILE_READY): Promise<void> {
   window.location.hash = hash;
   const container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
-  await act(async () => root?.render(<OperatorApp {...appProps} />));
-  await settle();
+  await renderUntil(ready, () => root?.render(<OperatorApp {...appProps} />));
 }
 
 const page = () => document.querySelector<HTMLElement>('[data-docs-page]')!;
@@ -164,8 +200,8 @@ describe('docs page', () => {
     expect(body().querySelector('h2')?.getAttribute('data-line')).toBe('3');
 
     // A clean file carries no label; a tree click moves the route.
-    await act(async () => document.querySelector<HTMLAnchorElement>('[data-docs-file="docs/README.md"]')!.click());
-    await settle();
+    await renderUntil('[data-docs-reader="docs/README.md"] [data-docs-file-header], [data-docs-refusal]',
+      () => document.querySelector<HTMLAnchorElement>('[data-docs-file="docs/README.md"]')!.click());
     expect(window.location.hash).toBe('#docs/docs/README.md');
     expect(document.querySelector('[data-docs-file-header] h2')?.textContent).toBe('docs/README.md');
     expect(document.querySelector('[data-docs-dirty]')).toBeNull();
@@ -176,7 +212,7 @@ describe('docs page', () => {
   });
 
   test('1-DOCS-N1 renders raw HTML as text, opens only safe links, and shows a strict Mermaid diagram as an image', async () => {
-    await mount('#docs/docs/README.md');
+    await mount('#docs/docs/README.md', props(), '[data-mermaid="drawn"], [data-mermaid="failed"], [data-docs-refusal]');
     const prose = body();
     // Raw HTML is text: no element is created from it.
     expect(prose.querySelector('script')).toBeNull();
@@ -302,6 +338,7 @@ describe('docs page', () => {
   test('a refused tree shows its reason instead of a tree, and a non-markdown file shows numbered lines', async () => {
     answerFor = url => url.pathname.endsWith('/docs/tree') ? docsPendingAnswer : serveDocs(url);
     await mount('#docs/docs/reference/settings.yaml');
+    await flushCommittedEffects();
     expect(document.querySelector('[data-docs-refusal="docs_pending"]')?.textContent).toContain('The docs listing is not collected yet.');
     expect(document.querySelector('[data-docs-tree]')).toBeNull();
     expect(requests.some(request => request.includes('/docs/file'))).toBe(false);
@@ -323,14 +360,14 @@ describe('docs repository in a new context', () => {
   const OTHER = 'repo-console';
   const STORED = 'repo-harness:operator-repository';
   /** A context with no history record: a new tab, or a pasted or saved link. */
-  async function openContext(url: string, storedPick: string, appProps: OperatorAppProps = props()): Promise<void> {
+  async function openContext(url: string, storedPick: string, appProps: OperatorAppProps = props(), ready = FILE_READY): Promise<void> {
     if (root) await act(async () => root?.unmount());
     root = null;
     await window.happyDOM.close();
     installDom(url);
     localStorage.setItem(STORED, storedPick);
     requests = [];
-    await mount(new URL(url).hash, appProps);
+    await mount(new URL(url).hash, appProps, ready);
   }
 
   test('r4 a Ctrl/Cmd-click on a docs file after a switch and Back opens a new tab that reads the file of the shown repository', async () => {
@@ -360,7 +397,9 @@ describe('docs repository in a new context', () => {
   });
 
   test('a link that names an unregistered repository shows an error and reads no other repository', async () => {
-    await openContext('http://127.0.0.1:4318/?repository=repo-gone#docs/docs/README.md', REPOSITORY);
+    await openContext('http://127.0.0.1:4318/?repository=repo-gone#docs/docs/README.md', REPOSITORY, props(),
+      'main:has([data-repository-link-unknown]) [data-docs-page]');
+    await flushCommittedEffects();
     expect(document.querySelector('[role="alert"][data-repository-link-unknown]')?.textContent).toContain('repo-gone');
     expect(document.querySelector('[data-repository-switch]')?.getAttribute('data-selected')).toBe('');
     expect([requests.filter(request => request.includes('/docs/')), window.history.state, window.location.hash]).toEqual([[], null, '#docs/docs/README.md']);
@@ -368,7 +407,7 @@ describe('docs repository in a new context', () => {
 
   test('unknown link, then a pick of a registered repository, then Back keeps the refusal of the link entry, and Forward returns to the pick', async () => {
     const unknown = 'http://127.0.0.1:4318/?repository=repo-gone#docs/docs/README.md';
-    await openContext(unknown, REPOSITORY);
+    await openContext(unknown, REPOSITORY, props(), '[data-repository-link-unknown]');
     await act(async () => document.querySelector<HTMLButtonElement>('[data-repository-switch]')!.click());
     await act(async () => document.querySelector<HTMLButtonElement>(`[data-switch-option="${OTHER}"]`)!.click());
     await settle();
