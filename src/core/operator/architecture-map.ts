@@ -27,12 +27,14 @@ import {
   ARCHITECTURE_LAYER_ORDER_REASONS,
   ARCHITECTURE_MAP_DEPENDENCY_REASONS,
   ARCHITECTURE_MAP_SIZE_REASONS,
+  ARCHITECTURE_MAP_UNAVAILABLE_REASONS,
   ARCHITECTURE_NAMESPACE_TYPES,
   ARCHITECTURE_PR_LAYER_REASONS,
   ARCHITECTURE_PR_REASONS,
   ARCHITECTURE_TEST_REASONS,
   ARCHITECTURE_VIOLATION_REASONS,
   OPERATOR_ARCHITECTURE_MAP_SCHEMA,
+  archctxRefusal,
   flowSelectorKey,
   flowSteps,
   type ArchitectureChangesLayerV1,
@@ -50,6 +52,8 @@ import {
   type ArchitectureMapRelationV1,
   type ArchitectureMapSizeReason,
   type ArchitectureMapSizesV1,
+  type ArchitectureMapUnavailableReason,
+  type ArchitectureMapUnavailableV1,
   type ArchitectureMapV1,
   type ArchitectureModelChangeV1,
   type ArchitecturePullRequestImpactV1,
@@ -80,7 +84,6 @@ export {
   archctxRefusal,
   architectureImpact,
   architectureViolationCommand,
-  decodeArchitectureMapRefusal,
   flowSelectorKey,
   flowSteps,
 } from './architecture-map-model';
@@ -459,6 +462,17 @@ const pullRequestsSource = section({
 export function decodeArchitecturePullRequestsSource(value: unknown): ArchitecturePullRequestsSource {
   if (!pullRequestsSource(value)) throw new Error('architecture_pull_requests_invalid');
   return value as ArchitecturePullRequestsSource;
+}
+
+/** The unavailable state that a map route refusal names; null when the body is not such a refusal. */
+export function decodeArchitectureMapRefusal(body: unknown): ArchitectureMapUnavailableV1 | null {
+  const record = (value: unknown) => isRecord(value) ? value : null;
+  const code = record(record(body)?.error)?.code;
+  if (code === 'archctx_error') {
+    const archctx = record(record(body)?.archctx);
+    return archctx === null ? null : archctxRefusal(archctx.code, archctx.reason_code);
+  }
+  return (ARCHITECTURE_MAP_UNAVAILABLE_REASONS as readonly unknown[]).includes(code) ? { state: 'unavailable', reason: code as ArchitectureMapUnavailableReason } : null;
 }
 
 export interface ArchitectureMapLayersInput {

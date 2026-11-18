@@ -5,7 +5,6 @@
 
 import type { RefImpactV1 } from 'archctx-contracts';
 import { PULL_REQUEST_FILES_REASONS } from './pull-request-files';
-import { isRecord } from '../evidence/is-record';
 import { TESTS_UNAVAILABLE_REASONS } from './tests';
 
 export const OPERATOR_ARCHITECTURE_MAP_SCHEMA = 'repo-harness.architecture-map.v7' as const;
@@ -193,17 +192,6 @@ export function archctxRefusal(code: unknown, reasonCode: unknown): ArchctxRefus
 export interface ArchitectureMapRefusalV1 {
   readonly error: { readonly code: string; readonly message: string; readonly next_action: string };
   readonly archctx?: { readonly code: string; readonly reason_code: string | null };
-}
-
-/** The unavailable state that a map route refusal names; null when the body is not such a refusal. */
-export function decodeArchitectureMapRefusal(body: unknown): ArchitectureMapUnavailableV1 | null {
-  const record = (value: unknown) => isRecord(value) ? value : null;
-  const code = record(record(body)?.error)?.code;
-  if (code === 'archctx_error') {
-    const archctx = record(record(body)?.archctx);
-    return archctx === null ? null : archctxRefusal(archctx.code, archctx.reason_code);
-  }
-  return (ARCHITECTURE_MAP_UNAVAILABLE_REASONS as readonly unknown[]).includes(code) ? { state: 'unavailable', reason: code as ArchitectureMapUnavailableReason } : null;
 }
 
 /** One changed path from `archctx impact`. Its reason codes say why a line count is null or an owner is contested. */

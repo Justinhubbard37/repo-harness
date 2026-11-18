@@ -20,6 +20,7 @@ source:
     - src/core/dev-activity/projection.ts
     - src/core/dev-activity/types.ts
     - src/core/operator/agent-config.ts
+    - src/core/operator/architecture-map-model.ts
     - src/core/operator/architecture-map.ts
     - src/core/operator/architecture.ts
     - src/core/operator/board-read.ts
